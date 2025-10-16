@@ -1,5 +1,5 @@
 from django.http import JsonResponse
-from .llm_provider_a_adapter import AnthropicAdapter
+from .llm_provider_adapter_implementations import AnthropicAdapter
 
 llmprovider = AnthropicAdapter()
 
