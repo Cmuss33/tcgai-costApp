@@ -54,3 +54,20 @@ def get_messages(request):
         return JsonResponse(result, safe=False)
     except Exception as e:
         return JsonResponse({'status': 'error', 'message': str(e)}, status=400)
+
+def get_chat_ids(request):
+    try:
+        chat_ids = Chat.objects.values_list('chat_id', flat=True)
+        return JsonResponse(list(chat_ids), safe=False)
+    except Exception as e:
+        return JsonResponse({'status': 'error', 'message': str(e)}, status=400)
+
+def get_messages_by_chat_id(request, chat_id):
+    try:
+        chat = Chat.objects.get(chat_id=chat_id)
+        messages = Message.objects.filter(chat=chat).order_by('-timestamp')
+        return JsonResponse(list(messages.values()), safe=False)
+    except Chat.DoesNotExist:
+        return JsonResponse({'status': 'error', 'message': 'Chat not found'}, status=404)
+    except Exception as e:
+        return JsonResponse({'status': 'error', 'message': str(e)}, status=400)
