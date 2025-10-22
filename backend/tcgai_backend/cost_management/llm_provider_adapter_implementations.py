@@ -7,10 +7,12 @@ load_dotenv()
 
 class AnthropicAdapter(LLMAdapter):
     def get_cost(self):
+        # First, get the cost report
         url = "https://api.anthropic.com/v1/organizations/cost_report"
         params = {
-            "starting_at": "2025-10-01T00:00:00Z",
-            "group_by[]": ["workspace_id", "description"],
+            "starting_at": "2025-10-01T00:00:00Z", # TODO: Make sure to change this to automatically do 7 days ago? 31 days ago? 
+            "group_by[]": "workspace_id",
+            "group_by[]": "description",
             "limit": 31 # TODO: think about how to be able to change this depending on user selection
         }
         headers = {
@@ -28,6 +30,30 @@ class AnthropicAdapter(LLMAdapter):
                 day = day_data['starting_at'][:10]  # Extract the date
                 total_cost = round(sum(float(result['amount']) for result in day_data['results']) / 100, 2) # TODO: Possibly convert to CAD (currently USD)
                 daily_costs.append({'day': day, 'total_cost': total_cost})
-            return {"costs": daily_costs}
+
+            # Now, get the messages usage report
+            url_usage = "https://api.anthropic.com/v1/organizations/usage_report/messages"
+            params_usage = {
+                "starting_at": "2025-10-01T00:00:00Z", # TODO: Make sure to change this to automatically do 7 days ago? 31 days ago? 
+                "group_by[]": "workspace_id",
+                "limit": 31 # TODO: think about how to be able to change this depending on user selection
+            }
+            response_usage = requests.get(url_usage, params=params_usage, headers=headers)
+
+            if response_usage.status_code == 200:
+                usage_data = response_usage.json()
+                daily_tokens = []
+                for day_data in usage_data['data']:
+                    day = day_data['starting_at'][:10]
+                    input_tokens = 0
+                    output_tokens = 0
+                    for result in day_data["results"]:
+                        input_tokens += result.get('uncached_input_tokens', 0)
+                        output_tokens += result.get('output_tokens', 0)
+                    daily_tokens.append({'day': day, 'input_tokens': input_tokens, 'output_tokens': output_tokens})
+
+                return {"costs": daily_costs, "tokens": daily_tokens, "test_tokens": usage_data}
+            else:
+                return {"costs": daily_costs, "error_tokens": response_usage.text}
         else:
             return {"error": response.text}
