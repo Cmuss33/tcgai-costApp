@@ -39,3 +39,18 @@ def log_message(request):
         return JsonResponse({'status': 'success', 'message_id': message_id})
     except Exception as e:
         return JsonResponse({'status': 'error', 'message': str(e)}, status=400)
+
+def get_messages(request):
+    try:
+        chats = Chat.objects.all()
+        result = []
+        for chat in chats:
+            messages = Message.objects.filter(chat=chat).order_by('-timestamp')
+            chat_data = {
+                'chat_id': chat.chat_id,
+                'messages': list(messages.values())
+            }
+            result.append(chat_data)
+        return JsonResponse(result, safe=False)
+    except Exception as e:
+        return JsonResponse({'status': 'error', 'message': str(e)}, status=400)
