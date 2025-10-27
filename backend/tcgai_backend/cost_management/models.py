@@ -16,7 +16,6 @@ class Chat(models.Model):
         return self.chat_id
 
 class Message(models.Model):
-    message_id = models.CharField(max_length=255, unique=True)
     chat = models.ForeignKey(Chat, on_delete=models.CASCADE)
     content = models.TextField()
     llm_formatted_message = models.TextField()
@@ -27,4 +26,4 @@ class Message(models.Model):
     timestamp = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
-        return f"Message {self.message_id} in Chat {self.chat.chat_id}"
+        return f"Message in Chat {self.chat.chat_id}"

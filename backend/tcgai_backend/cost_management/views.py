@@ -17,7 +17,6 @@ def log_message(request):
     try:
         data = json.loads(request.body)
         chat_id = data.get('chat_id')
-        message_id = data.get('message_id')
         content = data.get('content')
         llm_formatted_message = data.get('llm_formatted_message')
         returned_content = data.get('returned_content')
@@ -27,7 +26,6 @@ def log_message(request):
 
         chat, created = Chat.objects.get_or_create(chat_id=chat_id)
         message = Message.objects.create(
-            message_id=message_id,
             chat=chat,
             content=content,
             llm_formatted_message=llm_formatted_message,
@@ -36,7 +34,7 @@ def log_message(request):
             tokens_in=tokens_in,
             tokens_out=tokens_out
         )
-        return JsonResponse({'status': 'success', 'message_id': message_id})
+        return JsonResponse({'status': 'success'})
     except Exception as e:
         return JsonResponse({'status': 'error', 'message': str(e)}, status=400)
 
