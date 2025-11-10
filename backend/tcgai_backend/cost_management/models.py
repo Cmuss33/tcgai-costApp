@@ -10,13 +10,15 @@ class Cost(models.Model):
         return f"{self.name} - {self.amount} {self.currency}"
 
 class Chat(models.Model):
-    chat_id = models.CharField(max_length=255, unique=True)
+    chat_id = models.CharField(max_length=255, primary_key=True)
 
     def __str__(self):
         return self.chat_id
 
+
+#TODO: use a unique message_id gotten from claude instead of djagno's
 class Message(models.Model):
-    chat = models.ForeignKey(Chat, on_delete=models.CASCADE)
+    chat = models.ForeignKey(Chat, on_delete=models.CASCADE, to_field='chat_id')
     content = models.TextField()
     llm_formatted_message = models.TextField()
     returned_content = models.TextField()
