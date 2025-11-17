@@ -1,0 +1,29 @@
+.cost-container {
+  max-width: 900px;
+  margin: auto;
+  padding: 20px;
+}
+
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  margin-bottom: 25px;
+}
+
+.summary-card {
+  background: #848383;
+  padding: 14px;
+  border-radius: 8px;
+  font-size: 18px;
+  text-align: center;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+
+.chart-box {
+  background: white;
+  padding: 16px;
+  border-radius: 10px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.15);
+  margin-bottom: 24px;
+}
