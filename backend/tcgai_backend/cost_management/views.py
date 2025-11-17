@@ -13,6 +13,12 @@ def get_cost(request):
     response = llmprovider.get_cost(year=year, month=month)
     return JsonResponse(response, safe=False)
 
+def get_tokens(request):
+    year = request.GET.get("year")
+    month = request.GET.get("month")
+    response = llmprovider.get_tokens(year=year, month=month)
+    return JsonResponse(response, safe=False)
+
 @csrf_exempt
 @require_http_methods(["POST"])
 def log_message(request):
