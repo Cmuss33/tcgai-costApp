@@ -1,15 +1,7 @@
-import './CostView.css'
+import "./CostView.css";
 import { useEffect, useState } from "react";
-import {
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  Tooltip,
-  CartesianGrid,
-  ResponsiveContainer
-} from "recharts";
-
+import { LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, ResponsiveContainer } from "recharts";
+import CostModal from "./costModal/CostModal";
 
 function CostView() {
   const [cost, setCost] = useState(null);
@@ -23,53 +15,30 @@ function CostView() {
 
   if (!cost) return <div>Loading...</div>;
 
-  // Your costs now come from cost.costs
-  const october = cost.costs || [];
-
-  // Summary values
-  const total = october.reduce((sum, d) => sum + d.total_cost, 0).toFixed(3);
-  const lastDayCost = october[october.length - 1]?.total_cost?.toFixed(3) ?? "0.000";
+  const october = cost.costs;
 
   return (
     <div className="cost-container">
       <h1>October Costs</h1>
+      <ResponsiveContainer width="100%" height={300}>
+        <LineChart data={october} margin={{ bottom: 80 }}>
+          <CartesianGrid strokeDasharray="3 3" />
+          <XAxis dataKey="day" interval={3} angle={-45} textAnchor="end" tickFormatter={(day) => {
+            const [year, month, date] = day.split("-").map(Number);
+            const jsDate = new Date(year, month - 1, date);
+            return jsDate.toLocaleDateString('en-US', { month: 'long', day: 'numeric'});
+          }}
+          />
+          <YAxis tickFormatter={(value) => `$${value}`} />
+          <Tooltip content={<CostModal />} />
+          <Line type="monotone" dataKey="total_cost" stroke="#8884d8" strokeWidth={3} />
+        </LineChart>
+      </ResponsiveContainer>
 
-      {/* Summary Cards */}
-      <div className="summary-grid">
-        <div className="summary-card">
-          Last Recorded Day: <strong>${lastDayCost}</strong>
-        </div>
-        <div className="summary-card">
-          October Total: <strong>${total}</strong>
-        </div>
-        <div className="summary-card">
-          Days Counted: <strong>{october.length}</strong>
-        </div>
-      </div>
-
-      {/* Line Chart */}
-      <div className="chart-box">
-        <ResponsiveContainer width="100%" height={300}>
-          <LineChart data={october}>
-            <CartesianGrid strokeDasharray="3 3" />
-            <XAxis dataKey="day" />
-            <YAxis />
-            <Tooltip />
-            <Line
-              type="monotone"
-              dataKey="total_cost"
-              stroke="#06007fff"
-              strokeWidth={3}
-            />
-          </LineChart>
-        </ResponsiveContainer>
-      </div>
-
-      {/* Raw JSON - TODO: DELETE - is for testing*/}
       <h3>Raw Data</h3>
       <pre>{JSON.stringify(october, null, 2)}</pre>
     </div>
   );
 }
 
-export default CostView;
+export default CostView
