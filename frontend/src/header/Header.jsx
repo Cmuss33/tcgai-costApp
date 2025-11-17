@@ -7,7 +7,7 @@ function Header() {
       <div className="header-container">
         <div className="header-content">
           <Link to="/cost" className="header-btn">View Costs</Link>
-          <Link to="/calendar" className="header-btn">View Messages</Link>
+          <Link to="/messages" className="header-btn">View Messages</Link>
         </div>
       </div>
     </>

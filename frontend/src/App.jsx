@@ -1,7 +1,8 @@
 import './App.css'
 import { BrowserRouter as Router, Route, Routes } from 'react-router-dom';
 import CostView from './cost/CostView';
-import Header from './header/header';
+import Header from './header/Header';
+import MessageView from './messages/MessageView';
 
 function App() {
   return (
@@ -11,6 +12,7 @@ function App() {
           <Header />
           <Routes>
             <Route path="/cost" element={<CostView />} />
+            <Route path="/messages" element={<MessageView />} />
           </Routes>
         </Router>
       </div>

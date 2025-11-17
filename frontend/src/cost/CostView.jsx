@@ -30,6 +30,7 @@ function CostView() {
 
   useEffect(() => {
     setLoading(true);
+    setCost(null);
     // Call backend with year and month query parameters
     fetch(`http://127.0.0.1:8000/api/cost/get_cost/?year=${viewedYear}&month=${viewedMonth + 1}`)
       .then((res) => res.json())
