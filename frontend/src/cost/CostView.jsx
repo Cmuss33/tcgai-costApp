@@ -12,9 +12,10 @@ import {
 import CostModal from "./costModal/CostModal";
 
 function CostView() {
-  const [cost, setCost] = useState(null);
+  const [data, setData] = useState(null);
   const [monthOffset, setMonthOffset] = useState(0); // 0 = current month
   const [loading, setLoading] = useState(false);
+  const [viewMode, setViewMode] = useState("cost"); // "cost" or "tokens"
 
   const today = new Date();
 
@@ -30,24 +31,57 @@ function CostView() {
 
   useEffect(() => {
     setLoading(true);
-    setCost(null);
-    // Call backend with year and month query parameters
-    fetch(`http://127.0.0.1:8000/api/cost/get_cost/?year=${viewedYear}&month=${viewedMonth + 1}`)
+    setData(null);
+
+    const endpoint =
+      viewMode === "cost"
+        ? `http://127.0.0.1:8000/api/cost/get_cost/?year=${viewedYear}&month=${viewedMonth + 1}`
+        : `http://127.0.0.1:8000/api/cost/get_tokens/?year=${viewedYear}&month=${viewedMonth + 1}`;
+
+    fetch(endpoint)
       .then((res) => res.json())
-      .then((data) => {
-        setCost(data);
+      .then((fetchedData) => {
+        // If tokens, calculate total_tokens = input_tokens + output_tokens
+        if (viewMode === "tokens" && fetchedData.tokens) {
+          fetchedData.tokens = fetchedData.tokens.map(item => ({
+            ...item,
+            total_tokens: item.input_tokens + item.output_tokens
+          }));
+        }
+        setData(fetchedData);
         setLoading(false);
-        console.log(data);
       })
       .catch((err) => {
         console.error("Error:", err);
         setLoading(false);
       });
-  }, [monthOffset, viewedMonth, viewedYear]);
+  }, [monthOffset, viewedMonth, viewedYear, viewMode]);
+
+  let chartData = [];
+  if (data) {
+    chartData = viewMode === "cost" ? data.costs || [] : data.tokens || [];
+  }
 
   return (
     <div className="cost-container">
-      <h1>Costs</h1>
+      {/* Header with toggle */}
+      <div className="header-toggle">
+        <h1>
+          <span
+            className={`toggle-option ${viewMode === "cost" ? "active" : ""}`}
+            onClick={() => setViewMode("cost")}
+          >
+            Costs
+          </span>
+          {" | "}
+          <span
+            className={`toggle-option ${viewMode === "tokens" ? "active" : ""}`}
+            onClick={() => setViewMode("tokens")}
+          >
+            Tokens
+          </span>
+        </h1>
+      </div>
 
       {/* Month Navigation */}
       <div className="month-navigation">
@@ -64,9 +98,9 @@ function CostView() {
         </div>
       )}
 
-      {!loading && cost && cost.costs && (
+      {!loading && chartData.length > 0 && (
         <ResponsiveContainer width="100%" height={300}>
-          <LineChart data={cost.costs} margin={{ bottom: 80, left: 20, right: 20 }}>
+          <LineChart data={chartData} margin={{ bottom: 80, left: 20, right: 20 }}>
             <CartesianGrid strokeDasharray="3 3" />
             <XAxis
               dataKey="day"
@@ -76,18 +110,27 @@ function CostView() {
               tickFormatter={(day) => {
                 const [year, month, date] = day.split("-").map(Number);
                 const jsDate = new Date(year, month - 1, date);
-                return jsDate.toLocaleDateString("en-US", { month: "long", day: "numeric" });
+                return jsDate.toLocaleDateString("en-US", { month: "short", day: "numeric" });
               }}
             />
-            <YAxis tickFormatter={(value) => `$${value}`} />
-            <Tooltip content={<CostModal />} />
-            <Line type="monotone" dataKey="total_cost" stroke="#8884d8" strokeWidth={3} />
+            <YAxis
+              tickFormatter={(value) =>
+                viewMode === "cost" ? `$${value}` : value
+              }
+            />
+            <Tooltip content={<CostModal viewMode={viewMode} />} />
+            <Line
+              type="monotone"
+              dataKey={viewMode === "cost" ? "total_cost" : "total_tokens"}
+              stroke="#8884d8"
+              strokeWidth={3}
+            />
           </LineChart>
         </ResponsiveContainer>
       )}
 
       <h3>Raw Data</h3>
-      <pre>{JSON.stringify(cost?.costs, null, 2)}</pre>
+      <pre>{JSON.stringify(chartData, null, 2)}</pre>
     </div>
   );
 }
