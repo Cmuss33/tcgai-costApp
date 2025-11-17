@@ -36,6 +36,7 @@ function CostView() {
       .then((data) => {
         setCost(data);
         setLoading(false);
+        console.log(data);
       })
       .catch((err) => {
         console.error("Error:", err);
@@ -58,7 +59,7 @@ function CostView() {
 
       {loading && (
         <div className="loading-container">
-          Loading...
+          <div className="spinner"></div>
         </div>
       )}
 
