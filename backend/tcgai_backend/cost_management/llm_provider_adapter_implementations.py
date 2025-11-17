@@ -2,21 +2,30 @@ from .api_clients import LLMAdapter
 import requests
 import os
 from dotenv import load_dotenv
+from datetime import datetime
 
 load_dotenv()
 
 class AnthropicAdapter(LLMAdapter):
-    def get_cost(self):
+
+    def get_cost(self, year=None, month=None):
+        # Determine year and month
+        today = datetime.today()
+        year = int(year) if year else today.year
+        month = int(month) if month else today.month
+
+        starting_at = f"{year}-{month:02d}-01T00:00:00Z"
+
         # First, get the cost report
         url = "https://api.anthropic.com/v1/organizations/cost_report"
         params = {
-            "starting_at": "2025-10-01T00:00:00Z", # TODO: Make sure to change this to automatically do 7 days ago? 31 days ago? 
+            "starting_at": starting_at,  # dynamic starting date
             "group_by[]": "workspace_id",
             "group_by[]": "description",
-            "limit": 31 # TODO: think about how to be able to change this depending on user selection
+            "limit": 31
         }
         headers = {
-            "anthropic-version": "2023-06-01", # TODO: LOOK AT WHAT VERSION TO USE
+            "anthropic-version": "2023-06-01",
             "content-type": "application/json",
             "x-api-key": os.environ.get('ANTHROPIC_ADMIN_KEY')
         }
@@ -34,9 +43,9 @@ class AnthropicAdapter(LLMAdapter):
             # Now, get the messages usage report
             url_usage = "https://api.anthropic.com/v1/organizations/usage_report/messages"
             params_usage = {
-                "starting_at": "2025-10-01T00:00:00Z", # TODO: Make sure to change this to automatically do 7 days ago? 31 days ago? 
+                "starting_at": starting_at,
                 "group_by[]": "workspace_id",
-                "limit": 31 # TODO: think about how to be able to change this depending on user selection
+                "limit": 31
             }
             response_usage = requests.get(url_usage, params=params_usage, headers=headers)
 

@@ -14,6 +14,7 @@ import CostModal from "./costModal/CostModal";
 function CostView() {
   const [cost, setCost] = useState(null);
   const [monthOffset, setMonthOffset] = useState(0); // 0 = current month
+  const [loading, setLoading] = useState(false);
 
   const today = new Date();
 
@@ -28,22 +29,19 @@ function CostView() {
   const viewedYear = viewedDate.getFullYear();
 
   useEffect(() => {
-    fetch("http://127.0.0.1:8000/api/cost/get_cost/")
+    setLoading(true);
+    // Call backend with year and month query parameters
+    fetch(`http://127.0.0.1:8000/api/cost/get_cost/?year=${viewedYear}&month=${viewedMonth + 1}`)
       .then((res) => res.json())
-      .then((data) => setCost(data))
-      .catch((err) => console.error("Error:", err));
-  }, []);
-
-  var filteredData;
-  // Filter and sort data for the viewed month
-  if (cost) {
-    filteredData = cost.costs
-      .filter(item => {
-        const [year, month, date] = item.day.split("-").map(Number);
-        return year === viewedYear && month - 1 === viewedMonth;
+      .then((data) => {
+        setCost(data);
+        setLoading(false);
       })
-      .sort((a, b) => new Date(a.day) - new Date(b.day));
-  }
+      .catch((err) => {
+        console.error("Error:", err);
+        setLoading(false);
+      });
+  }, [monthOffset, viewedMonth, viewedYear]);
 
   return (
     <div className="cost-container">
@@ -57,14 +55,16 @@ function CostView() {
         </span>
         <button onClick={() => setMonthOffset(monthOffset + 1)}>&rarr;</button>
       </div>
-      {!cost && (
+
+      {loading && (
         <div className="loading-container">
           Loading...
         </div>
       )}
-      {cost && (
+
+      {!loading && cost && cost.costs && (
         <ResponsiveContainer width="100%" height={300}>
-          <LineChart data={filteredData} margin={{ bottom: 80, left: 20, right: 20 }}>
+          <LineChart data={cost.costs} margin={{ bottom: 80, left: 20, right: 20 }}>
             <CartesianGrid strokeDasharray="3 3" />
             <XAxis
               dataKey="day"
@@ -85,7 +85,7 @@ function CostView() {
       )}
 
       <h3>Raw Data</h3>
-      <pre>{JSON.stringify(filteredData, null, 2)}</pre>
+      <pre>{JSON.stringify(cost?.costs, null, 2)}</pre>
     </div>
   );
 }

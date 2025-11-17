@@ -8,7 +8,9 @@ import json
 llmprovider = AnthropicAdapter()
 
 def get_cost(request):
-    response = llmprovider.get_cost()
+    year = request.GET.get("year")
+    month = request.GET.get("month")
+    response = llmprovider.get_cost(year=year, month=month)
     return JsonResponse(response, safe=False)
 
 @csrf_exempt
