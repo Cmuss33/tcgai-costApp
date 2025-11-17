@@ -28,6 +28,7 @@ function MessageView() {
     if (!selectedChatId) return;
 
     setLoadingMessages(true);
+    setMessages([]); // clear previous messages while loading
     fetch(`http://127.0.0.1:8000/api/cost/get_messages_by_chat_id/${selectedChatId}/`)
       .then((res) => res.json())
       .then((data) => {
@@ -46,7 +47,9 @@ function MessageView() {
       <div className="sidebar">
         <h3>Chats</h3>
         {loadingChats ? (
-          <div className="spinner"></div>
+          <div className="message-spinner-container">
+            <div className="message-spinner"></div>
+          </div>
         ) : (
           chatIds.map((id) => (
             <div
@@ -68,13 +71,24 @@ function MessageView() {
         ) : messages.length === 0 ? (
           <p>No messages found.</p>
         ) : (
-          <ul className="messages-list">
+          <div className="messages-list">
             {messages.map((msg) => (
-              <li key={msg.id}>
-                <strong>{msg.timestamp}:</strong> {msg.content}
-              </li>
+              <div key={msg.id} className="message-pair">
+                <div className="user-message">
+                  <div className="message-label">User:</div>
+                  <div className="message-content">{msg.content}</div>
+                  <div className="timestamp">Tokens In: {msg.tokens_in}</div>
+                  <div className="timestamp">{new Date(msg.timestamp).toLocaleString()}</div>
+                </div>
+                <div className="ai-message">
+                  <div className="message-label">LLM:</div>
+                  <div className="message-content">{msg.returned_content}</div>
+                  <div className="timestamp">Tokens Out: {msg.tokens_out}</div>
+                  <div className="timestamp">{new Date(msg.timestamp).toLocaleString()}</div>
+                </div>
+              </div>
             ))}
-          </ul>
+          </div>
         )}
       </div>
     </div>

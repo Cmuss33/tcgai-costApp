@@ -1,13 +1,14 @@
 .message-view-container {
   display: flex;
   height: 100%;
-  font-family: sans-serif;
+  gap: 16px;
 }
 
+/* Sidebar */
 .sidebar {
   width: 200px;
   border-right: 1px solid #ccc;
-  padding: 20px;
+  padding: 10px;
   overflow-y: auto;
 }
 
@@ -15,16 +16,8 @@
   padding: 8px;
   cursor: pointer;
   border-radius: 4px;
-  margin-bottom: 4px;
-}
-
-.chat-id.inactive {
-  background-color: #545454;
-  color: rgb(199, 199, 199);
-}
-
-.chat-id:hover {
-  background-color: #e0e0e0;
+  margin-bottom: 10px;
+  margin-right: 10px;
 }
 
 .chat-id.active {
@@ -33,6 +26,16 @@
   font-weight: bold;
 }
 
+.chat-id.inactive {
+  background-color: #717171;
+  color: white;
+}
+
+.chat-id.inactive:hover {
+  background-color: #e0e0e0;
+}
+
+/* Messages Panel */
 .messages-panel {
   flex: 1;
   padding: 10px;
@@ -40,27 +43,64 @@
 }
 
 .messages-list {
-  list-style-type: none;
-  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 
-.messages-list li {
-  padding: 6px 0;
-  border-bottom: 1px solid #eee;
+/* User and AI messages */
+.message-pair {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
-.spinner {
-  border: 4px solid #f3f3f3; /* Light gray */
-  border-top: 4px solid #8884d8; /* Purple */
+.user-message, .ai-message {
+  padding: 12px;
+  border-radius: 8px;
+  max-width: 80%;
+}
+
+.user-message {
+  background-color: #9f4dbd; /* light blue */
+  align-self: flex-start;
+}
+
+.ai-message {
+  background-color: #534292; /* light green */
+  align-self: flex-end;
+}
+
+.message-label {
+  font-weight: bold;
+  margin-bottom: 4px;
+}
+
+.message-content {
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.timestamp {
+  font-size: 10px;
+  color: #cbcbcb;
+  margin-top: 4px;
+  text-align: right;
+}
+
+/* Spinner for loading */
+.message-spinner {
+  border: 4px solid #f3f3f3;
+  border-top: 4px solid #8884d8;
   border-radius: 50%;
-  width: 30px;
-  height: 30px;
+  width: 40px;
+  height: 40px;
   animation: spin 1s linear infinite;
-  margin: auto;
-  margin-top: 20px;
 }
 
-@keyframes spin {
-  0% { transform: rotate(0deg); }
-  100% { transform: rotate(360deg); }
+.message-spinner-container {
+  display: flex;
+  flex-direction: row;
+  justify-content: center;
 }
+
