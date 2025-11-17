@@ -34,15 +34,16 @@ function CostView() {
       .catch((err) => console.error("Error:", err));
   }, []);
 
-  if (!cost) return <div>Loading...</div>;
-
+  var filteredData;
   // Filter and sort data for the viewed month
-  const filteredData = cost.costs
-    .filter(item => {
-      const [year, month, date] = item.day.split("-").map(Number);
-      return year === viewedYear && month - 1 === viewedMonth;
-    })
-    .sort((a, b) => new Date(a.day) - new Date(b.day));
+  if (cost) {
+    filteredData = cost.costs
+      .filter(item => {
+        const [year, month, date] = item.day.split("-").map(Number);
+        return year === viewedYear && month - 1 === viewedMonth;
+      })
+      .sort((a, b) => new Date(a.day) - new Date(b.day));
+  }
 
   return (
     <div className="cost-container">
@@ -56,26 +57,32 @@ function CostView() {
         </span>
         <button onClick={() => setMonthOffset(monthOffset + 1)}>&rarr;</button>
       </div>
-
-      <ResponsiveContainer width="100%" height={300}>
-        <LineChart data={filteredData} margin={{ bottom: 80, left: 20, right: 20 }}>
-          <CartesianGrid strokeDasharray="3 3" />
-          <XAxis
-            dataKey="day"
-            interval={0}
-            angle={-45}
-            textAnchor="end"
-            tickFormatter={(day) => {
-              const [year, month, date] = day.split("-").map(Number);
-              const jsDate = new Date(year, month - 1, date);
-              return jsDate.toLocaleDateString("en-US", { month: "long", day: "numeric" });
-            }}
-          />
-          <YAxis tickFormatter={(value) => `$${value}`} />
-          <Tooltip content={<CostModal />} />
-          <Line type="monotone" dataKey="total_cost" stroke="#8884d8" strokeWidth={3} />
-        </LineChart>
-      </ResponsiveContainer>
+      {!cost && (
+        <div className="loading-container">
+          Loading...
+        </div>
+      )}
+      {cost && (
+        <ResponsiveContainer width="100%" height={300}>
+          <LineChart data={filteredData} margin={{ bottom: 80, left: 20, right: 20 }}>
+            <CartesianGrid strokeDasharray="3 3" />
+            <XAxis
+              dataKey="day"
+              interval={0}
+              angle={-45}
+              textAnchor="end"
+              tickFormatter={(day) => {
+                const [year, month, date] = day.split("-").map(Number);
+                const jsDate = new Date(year, month - 1, date);
+                return jsDate.toLocaleDateString("en-US", { month: "long", day: "numeric" });
+              }}
+            />
+            <YAxis tickFormatter={(value) => `$${value}`} />
+            <Tooltip content={<CostModal />} />
+            <Line type="monotone" dataKey="total_cost" stroke="#8884d8" strokeWidth={3} />
+          </LineChart>
+        </ResponsiveContainer>
+      )}
 
       <h3>Raw Data</h3>
       <pre>{JSON.stringify(filteredData, null, 2)}</pre>
