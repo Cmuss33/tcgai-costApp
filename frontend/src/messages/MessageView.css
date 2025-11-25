@@ -103,4 +103,27 @@
   flex-direction: row;
   justify-content: center;
 }
+.expand-button-container {
+  text-align: right;
+}
+
+
+.expand-button {
+  margin-top: 4px;
+  background-color: transparent;
+  color: rgb(190, 220, 255);
+  border: none;
+}
+
+.expand-button:hover {
+  cursor: pointer;
+}
+
+.formatted-message pre {
+  white-space: pre-wrap;
+  font-size: 10px;
+  color: #cbcbcb;
+  margin-top: 4px;
+}
+
 

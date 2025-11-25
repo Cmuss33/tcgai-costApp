@@ -7,6 +7,20 @@ function MessageView() {
   const [messages, setMessages] = useState([]);
   const [loadingChats, setLoadingChats] = useState(true);
   const [loadingMessages, setLoadingMessages] = useState(false);
+  const [chatCost, setChatCost] = useState(0);
+  const [expandedMessages, setExpandedMessages] = useState({});
+
+  // TODO: Find more accurate cost
+  const costPerInput = 1 / 1000000;
+  const costPerOutput = 5 / 1000000;
+
+  const toggleExpand = (id, type) => {
+    const key = `${id}-${type}`;
+    setExpandedMessages(prev => ({
+      ...prev,
+      [key]: !prev[key],
+    }));
+  };
 
   // Fetch chat IDs on mount
   useEffect(() => {
@@ -26,12 +40,21 @@ function MessageView() {
   // Fetch messages whenever selectedChatId changes
   useEffect(() => {
     if (!selectedChatId) return;
+    setExpandedMessages({});
 
     setLoadingMessages(true);
     setMessages([]); // clear previous messages while loading
     fetch(`http://127.0.0.1:8000/api/cost/get_messages_by_chat_id/${selectedChatId}/`)
       .then((res) => res.json())
       .then((data) => {
+        console.log(data);
+          const totalCost = data.reduce((sum, msg) => {
+          const inputCost = msg.tokens_in * costPerInput;
+          const outputCost = msg.tokens_out * costPerOutput;
+          return sum + inputCost + outputCost;
+        }, 0);
+        setChatCost(totalCost.toPrecision(2));
+
         setMessages(data);
         setLoadingMessages(false);
       })
@@ -65,7 +88,7 @@ function MessageView() {
 
       {/* Main messages panel */}
       <div className="messages-panel">
-        <h3>Messages for Chat {selectedChatId}</h3>
+        <h3>Messages for Chat {selectedChatId} - Cost: ${chatCost}</h3>
         {loadingMessages ? (
           <div className="spinner"></div>
         ) : messages.length === 0 ? (
@@ -79,12 +102,52 @@ function MessageView() {
                   <div className="message-content">{msg.content}</div>
                   <div className="timestamp">Tokens In: {msg.tokens_in}</div>
                   <div className="timestamp">{new Date(msg.timestamp).toLocaleString()}</div>
+                  <div className="timestamp">${(msg.tokens_in * costPerInput).toPrecision(2)}</div> 
+                  <div className="expand-button-container">
+                    <button
+                      className="expand-button"
+                      onClick={() => toggleExpand(msg.id, 'in')}
+                    >
+                      {expandedMessages[`${msg.id}-in`] ? "Collapse" : "Expand"}
+                    </button>
+                  </div>
+
+                  {expandedMessages[`${msg.id}-in`] && (
+                    <div className="formatted-message">
+                      <pre>
+                        {msg.llm_formatted_message
+                          .replace(/([{,]\s*)'([^']+?)'/g, '$1"$2"')  // keys only
+                          .replace(/},\s*{/g, '},\n\n{')              // add line breaks between objects
+                        }
+                      </pre>
+                    </div>
+                  )}
                 </div>
                 <div className="ai-message">
                   <div className="message-label">LLM:</div>
                   <div className="message-content">{msg.returned_content}</div>
                   <div className="timestamp">Tokens Out: {msg.tokens_out}</div>
                   <div className="timestamp">{new Date(msg.timestamp).toLocaleString()}</div>
+                  <div className="timestamp">${(msg.tokens_out * costPerOutput).toPrecision(2)}</div>
+                  <div className="expand-button-container">
+                    <button
+                      className="expand-button"
+                      onClick={() => toggleExpand(msg.id, 'out')}
+                    >
+                      {expandedMessages[`${msg.id}-out`] ? "Collapse" : "Expand"}
+                    </button>
+                  </div>
+
+                  {expandedMessages[`${msg.id}-out`] && (
+                    <div className="formatted-message">
+                      <pre>
+                        {msg.llm_formatted_returned_message
+                          .replace(/([{,]\s*)'([^']+?)'/g, '$1"$2"')  // keys only
+                          .replace(/},\s*{/g, '},\n\n{')              // add line breaks between objects
+                        }
+                      </pre>
+                    </div>
+                  )}
                 </div>
               </div>
             ))}
