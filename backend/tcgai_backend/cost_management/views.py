@@ -66,8 +66,8 @@ def get_messages(request):
 
 def get_chat_ids(request):
     try:
-        chat_ids = Chat.objects.values_list('chat_id', flat=True)
-        return JsonResponse(list(chat_ids), safe=False)
+        chats = list(Chat.objects.values())
+        return JsonResponse(chats, safe=False)
     except Exception as e:
         return JsonResponse({'status': 'error', 'message': str(e)}, status=400)
 

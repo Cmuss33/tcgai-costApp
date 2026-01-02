@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import "./MessageView.css";
 
 function MessageView() {
-  const [chatIds, setChatIds] = useState([]);
+  const [chats, setChats] = useState([]); // now full chat objects
   const [selectedChatId, setSelectedChatId] = useState(null);
   const [messages, setMessages] = useState([]);
   const [loadingChats, setLoadingChats] = useState(true);
@@ -22,17 +22,17 @@ function MessageView() {
     }));
   };
 
-  // Fetch chat IDs on mount
+  // Fetch full chat objects on mount
   useEffect(() => {
     fetch("http://127.0.0.1:8000/api/cost/get_chat_ids/")
       .then((res) => res.json())
       .then((data) => {
-        setChatIds(data);
+        setChats(data);
         setLoadingChats(false);
-        if (data.length > 0) setSelectedChatId(data[0]); // select first by default
+        if (data.length > 0) setSelectedChatId(data[0].chat_id); // select first by default
       })
       .catch((err) => {
-        console.error("Error fetching chat IDs:", err);
+        console.error("Error fetching chats:", err);
         setLoadingChats(false);
       });
   }, []);
@@ -47,8 +47,7 @@ function MessageView() {
     fetch(`http://127.0.0.1:8000/api/cost/get_messages_by_chat_id/${selectedChatId}/`)
       .then((res) => res.json())
       .then((data) => {
-        console.log(data);
-          const totalCost = data.reduce((sum, msg) => {
+        const totalCost = data.reduce((sum, msg) => {
           const inputCost = msg.tokens_in * costPerInput;
           const outputCost = msg.tokens_out * costPerOutput;
           return sum + inputCost + outputCost;
@@ -74,13 +73,13 @@ function MessageView() {
             <div className="message-spinner"></div>
           </div>
         ) : (
-          chatIds.map((id) => (
+          chats.map((chat) => (
             <div
-              key={id}
-              className={`chat-id ${selectedChatId === id ? "active" : "inactive"}`}
-              onClick={() => setSelectedChatId(id)}
+              key={chat.chat_id}
+              className={`chat-id ${selectedChatId === chat.chat_id ? "active" : "inactive"}`}
+              onClick={() => setSelectedChatId(chat.chat_id)}
             >
-              Chat {id}
+              <div>Chat {chat.chat_id}</div>
             </div>
           ))
         )}
@@ -116,8 +115,8 @@ function MessageView() {
                     <div className="formatted-message">
                       <pre>
                         {msg.llm_formatted_message
-                          .replace(/([{,]\s*)'([^']+?)'/g, '$1"$2"')  // keys only
-                          .replace(/},\s*{/g, '},\n\n{')              // add line breaks between objects
+                          .replace(/([{,]\s*)'([^']+?)'/g, '$1"$2"')
+                          .replace(/},\s*{/g, '},\n\n{')
                         }
                       </pre>
                     </div>
@@ -142,8 +141,8 @@ function MessageView() {
                     <div className="formatted-message">
                       <pre>
                         {msg.llm_formatted_returned_message
-                          .replace(/([{,]\s*)'([^']+?)'/g, '$1"$2"')  // keys only
-                          .replace(/},\s*{/g, '},\n\n{')              // add line breaks between objects
+                          .replace(/([{,]\s*)'([^']+?)'/g, '$1"$2"')
+                          .replace(/},\s*{/g, '},\n\n{')
                         }
                       </pre>
                     </div>
