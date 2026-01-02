@@ -25,6 +25,7 @@ class Message(models.Model):
     llm_formatted_returned_message = models.TextField()
     tokens_in = models.IntegerField()
     tokens_out = models.IntegerField()
+    model = models.TextField()
     timestamp = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
