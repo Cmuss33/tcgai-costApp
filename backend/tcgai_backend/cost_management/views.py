@@ -33,7 +33,8 @@ def log_message(request):
         tokens_out = data.get('tokens_out')
         model = data.get('model')
 
-        chat, created = Chat.objects.get_or_create(chat_id=chat_id)
+        chat, created = Chat.objects.get_or_create(chat_id=chat_id, defaults={"model": model})
+
         message = Message.objects.create(
             chat=chat,
             content=content,

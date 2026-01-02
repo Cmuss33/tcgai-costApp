@@ -11,6 +11,7 @@ class Cost(models.Model):
 
 class Chat(models.Model):
     chat_id = models.CharField(max_length=255, primary_key=True)
+    model = models.TextField()
 
     def __str__(self):
         return self.chat_id
