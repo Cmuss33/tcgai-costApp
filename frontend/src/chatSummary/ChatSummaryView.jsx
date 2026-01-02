@@ -2,8 +2,10 @@ import { useEffect, useState } from "react";
 import "./ChatSummaryView.css";
 
 function ChatSummaryView() {
-
   const [chats, setChats] = useState([]);
+
+  const costPerInput = 1 / 1000000;
+  const costPerOutput = 5 / 1000000;
 
   useEffect(() => {
       fetch("http://127.0.0.1:8000/api/cost/get_chat_ids/")
@@ -35,11 +37,11 @@ function ChatSummaryView() {
           {chats.map(chat => (
             <tr key={chat.chat_id}>
               <td>{chat.chat_id}</td>
-              <td>null</td>
-              <td>null</td>
-              <td>null</td>
-              <td>null</td>
-              <td>null</td>
+              <td>INTENT NOT FOUND</td>
+              <td>{chat.tokens_in}</td>
+              <td>{chat.tokens_out}</td>
+              <td>${(chat.tokens_in * costPerInput + chat.tokens_out * costPerOutput).toPrecision(2)}</td>
+              <td>EVAL % NOT FOUND</td>
               <td>{chat.model}</td>
             </tr>
           ))}

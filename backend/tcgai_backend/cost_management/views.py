@@ -45,6 +45,11 @@ def log_message(request):
             tokens_out=tokens_out,
             model=model
         )
+
+        chat.tokens_in += tokens_in
+        chat.tokens_out += tokens_out
+        chat.save(update_fields=['tokens_in', 'tokens_out'])
+        
         return JsonResponse({'status': 'success'})
     except Exception as e:
         return JsonResponse({'status': 'error', 'message': str(e)}, status=400)
