@@ -1,0 +1,25 @@
+.header-container {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    /* margin-top: 5px; */
+}
+
+.header-content {
+    margin-top: 5px;
+    display: flex;
+    flex-direction: row;
+    justify-content: space-evenly;
+}
+
+.header-btn {
+    color: gainsboro;
+    background: none;
+    border: none;
+    text-decoration: underline;
+    font-size: 15px;
+}
+
+.header-btn:hover {
+    cursor: pointer;
+}

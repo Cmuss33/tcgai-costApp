@@ -125,6 +125,10 @@ dist
 # Stores VSCode versions used for testing VSCode extensions
 .vscode-test
 
+*.pyc
+
+.DS_Store
+
 # yarn v3
 .pnp.*
 .yarn/*

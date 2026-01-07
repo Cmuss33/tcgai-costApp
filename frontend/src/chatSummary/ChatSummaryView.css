@@ -1,0 +1,26 @@
+.chat-summary-container {
+  padding: 16px;
+}
+
+.chat-summary-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 50px;
+  font-size: 14px;
+}
+
+.chat-summary-table th,
+.chat-summary-table td {
+  padding: 10px;
+  border-bottom: 1px solid #444;
+  text-align: left;
+}
+
+.chat-summary-table th {
+  color: #dadada;
+  font-weight: 1000;
+}
+
+.chat-summary-table tr:hover {
+  background-color: rgba(255, 255, 255, 0.05);
+}

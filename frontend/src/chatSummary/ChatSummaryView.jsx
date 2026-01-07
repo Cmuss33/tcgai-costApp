@@ -1,0 +1,54 @@
+import { useEffect, useState } from "react";
+import "./ChatSummaryView.css";
+
+function ChatSummaryView() {
+  const [chats, setChats] = useState([]);
+
+  const costPerInput = 1 / 1000000;
+  const costPerOutput = 5 / 1000000;
+
+  useEffect(() => {
+      fetch("http://127.0.0.1:8000/api/cost/get_chat_ids/")
+        .then((res) => res.json())
+        .then((data) => {
+          setChats(data);
+          console.log(data);
+        })
+        .catch((err) => {
+          console.error("Error fetching chats:", err);
+        });
+    }, []);
+
+  return (
+    <div className="chat-summary-container">
+      <table className="chat-summary-table">
+        <thead>
+          <tr>
+            <th>Chat ID</th>
+            <th>Intent</th>
+            <th>Tokens In</th>
+            <th>Tokens Out</th>
+            <th>Est. Cost ($)</th>
+            <th>Eval %</th>
+            <th>Model</th>
+          </tr>
+        </thead>
+        <tbody>
+          {chats.map(chat => (
+            <tr key={chat.chat_id}>
+              <td>{chat.chat_id}</td>
+              <td>INTENT NOT FOUND</td>
+              <td>{chat.tokens_in}</td>
+              <td>{chat.tokens_out}</td>
+              <td>${(chat.tokens_in * costPerInput + chat.tokens_out * costPerOutput).toPrecision(2)}</td>
+              <td>EVAL % NOT FOUND</td>
+              <td>{chat.model}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+export default ChatSummaryView;
