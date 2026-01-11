@@ -128,9 +128,9 @@ function CostView() {
           </LineChart>
         </ResponsiveContainer>
       )}
-
-      <h3>Raw Data</h3>
-      <pre>{JSON.stringify(chartData, null, 2)}</pre>
+      {/* For Testing Purposes Only */}
+      {/* <h3>Raw Data</h3>
+      <pre>{JSON.stringify(chartData, null, 2)}</pre> */}
     </div>
   );
 }
