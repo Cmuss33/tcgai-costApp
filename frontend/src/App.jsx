@@ -7,19 +7,18 @@ import ChatSummaryView from './chatSummary/ChatSummaryView';
 
 function App() {
   return (
-    <>
-      <div className="content-container">
-        <Router>
-          <Header />
-          <Routes>
-            <Route path="/cost" element={<CostView />} />
-            <Route path="/messages" element={<MessageView />} />
-            <Route path="chats" element={<ChatSummaryView/>} />
-          </Routes>
-        </Router>
-      </div>
-    </>
-  )
+    <div className="content-container">
+      <Router>
+        <Header />
+        <Routes>
+          <Route path="/cost" element={<CostView />} />
+          <Route path="/messages" element={<MessageView />} />
+          <Route path="/messages/:chatId" element={<MessageView />} />
+          <Route path="/chats" element={<ChatSummaryView />} />
+        </Routes>
+      </Router>
+    </div>
+  );
 }
 
-export default App
+export default App;

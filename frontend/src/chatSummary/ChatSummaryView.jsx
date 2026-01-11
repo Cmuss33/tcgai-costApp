@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import "./ChatSummaryView.css";
 
 function ChatSummaryView() {
@@ -8,16 +9,15 @@ function ChatSummaryView() {
   const costPerOutput = 5 / 1000000;
 
   useEffect(() => {
-      fetch("https://tcgai-costapp.onrender.com/api/cost/get_chat_ids/")
-        .then((res) => res.json())
-        .then((data) => {
-          setChats(data);
-          console.log(data);
-        })
-        .catch((err) => {
-          console.error("Error fetching chats:", err);
-        });
-    }, []);
+    fetch("https://tcgai-costapp.onrender.com/api/cost/get_chat_ids/")
+      .then((res) => res.json())
+      .then((data) => {
+        setChats(data);
+      })
+      .catch((err) => {
+        console.error("Error fetching chats:", err);
+      });
+  }, []);
 
   return (
     <div className="chat-summary-container">
@@ -36,11 +36,22 @@ function ChatSummaryView() {
         <tbody>
           {chats.map(chat => (
             <tr key={chat.chat_id}>
-              <td>{chat.chat_id}</td>
+              <td>
+                <Link
+                  to={`/messages/${chat.chat_id}`}
+                >
+                  {chat.chat_id}
+                </Link>
+              </td>
               <td>INTENT NOT FOUND</td>
               <td>{chat.tokens_in}</td>
               <td>{chat.tokens_out}</td>
-              <td>${(chat.tokens_in * costPerInput + chat.tokens_out * costPerOutput).toPrecision(2)}</td>
+              <td>
+                $
+                {(chat.tokens_in * costPerInput +
+                  chat.tokens_out * costPerOutput
+                ).toPrecision(2)}
+              </td>
               <td>EVAL % NOT FOUND</td>
               <td>{chat.model}</td>
             </tr>
