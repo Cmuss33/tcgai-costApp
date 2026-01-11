@@ -114,10 +114,10 @@ function MessageView() {
                   <div className="message-content">{msg.content}</div>
                   <div className="timestamp">Tokens In: {msg.tokens_in}</div>
                   <div className="timestamp">
-                    {new Date(msg.timestamp).toLocaleString()}
+                    ${(msg.tokens_in * costPerInput).toPrecision(2)}
                   </div>
                   <div className="timestamp">
-                    ${(msg.tokens_in * costPerInput).toPrecision(2)}
+                    {new Date(msg.timestamp).toLocaleString()}
                   </div>
 
                   <button
@@ -132,17 +132,15 @@ function MessageView() {
                       <pre>
                         {msg.llm_formatted_message
                           .replace(/([{,]\s*)'([^']+?)'/g, '$1"$2"')
-                          .replace(/},\s*{/g, '},\n\n{')
-                        }
+                          .replace(/},\s*{/g, '},\n\n{')}
                       </pre>
                     </div>
                   )}
                 </div>
+
                 <div className="ai-message">
                   <div className="message-label">LLM:</div>
-                  <div className="message-content">
-                    {msg.returned_content}
-                  </div>
+                  <div className="message-content">{msg.returned_content}</div>
                   <div className="timestamp">Tokens Out: {msg.tokens_out}</div>
                   <div className="timestamp">
                     {new Date(msg.timestamp).toLocaleString()}
@@ -159,11 +157,13 @@ function MessageView() {
                   </button>
 
                   {expandedMessages[`${msg.id}-out`] && (
-                    <pre className="formatted-message">
-                      {msg.llm_formatted_returned_message
-                        .replace(/([{,]\s*)'([^']+?)'/g, '$1"$2"')
-                        .replace(/},\s*{/g, '},\n\n{')}
-                    </pre>
+                    <div className="formatted-message">
+                      <pre>
+                        {msg.llm_formatted_returned_message
+                          .replace(/([{,]\s*)'([^']+?)'/g, '$1"$2"')
+                          .replace(/},\s*{/g, '},\n\n{')}
+                      </pre>
+                    </div>
                   )}
                 </div>
               </div>
