@@ -41,7 +41,7 @@ function ChatSummaryView() {
                   {chat.chat_id}
                 </Link>
               </td>
-              <td>INTENT NOT FOUND</td>
+              <td>{chat.intent}</td>
               <td>{chat.tokens_in}</td>
               <td>{chat.tokens_out}</td>
               <td>
