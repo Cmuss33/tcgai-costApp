@@ -1,26 +1,60 @@
 .chat-summary-container {
-  padding: 16px;
+  padding: 24px;
+  border-radius: 8px;
+  max-width: 90%;
+  margin: 24px auto;
+  margin-top: 75px;
+  color: #fff;
+  font-family: system-ui, sans-serif;
 }
 
 .chat-summary-table {
   width: 100%;
   border-collapse: collapse;
-  margin-top: 50px;
   font-size: 14px;
+  background-color: #1e1e1e;
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
 }
 
 .chat-summary-table th,
 .chat-summary-table td {
-  padding: 10px;
-  border-bottom: 1px solid #444;
+  padding: 12px 10px;
   text-align: left;
 }
 
 .chat-summary-table th {
   color: #dadada;
-  font-weight: 1000;
+  font-weight: 600;
+  background-color: #2a2a2a;
 }
 
-.chat-summary-table tr:hover {
-  background-color: rgba(255, 255, 255, 0.05);
+.chat-summary-table tbody tr {
+  border-bottom: 1px solid #333;
+  transition: background-color 0.2s ease;
+}
+
+.chat-summary-table tbody tr:hover {
+  background-color: rgba(136, 132, 216, 0.2);
+}
+
+.chat-summary-table td {
+  color: #ccc;
+}
+
+.chat-link {
+  display: inline-block;
+  padding: 6px 12px;
+  background-color: #8b7cf6;
+  color: #d6d6d6;
+  border-radius: 6px;
+  font-weight: 500;
+  text-decoration: none;
+  transition: background-color 0.2s, transform 0.2s;
+}
+
+.chat-link:hover {
+  background-color: #a69ffb;
+  transform: scale(1.05);
 }

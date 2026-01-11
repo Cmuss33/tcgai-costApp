@@ -34,12 +34,10 @@ function ChatSummaryView() {
           </tr>
         </thead>
         <tbody>
-          {chats.map(chat => (
+          {chats.map((chat) => (
             <tr key={chat.chat_id}>
               <td>
-                <Link
-                  to={`/messages/${chat.chat_id}`}
-                >
+                <Link className="chat-link" to={`/messages/${chat.chat_id}`}>
                   {chat.chat_id}
                 </Link>
               </td>
@@ -48,7 +46,8 @@ function ChatSummaryView() {
               <td>{chat.tokens_out}</td>
               <td>
                 $
-                {(chat.tokens_in * costPerInput +
+                {(
+                  chat.tokens_in * costPerInput +
                   chat.tokens_out * costPerOutput
                 ).toPrecision(2)}
               </td>
