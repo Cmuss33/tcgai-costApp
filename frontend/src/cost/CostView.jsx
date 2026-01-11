@@ -35,8 +35,8 @@ function CostView() {
 
     const endpoint =
       viewMode === "cost"
-        ? `http://127.0.0.1:8000/api/cost/get_cost/?year=${viewedYear}&month=${viewedMonth + 1}`
-        : `http://127.0.0.1:8000/api/cost/get_tokens/?year=${viewedYear}&month=${viewedMonth + 1}`;
+        ? `https://tcgai-costapp.onrender.com/api/cost/get_cost/?year=${viewedYear}&month=${viewedMonth + 1}`
+        : `https://tcgai-costapp.onrender.com/api/cost/get_tokens/?year=${viewedYear}&month=${viewedMonth + 1}`;
 
     fetch(endpoint)
       .then((res) => res.json())

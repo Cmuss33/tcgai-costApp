@@ -8,7 +8,7 @@ function ChatSummaryView() {
   const costPerOutput = 5 / 1000000;
 
   useEffect(() => {
-      fetch("http://127.0.0.1:8000/api/cost/get_chat_ids/")
+      fetch("https://tcgai-costapp.onrender.com/api/cost/get_chat_ids/")
         .then((res) => res.json())
         .then((data) => {
           setChats(data);

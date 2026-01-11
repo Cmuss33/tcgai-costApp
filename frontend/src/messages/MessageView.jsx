@@ -24,7 +24,7 @@ function MessageView() {
 
   // Fetch full chat objects on mount
   useEffect(() => {
-    fetch("http://127.0.0.1:8000/api/cost/get_chat_ids/")
+    fetch("https://tcgai-costapp.onrender.com/api/cost/get_chat_ids/")
       .then((res) => res.json())
       .then((data) => {
         setChats(data);
@@ -44,7 +44,7 @@ function MessageView() {
 
     setLoadingMessages(true);
     setMessages([]); // clear previous messages while loading
-    fetch(`http://127.0.0.1:8000/api/cost/get_messages_by_chat_id/${selectedChatId}/`)
+    fetch(`https://tcgai-costapp.onrender.com/api/cost/get_messages_by_chat_id/${selectedChatId}/`)
       .then((res) => res.json())
       .then((data) => {
         const totalCost = data.reduce((sum, msg) => {
