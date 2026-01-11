@@ -1,4 +1,4 @@
-import { Link } from 'react-router-dom';
+import { NavLink } from 'react-router-dom';
 import './Header.css'
 
 function Header() {
@@ -6,9 +6,9 @@ function Header() {
     <>
       <div className="header-container">
         <div className="header-content">
-          <Link to="/cost" className="header-btn">View Costs</Link>
-          <Link to="/messages" className="header-btn">View Messages</Link>
-          <Link to="/chats" className="header-btn">Chat Summary</Link>
+          <NavLink to="/cost" className="header-btn">View Costs</NavLink>
+          <NavLink to="/messages" className="header-btn">View Messages</NavLink>
+          <NavLink to="/chats" className="header-btn">Chat Summary</NavLink>
         </div>
       </div>
     </>
