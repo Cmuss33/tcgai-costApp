@@ -48,7 +48,29 @@ def log_message(request):
 
         chat.tokens_in += tokens_in
         chat.tokens_out += tokens_out
-        chat.save(update_fields=['tokens_in', 'tokens_out'])
+
+        # Only update intent if it is currently "NOT FOUND"
+        if chat.intent == "NOT FOUND" and llm_formatted_message:
+            try:
+                parsed_msg = llm_formatted_message
+
+                messages = parsed_msg.get("messages", [])
+                for msg in messages:
+                    if msg.get("role") == "assistant":
+                        content_list = msg.get("content", [])
+                        for content_item in content_list:
+                            if content_item.get("type") == "tool_use":
+                                context = content_item.get("input", {}).get("context")
+                                if context:
+                                    chat.intent = context
+                                    break  # stop after first found context
+                        if chat.intent != "NOT FOUND":
+                            break  # stop outer loop if intent was set
+            except Exception as e:
+                print("Error parsing llm_formatted_message for intent:", e)
+
+
+        chat.save(update_fields=['tokens_in', 'tokens_out', 'intent'])
         
         return JsonResponse({'status': 'success'})
     except Exception as e:

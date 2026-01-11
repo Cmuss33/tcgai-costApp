@@ -14,6 +14,7 @@ class Chat(models.Model):
     model = models.TextField()
     tokens_in = models.IntegerField(default=0)
     tokens_out = models.IntegerField(default=0)
+    intent = models.TextField(default='NOT FOUND')
 
     def __str__(self):
         return self.chat_id
