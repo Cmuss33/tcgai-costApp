@@ -25,11 +25,12 @@ function ChatSummaryView() {
         <thead>
           <tr>
             <th>Chat ID</th>
+            <th>Date</th>
             <th>Intent</th>
+            <th>Eval %</th>
             <th>Tokens In</th>
             <th>Tokens Out</th>
             <th>Est. Cost ($)</th>
-            <th>Eval %</th>
             <th>Model</th>
           </tr>
         </thead>
@@ -41,6 +42,8 @@ function ChatSummaryView() {
                   {chat.chat_id}
                 </Link>
               </td>
+              <td>{new Date(chat.timestamp).toLocaleString()}</td>
+              <td>EVAL % NOT FOUND</td>
               <td>{chat.intent}</td>
               <td>{chat.tokens_in}</td>
               <td>{chat.tokens_out}</td>
@@ -51,7 +54,6 @@ function ChatSummaryView() {
                   chat.tokens_out * costPerOutput
                 ).toPrecision(2)}
               </td>
-              <td>EVAL % NOT FOUND</td>
               <td>{chat.model}</td>
             </tr>
           ))}
