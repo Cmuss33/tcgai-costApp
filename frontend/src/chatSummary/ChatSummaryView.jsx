@@ -1,15 +1,28 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import "./ChatSummaryView.css";
+import { useNavigate } from 'react-router-dom';
 
 function ChatSummaryView() {
   const [chats, setChats] = useState([]);
+
+  const navigate = useNavigate();
 
   const costPerInput = 1 / 1000000;
   const costPerOutput = 5 / 1000000;
 
   useEffect(() => {
-    fetch("https://tcgai-costapp.onrender.com/api/cost/get_chat_ids/")
+    fetch("http://localhost:8000/api/cost/auth-check/", {
+      credentials: "include",
+      })
+        .then(res => res.json())
+        .then(data => {
+          if (!data.authenticated) {
+            navigate("/");
+          }
+    });
+
+    fetch("http://127.0.0.1:8000/api/cost/get_chat_ids/")
       .then((res) => res.json())
       .then((data) => {
         setChats(data);

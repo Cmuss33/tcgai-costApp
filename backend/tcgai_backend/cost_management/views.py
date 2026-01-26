@@ -4,6 +4,7 @@ from .models import Chat, Message
 from django.views.decorators.http import require_http_methods
 from django.views.decorators.csrf import csrf_exempt
 import json
+from django.contrib.auth import authenticate, login
 
 llmprovider = AnthropicAdapter()
 
@@ -107,3 +108,25 @@ def get_messages_by_chat_id(request, chat_id):
         return JsonResponse({'status': 'error', 'message': 'Chat not found'}, status=404)
     except Exception as e:
         return JsonResponse({'status': 'error', 'message': str(e)}, status=400)
+
+@csrf_exempt
+def login_view(request):
+    if request.method != "POST":
+        return JsonResponse({"error": "POST required"}, status=400)
+
+    data = json.loads(request.body)
+    username = data.get("username")
+    password = data.get("password")
+
+    user = authenticate(request, username=username, password=password)
+
+    if user is not None:
+        login(request, user)
+        return JsonResponse({"success": True})
+
+    return JsonResponse({"success": False}, status=401)
+
+def auth_check(request):
+    return JsonResponse({
+        "authenticated": request.user.is_authenticated
+    })

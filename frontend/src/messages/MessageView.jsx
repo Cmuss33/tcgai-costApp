@@ -26,12 +26,22 @@ function MessageView() {
   };
 
   useEffect(() => {
+    fetch("http://localhost:8000/api/cost/auth-check/", {
+      credentials: "include",
+      })
+        .then(res => res.json())
+        .then(data => {
+          if (!data.authenticated) {
+            navigate("/");
+          }
+    });
+
     if (chatId) setSelectedChatId(chatId);
   }, [chatId]);
 
   // Fetch chats
   useEffect(() => {
-    fetch("https://tcgai-costapp.onrender.com/api/cost/get_chat_ids/")
+    fetch("http://127.0.0.1:8000/api/cost/get_chat_ids/")
       .then((res) => res.json())
       .then((data) => {
         setChats(data);
@@ -53,7 +63,7 @@ function MessageView() {
     setExpandedMessages({});
 
     fetch(
-      `https://tcgai-costapp.onrender.com/api/cost/get_messages_by_chat_id/${selectedChatId}/`
+      `http://127.0.0.1:8000/api/cost/get_messages_by_chat_id/${selectedChatId}/`
     )
       .then((res) => res.json())
       .then((data) => {
