@@ -9,7 +9,7 @@ function Login() {
   const navigate = useNavigate();
 
   useEffect(() => {
-    fetch("http://localhost:8000/api/cost/auth-check/", {
+    fetch("https://tcgai-costapp.onrender.com/api/cost/auth-check/", {
       credentials: "include",
       })
         .then(res => res.json())
@@ -21,7 +21,7 @@ function Login() {
   });
 
   const loginClicked = async () => {
-    const response = await fetch("http://localhost:8000/api/cost/login/", {
+    const response = await fetch("https://tcgai-costapp.onrender.com/api/cost/login/", {
       method: "POST",
       credentials: "include",
       headers: {
