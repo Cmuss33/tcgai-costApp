@@ -22,11 +22,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = 'django-insecure-9htr%0mjaiefv0*q!$(is&9cn!b(c89iti-gw1c(u%)io2tr*$'
 
-# SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
-
-ALLOWED_HOSTS = ['127.0.0.1', '127.0.0.1:8000', '*'] # Allow all for now
-
+ALLOWED_HOSTS = ['127.0.0.1', '127.0.0.1:8000', 'localhost', 'tcgai-costapp-1.onrender.com'] # Allow all for now
 
 # Application definition
 
@@ -129,14 +125,25 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173",  # your React app
+    "https://localhost:5173",
+    "https://tcgai-costapp-1.onrender.com"
 ]
 
 # Session cookies
 SESSION_COOKIE_SAMESITE = "Lax"
-SESSION_COOKIE_SECURE = False       # must be False for localhost
+SESSION_COOKIE_SECURE = True
 SESSION_EXPIRE_AT_BROWSER_CLOSE = False  # keep cookies after browser close
 
 CSRF_COOKIE_SAMESITE = "Lax"
-CSRF_COOKIE_SECURE = False
+CSRF_COOKIE_SECURE = True
+
+SESSION_COOKIE_HTTPONLY = True
+CSRF_COOKIE_HTTPONLY = False
+
+CSRF_TRUSTED_ORIGINS = [
+    "https://localhost",
+    "https://127.0.0.1",
+    "https://tcgai-costapp-1.onrender.com"
+]
 
 

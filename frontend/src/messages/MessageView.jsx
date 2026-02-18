@@ -26,15 +26,15 @@ function MessageView() {
   };
 
   useEffect(() => {
-    fetch("http://localhost:8000/api/cost/auth-check/", {
-      credentials: "include",
-      })
-        .then(res => res.json())
-        .then(data => {
-          if (!data.authenticated) {
-            navigate("/");
-          }
-    });
+    // fetch("http://127.0.0.1:8000/api/cost/auth-check/", {
+    //   credentials: "include",
+    //   })
+    //     .then(res => res.json())
+    //     .then(data => {
+    //       if (!data.authenticated) {
+    //         navigate("/");
+    //       }
+    // });
 
     if (chatId) setSelectedChatId(chatId);
   }, [chatId]);

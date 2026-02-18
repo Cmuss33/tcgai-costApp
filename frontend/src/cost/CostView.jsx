@@ -34,7 +34,7 @@ function CostView() {
 
   useEffect(() => {
 
-    fetch("http://localhost:8000/api/cost/auth-check/", {
+    fetch("http://127.0.0.1:8000/api/cost/auth-check/", {
       credentials: "include",
       })
         .then(res => res.json())

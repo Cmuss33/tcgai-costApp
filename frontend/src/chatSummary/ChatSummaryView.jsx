@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import "./ChatSummaryView.css";
-import { useNavigate } from 'react-router-dom';
 
 function ChatSummaryView() {
   const [chats, setChats] = useState([]);
+  const [loadingEval, setLoadingEval] = useState({});
+  const [accuracy, setAccuracy] = useState({});
 
   const navigate = useNavigate();
 
@@ -12,25 +13,50 @@ function ChatSummaryView() {
   const costPerOutput = 5 / 1000000;
 
   useEffect(() => {
-    fetch("http://localhost:8000/api/cost/auth-check/", {
-      credentials: "include",
-      })
-        .then(res => res.json())
-        .then(data => {
-          if (!data.authenticated) {
-            navigate("/");
-          }
-    });
-
     fetch("http://127.0.0.1:8000/api/cost/get_chat_ids/")
-      .then((res) => res.json())
-      .then((data) => {
+      .then(res => res.json())
+      .then(data => {
         setChats(data);
+
+        // Initialize accuracy state for already-evaluated chats
+        const initialAccuracy = {};
+        data.forEach(chat => {
+          if (chat.evaluation_score !== null && chat.evaluation_score !== undefined) {
+            initialAccuracy[chat.chat_id] = chat.evaluation_score;
+          }
+        });
+        setAccuracy(initialAccuracy);
       })
-      .catch((err) => {
-        console.error("Error fetching chats:", err);
+      .catch(err => console.error("Error fetching chats:", err));
+  }, [navigate]);
+
+  const evaluateAccuracy = async (chatId) => {
+    setLoadingEval(prev => ({ ...prev, [chatId]: true }));
+
+    try {
+      const res = await fetch(`http://127.0.0.1:8000/api/cost/evaluate_chat/`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ chat_id: chatId }),
+        credentials: "include",
       });
-  }, []);
+
+      if (!res.ok) throw new Error(`Server returned ${res.status}`);
+
+      const data = await res.json();
+
+      setAccuracy(prev => ({
+        ...prev,
+        [chatId]: data.eval_percentage,
+      }));
+    } catch (err) {
+      console.error("Accuracy evaluation failed:", err);
+    } finally {
+      setLoadingEval(prev => ({ ...prev, [chatId]: false }));
+    }
+  };
 
   return (
     <div className="chat-summary-container">
@@ -48,7 +74,7 @@ function ChatSummaryView() {
           </tr>
         </thead>
         <tbody>
-          {chats.map((chat) => (
+          {chats.map(chat => (
             <tr key={chat.chat_id}>
               <td>
                 <Link className="chat-link" to={`/messages/${chat.chat_id}`}>
@@ -56,8 +82,26 @@ function ChatSummaryView() {
                 </Link>
               </td>
               <td>{new Date(chat.timestamp).toLocaleString()}</td>
-              <td>EVAL % NOT FOUND</td>
               <td>{chat.intent}</td>
+              <td>
+                {accuracy[chat.chat_id] !== undefined ? (
+                  <span className="accuracy-result">
+                    {accuracy[chat.chat_id]}%
+                  </span>
+                ) : (
+                  <button
+                    className="eval-button"
+                    onClick={() => evaluateAccuracy(chat.chat_id)}
+                    disabled={loadingEval[chat.chat_id]}
+                  >
+                    {loadingEval[chat.chat_id] ? (
+                      <span className="spinner" />
+                    ) : (
+                      "Evaluate Accuracy"
+                    )}
+                  </button>
+                )}
+              </td>
               <td>{chat.tokens_in}</td>
               <td>{chat.tokens_out}</td>
               <td>

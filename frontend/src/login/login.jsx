@@ -9,7 +9,7 @@ function Login() {
   const navigate = useNavigate();
 
   useEffect(() => {
-    fetch("http://localhost:8000/api/cost/auth-check/", {
+    fetch("http://127.0.0.1:8000/api/cost/auth-check/", {
       credentials: "include",
       })
         .then(res => res.json())
@@ -21,7 +21,7 @@ function Login() {
   });
 
   const loginClicked = async () => {
-    const response = await fetch("http://localhost:8000/api/cost/login/", {
+    const response = await fetch("http://127.0.0.1:8000/api/cost/login/", {
       method: "POST",
       credentials: "include",
       headers: {

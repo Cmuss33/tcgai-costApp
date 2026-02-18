@@ -10,4 +10,6 @@ urlpatterns = [
     path('get_messages_by_chat_id/<str:chat_id>/', views.get_messages_by_chat_id, name='get_messages_by_chat_id'),
     path("login/", views.login_view, name="login"),
     path("auth-check/", views.auth_check, name="auth_check"),
+    path('evaluate_chat/', views.evaluate_chat, name="evaluate_chat"),
+
 ]
