@@ -14,7 +14,7 @@ DEBUG = True
 
 SECRET_KEY = 'django-insecure-9htr%0mjaiefv0*q!$(is&9cn!b(c89iti-gw1c(u%)io2tr*$'
 
-ALLOWED_HOSTS = ['127.0.0.1', 'localhost']
+ALLOWED_HOSTS = ['127.0.0.1', 'localhost', 'tcgai-costapp-24lh.onrender.com']
 
 # Application definition
 INSTALLED_APPS = [
