@@ -3,13 +3,14 @@ import './login.css'
 import { useNavigate } from 'react-router-dom';
 
 function Login() {
+  const API_URL = import.meta.env.VITE_API_URL;
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
 
   const navigate = useNavigate();
 
   useEffect(() => {
-    fetch("http://127.0.0.1:8000/api/cost/auth-check/", {
+    fetch(`${API_URL}/api/cost/auth-check/`, {
       credentials: "include",
       })
         .then(res => res.json())
@@ -21,7 +22,7 @@ function Login() {
   });
 
   const loginClicked = async () => {
-    const response = await fetch("http://127.0.0.1:8000/api/cost/login/", {
+    const response = await fetch(`${API_URL}/api/cost/login/`, {
       method: "POST",
       credentials: "include",
       headers: {

@@ -3,6 +3,7 @@ import { useParams, useNavigate } from "react-router-dom";
 import "./MessageView.css";
 
 function MessageView() {
+  const API_URL = import.meta.env.VITE_API_URL;
   const { chatId } = useParams();
   const navigate = useNavigate();
 
@@ -26,22 +27,22 @@ function MessageView() {
   };
 
   useEffect(() => {
-    // fetch("http://127.0.0.1:8000/api/cost/auth-check/", {
-    //   credentials: "include",
-    //   })
-    //     .then(res => res.json())
-    //     .then(data => {
-    //       if (!data.authenticated) {
-    //         navigate("/");
-    //       }
-    // });
+    fetch(`${API_URL}/api/cost/auth-check/`, {
+      credentials: "include",
+      })
+        .then(res => res.json())
+        .then(data => {
+          if (!data.authenticated) {
+            navigate("/");
+          }
+    });
 
     if (chatId) setSelectedChatId(chatId);
   }, [chatId]);
 
   // Fetch chats
   useEffect(() => {
-    fetch("http://127.0.0.1:8000/api/cost/get_chat_ids/")
+    fetch(`${API_URL}/api/cost/get_chat_ids/`)
       .then((res) => res.json())
       .then((data) => {
         setChats(data);
@@ -63,7 +64,7 @@ function MessageView() {
     setExpandedMessages({});
 
     fetch(
-      `http://127.0.0.1:8000/api/cost/get_messages_by_chat_id/${selectedChatId}/`
+      `${API_URL}/api/cost/get_messages_by_chat_id/${selectedChatId}/`
     )
       .then((res) => res.json())
       .then((data) => {

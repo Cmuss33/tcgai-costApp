@@ -3,6 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import "./ChatSummaryView.css";
 
 function ChatSummaryView() {
+  const API_URL = import.meta.env.VITE_API_URL;
   const [chats, setChats] = useState([]);
   const [loadingEval, setLoadingEval] = useState({});
   const [accuracy, setAccuracy] = useState({});
@@ -13,7 +14,7 @@ function ChatSummaryView() {
   const costPerOutput = 5 / 1000000;
 
   useEffect(() => {
-    fetch("http://127.0.0.1:8000/api/cost/get_chat_ids/")
+    fetch(`${API_URL}/api/cost/get_chat_ids/`)
       .then(res => res.json())
       .then(data => {
         setChats(data);
@@ -34,7 +35,7 @@ function ChatSummaryView() {
     setLoadingEval(prev => ({ ...prev, [chatId]: true }));
 
     try {
-      const res = await fetch(`http://127.0.0.1:8000/api/cost/evaluate_chat/`, {
+      const res = await fetch(`${API_URL}/api/cost/evaluate_chat/`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
