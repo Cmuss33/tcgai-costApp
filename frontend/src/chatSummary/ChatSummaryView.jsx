@@ -14,6 +14,18 @@ function ChatSummaryView() {
   const costPerOutput = 5 / 1000000;
 
   useEffect(() => {
+    fetch(`${API_URL}/api/cost/auth-check/`, {
+      credentials: "include",
+      })
+        .then(res => res.json())
+        .then(data => {
+          console.log(data);
+          if (!data.authenticated) {
+            console.log("not authenticated");
+            navigate("/");
+          }
+    });
+
     fetch(`${API_URL}/api/cost/get_chat_ids/`)
       .then(res => res.json())
       .then(data => {
