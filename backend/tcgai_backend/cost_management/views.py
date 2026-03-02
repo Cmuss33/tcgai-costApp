@@ -4,8 +4,52 @@ from .models import Chat, Message
 from django.views.decorators.http import require_http_methods
 from django.views.decorators.csrf import csrf_exempt
 import json
+from django.contrib.auth import authenticate, login
+import anthropic
+import os
 
 llmprovider = AnthropicAdapter()
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def evaluate_chat(request):
+    data = json.loads(request.body)
+    chat_id = data.get('chat_id')
+
+    try:
+        chat = Chat.objects.get(chat_id=chat_id)
+    except Chat.DoesNotExist:
+        return JsonResponse({"error": "Chat not found"}, status=404)
+
+    messages = Message.objects.filter(chat=chat).order_by("timestamp")
+    if not messages.exists():
+        return JsonResponse({"error": "No messages found for this chat"}, status=400)
+    
+    conversation_text = ""
+    for msg in messages:
+        conversation_text += f"\nUser: {msg.content}\nAssistant: {msg.returned_content}\n"
+
+    
+    prompt = f"""
+    Evaluate the accuracy of the following conversation on a percentage of 1 to 100, based on if the answers were releated to the questions being asked.
+
+    Respond with ONLY the number.
+
+    Conversation:
+    {conversation_text}
+    """
+    message = anthropic.Anthropic(api_key=os.environ.get('ANTHROPIC_API_KEY')).messages.create(
+        model="claude-opus-4-6",
+        max_tokens=1024,
+        messages=[{"role": "user", "content": prompt}],
+        )
+    
+    eval_percentage = message.content[0].text
+
+    chat.evaluation_score = eval_percentage
+    chat.save(update_fields=['evaluation_score'])
+
+    return JsonResponse({"eval_percentage": eval_percentage})
 
 def get_cost(request):
     year = request.GET.get("year")
@@ -107,3 +151,25 @@ def get_messages_by_chat_id(request, chat_id):
         return JsonResponse({'status': 'error', 'message': 'Chat not found'}, status=404)
     except Exception as e:
         return JsonResponse({'status': 'error', 'message': str(e)}, status=400)
+
+@csrf_exempt
+def login_view(request):
+    if request.method != "POST":
+        return JsonResponse({"error": "POST required"}, status=400)
+
+    data = json.loads(request.body)
+    username = data.get("username")
+    password = data.get("password")
+
+    user = authenticate(request, username=username, password=password)
+
+    if user is not None:
+        login(request, user)
+        return JsonResponse({"success": True})
+
+    return JsonResponse({"success": False}, status=401)
+
+def auth_check(request):
+    return JsonResponse({
+        "authenticated": request.user.is_authenticated
+    })

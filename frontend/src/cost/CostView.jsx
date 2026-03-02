@@ -10,12 +10,16 @@ import {
   ResponsiveContainer
 } from "recharts";
 import CostModal from "./costModal/CostModal";
+import { useNavigate } from 'react-router-dom';
 
 function CostView() {
+  const API_URL = import.meta.env.VITE_API_URL;
   const [data, setData] = useState(null);
   const [monthOffset, setMonthOffset] = useState(0); // 0 = current month
   const [loading, setLoading] = useState(false);
   const [viewMode, setViewMode] = useState("cost"); // "cost" or "tokens"
+  
+  const navigate = useNavigate();
 
   const today = new Date();
 
@@ -30,13 +34,24 @@ function CostView() {
   const viewedYear = viewedDate.getFullYear();
 
   useEffect(() => {
+    fetch(`${API_URL}/api/cost/auth-check/`, {
+      credentials: "include",
+      })
+        .then(res => res.json())
+        .then(data => {
+          console.log(data);
+          if (!data.authenticated) {
+            console.log("not authenticated");
+            navigate("/");
+          }
+    });
     setLoading(true);
     setData(null);
 
     const endpoint =
       viewMode === "cost"
-        ? `https://tcgai-costapp.onrender.com/api/cost/get_cost/?year=${viewedYear}&month=${viewedMonth + 1}`
-        : `https://tcgai-costapp.onrender.com/api/cost/get_tokens/?year=${viewedYear}&month=${viewedMonth + 1}`;
+        ? `${API_URL}/api/cost/get_cost/?year=${viewedYear}&month=${viewedMonth + 1}`
+        : `${API_URL}/api/cost/get_tokens/?year=${viewedYear}&month=${viewedMonth + 1}`;
 
     fetch(endpoint)
       .then((res) => res.json())

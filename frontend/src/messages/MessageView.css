@@ -57,6 +57,7 @@
   padding-right: 16px;
   padding-bottom: 10px;
   overflow-y: auto;
+  max-height: 875px;
   background-color: #181818;
   border-radius: 8px;
 }

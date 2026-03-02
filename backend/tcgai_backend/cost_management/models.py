@@ -15,6 +15,8 @@ class Chat(models.Model):
     tokens_in = models.IntegerField(default=0)
     tokens_out = models.IntegerField(default=0)
     intent = models.TextField(default='NOT FOUND')
+    timestamp = models.DateTimeField(auto_now_add=True)
+    evaluation_score = models.IntegerField(null=True, blank=True)
 
     def __str__(self):
         return self.chat_id
