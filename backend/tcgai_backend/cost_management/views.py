@@ -31,9 +31,10 @@ def evaluate_chat(request):
 
     
     prompt = f"""
-    Evaluate the accuracy of the following conversation on a percentage of 1 to 100, based on if the answers were releated to the questions being asked.
-
-    Respond with ONLY the number.
+    Evaluate the following conversation and assign a numeric accuracy score (1-100) for the assistant's responses. Respond with only the number.
+    If the assistant's answer is related to the question, regardless of if it is positive or negative (for example, not having required item in stock or not being able to return an item) give 100. 
+    If it is not related, or the assistant doesn't know the answer, give a lower number. 
+    Do NOT include any text or explanation.
 
     Conversation:
     {conversation_text}

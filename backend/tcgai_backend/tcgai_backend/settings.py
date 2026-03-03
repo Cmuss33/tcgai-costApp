@@ -93,17 +93,24 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173",
+    "https://localhost:5173",
     "http://127.0.0.1:5173",
+    "https://127.0.0.1:5173",
     "http://127.0.0.1:8000",
     "https://tcgai-costapp-1-0k1s.onrender.com",
+    "https://shopchatagent.com"
 ]
 
 CSRF_TRUSTED_ORIGINS = [
     "http://localhost",
+    "https://localhost",
     "http://127.0.0.1",
+    "https://127.0.0.1",
     "http://127.0.0.1:8000",
+    "https://127.0.0.1:5173",
     "http://localhost:5173",
     "https://tcgai-costapp-1-0k1s.onrender.com",
+    "https://shopchatagent.com"
 ]
 
 # Session & CSRF cookies for local HTTP
