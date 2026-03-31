@@ -7,6 +7,10 @@ import json
 from django.contrib.auth import authenticate, login
 import anthropic
 import os
+from django.db.models import Avg, Count
+from django.db.models.functions import TruncDate
+from django.utils.timezone import now
+from datetime import timedelta
 
 llmprovider = AnthropicAdapter()
 
@@ -174,3 +178,56 @@ def auth_check(request):
     return JsonResponse({
         "authenticated": request.user.is_authenticated
     })
+
+def get_avg_eval_score(request):
+    try:
+        avg_score = round(Chat.objects.aggregate(avg_eval=Avg('evaluation_score'))["avg_eval"], 2)
+
+        return JsonResponse({"average_eval_score": avg_score})
+    except Exception as e:
+        return JsonResponse(
+            {'status': 'error', 'message': str(e)}, status=400)
+    
+def get_avg_tokens_in(request):
+    try:
+        avg_tokens_in = round(Chat.objects.aggregate(avg_in=Avg('tokens_in'))["avg_in"], 2)
+
+        return JsonResponse({"average_tokens_in": avg_tokens_in})
+    except Exception as e:
+        return JsonResponse({'status': 'error', 'message': str(e)}, status=400)
+    
+def get_avg_tokens_out(request):
+    try:
+        avg_tokens_out = round(Chat.objects.aggregate(avg_out=Avg('tokens_out'))["avg_out"], 2)
+
+        return JsonResponse({"average_tokens_out": avg_tokens_out})
+    except Exception as e:
+        return JsonResponse({'status': 'error', 'message': str(e)}, status=400)
+
+def get_avg_conversations_per_day_last_30_days(request):
+    try:
+        last_30_days = now() - timedelta(days=30)
+
+        daily_counts = (
+            Chat.objects
+            .filter(timestamp__gte=last_30_days)
+            .annotate(day=TruncDate('timestamp'))
+            .values('day')
+            .annotate(count=Count('chat_id'))
+        )
+
+        avg_per_day = daily_counts.aggregate(
+            avg_daily=Avg('count')
+        )["avg_daily"]
+
+        avg_per_day = round(avg_per_day/30, 2)
+
+        return JsonResponse({
+            "average_conversations_per_day_last_30_days": avg_per_day
+        })
+
+    except Exception as e:
+        return JsonResponse(
+            {'status': 'error', 'message': str(e)},
+            status=400
+        )

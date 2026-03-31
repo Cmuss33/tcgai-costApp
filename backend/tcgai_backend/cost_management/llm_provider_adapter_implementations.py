@@ -35,12 +35,21 @@ class AnthropicAdapter(LLMAdapter):
         if response.status_code == 200:
             cost_data = response.json()
             daily_costs = []
+            num_days = 0
+            monthly_cost = 0
             for day_data in cost_data['data']:
                 day = day_data['starting_at'][:10]  # Extract the date
                 total_cost = round(sum(float(result['amount']) for result in day_data['results']) / 100, 2) # TODO: Possibly convert to CAD (currently USD)
                 daily_costs.append({'day': day, 'total_cost': total_cost})
+                num_days += 1
+                monthly_cost += total_cost
+        
+            if num_days > 0:
+                monthly_average_cost = round(monthly_cost / num_days, 2)
+            else:
+                monthly_average_cost = 0
 
-            return {"costs": daily_costs}
+            return {"costs": daily_costs, "monthly_average_cost": monthly_average_cost}
         else:
             return {"error": response.text}
         
