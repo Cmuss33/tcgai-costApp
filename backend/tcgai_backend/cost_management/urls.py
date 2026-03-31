@@ -14,5 +14,5 @@ urlpatterns = [
     path('get_avg_eval_score/', views.get_avg_eval_score, name="get_avg_eval_score"),
     path('get_avg_tokens_in/', views.get_avg_tokens_in, name="get_avg_tokens_in"),
     path('get_avg_tokens_out/', views.get_avg_tokens_out, name="get_avg_tokens_out"),
-    path('get_avg_conversations_per_day_last_30_days/', views.get_avg_conversations_per_day_last_30_days, name="get_avg_conversations_per_day_last_30_days"),
+    path('get_avg_conversations_per_day/', views.get_avg_conversations_per_day, name="get_avg_conversations_per_day"),
 ]

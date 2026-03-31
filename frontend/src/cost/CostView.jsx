@@ -28,6 +28,7 @@ function CostView() {
     avg_conversations_per_day: null
   });
   const [loadingAnalytics, setLoadingAnalytics] = useState(false);
+  const [analyticsPeriod, setAnalyticsPeriod] = useState("30_days"); // "daily", "7_days", "30_days"
 
   const navigate = useNavigate();
   const today = new Date();
@@ -75,7 +76,7 @@ function CostView() {
       });
   }, [monthOffset, viewedMonth, viewedYear, viewMode]);
 
-  // Fetch analytics from all 4 endpoints
+  // Fetch analytics for selected period
   useEffect(() => {
     const fetchAnalytics = async () => {
       setLoadingAnalytics(true);
@@ -86,10 +87,10 @@ function CostView() {
           avgOutRes,
           avgConvRes
         ] = await Promise.all([
-          fetch(`${API_URL}/api/cost/get_avg_eval_score/`, { credentials: "include" }),
-          fetch(`${API_URL}/api/cost/get_avg_tokens_in/`, { credentials: "include" }),
-          fetch(`${API_URL}/api/cost/get_avg_tokens_out/`, { credentials: "include" }),
-          fetch(`${API_URL}/api/cost/get_avg_conversations_per_day_last_30_days/`, { credentials: "include" })
+          fetch(`${API_URL}/api/cost/get_avg_eval_score/?period=${analyticsPeriod}`, { credentials: "include" }),
+          fetch(`${API_URL}/api/cost/get_avg_tokens_in/?period=${analyticsPeriod}`, { credentials: "include" }),
+          fetch(`${API_URL}/api/cost/get_avg_tokens_out/?period=${analyticsPeriod}`, { credentials: "include" }),
+          fetch(`${API_URL}/api/cost/get_avg_conversations_per_day/?period=${analyticsPeriod}`, { credentials: "include" })
         ]);
 
         const [avgEvalData, avgInData, avgOutData, avgConvData] = await Promise.all([
@@ -103,7 +104,7 @@ function CostView() {
           avg_eval_score: avgEvalData.average_eval_score,
           avg_tokens_in: avgInData.average_tokens_in,
           avg_tokens_out: avgOutData.average_tokens_out,
-          avg_conversations_per_day: avgConvData.average_conversations_per_day_last_30_days
+          avg_conversations_per_day: avgConvData.average_conversations_per_day
         });
       } catch (err) {
         console.error("Error fetching analytics:", err);
@@ -113,7 +114,7 @@ function CostView() {
     };
 
     fetchAnalytics();
-  }, []);
+  }, [analyticsPeriod, API_URL]);
 
   let chartData = [];
   if (data) {
@@ -185,7 +186,15 @@ function CostView() {
 
       {/* Analytics Section */}
       <div className="analytics-section">
-        <h2 className="analytics-header">Analytics (Last 30 days)</h2>
+        <h2 className="analytics-header">Analytics</h2>
+
+        {/* Period selector */}
+        <div className="analytics-period-selector">
+          <button className={analyticsPeriod === "30_days" ? "active" : ""} onClick={() => setAnalyticsPeriod("30_days")}>Last 30 Days</button>
+          <button className={analyticsPeriod === "7_days" ? "active" : ""} onClick={() => setAnalyticsPeriod("7_days")}>Last 7 Days</button>
+          <button className={analyticsPeriod === "daily" ? "active" : ""} onClick={() => setAnalyticsPeriod("daily")}>Today</button>
+        </div>
+
         {loadingAnalytics ? (
           <div className="loading-container">
             <div className="spinner"></div>

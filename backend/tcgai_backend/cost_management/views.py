@@ -179,86 +179,97 @@ def auth_check(request):
         "authenticated": request.user.is_authenticated
     })
 
+def get_period_start(period: str):
+    """Return datetime for start of period based on 'daily', '7days', '30days'."""
+    today = now()
+    if period == "daily":
+        return 1
+    elif period == "7_days":
+        return 7
+    else:  # default 30 days
+        return 30
+
 def get_avg_eval_score(request):
     try:
-        last_30_days = now() - timedelta(days=30)
+        period = request.GET.get("period", "30_days")
+        num_days = get_period_start(period)
+        start_date = now() - timedelta(days=num_days)
 
         daily_counts = (
             Chat.objects
-            .filter(timestamp__gte=last_30_days)
+            .filter(timestamp__gte=start_date)
             .annotate(day=TruncDate('timestamp'))
             .values('day')
             .annotate(avg_day_score=Avg('evaluation_score'))
         )
 
-        avg_score = round(daily_counts.aggregate(avg_eval=Avg('avg_day_score'))["avg_eval"], 2)
+        avg_score = daily_counts.aggregate(avg_eval=Avg('avg_day_score'))["avg_eval"]
+        avg_score = round(avg_score, 2) if avg_score else 'N/A'
 
         return JsonResponse({"average_eval_score": avg_score})
     except Exception as e:
-        return JsonResponse(
-            {'status': 'error', 'message': str(e)}, status=400)
-    
+        return JsonResponse({'status': 'error', 'message': str(e)}, status=400)
+
 def get_avg_tokens_in(request):
     try:
-        last_30_days = now() - timedelta(days=30)
+        period = request.GET.get("period", "30_days")
+        num_days = get_period_start(period)
+        start_date = now() - timedelta(days=num_days)
 
         daily_counts = (
             Chat.objects
-            .filter(timestamp__gte=last_30_days)
+            .filter(timestamp__gte=start_date)
             .annotate(day=TruncDate('timestamp'))
             .values('day')
             .annotate(tok_in=Avg('tokens_in'))
         )
 
-        avg_tokens_in = round(daily_counts.aggregate(avg_in=Avg('tok_in'))["avg_in"], 2)
+        avg_tokens_in = daily_counts.aggregate(avg_in=Avg('tok_in'))["avg_in"]
+        avg_tokens_in = round(avg_tokens_in, 2) if avg_tokens_in else 0
 
         return JsonResponse({"average_tokens_in": avg_tokens_in})
     except Exception as e:
         return JsonResponse({'status': 'error', 'message': str(e)}, status=400)
-    
+
 def get_avg_tokens_out(request):
     try:
-
-        last_30_days = now() - timedelta(days=30)
+        period = request.GET.get("period", "30_days")
+        num_days = get_period_start(period)
+        start_date = now() - timedelta(days=num_days)
 
         daily_counts = (
             Chat.objects
-            .filter(timestamp__gte=last_30_days)
+            .filter(timestamp__gte=start_date)
             .annotate(day=TruncDate('timestamp'))
             .values('day')
             .annotate(tok_out=Avg('tokens_out'))
         )
 
-        avg_tokens_out = round(daily_counts.aggregate(avg_out=Avg('tok_out'))["avg_out"], 2)
+        avg_tokens_out = daily_counts.aggregate(avg_out=Avg('tok_out'))["avg_out"]
+        avg_tokens_out = round(avg_tokens_out, 2) if avg_tokens_out else 0
 
         return JsonResponse({"average_tokens_out": avg_tokens_out})
     except Exception as e:
         return JsonResponse({'status': 'error', 'message': str(e)}, status=400)
 
-def get_avg_conversations_per_day_last_30_days(request):
+def get_avg_conversations_per_day(request):
     try:
-        last_30_days = now() - timedelta(days=30)
+        period = request.GET.get("period", "30_days")
+        num_days = get_period_start(period)
+        start_date = now() - timedelta(days=num_days)
 
         daily_counts = (
             Chat.objects
-            .filter(timestamp__gte=last_30_days)
+            .filter(timestamp__gte=start_date)
             .annotate(day=TruncDate('timestamp'))
             .values('day')
             .annotate(count=Count('chat_id'))
         )
 
-        avg_per_day = daily_counts.aggregate(
-            avg_daily=Avg('count')
-        )["avg_daily"]
+        avg_per_day = daily_counts.aggregate(avg_daily=Avg('count'))["avg_daily"]
+        
+        avg_per_day = round(avg_per_day / num_days, 2)
 
-        avg_per_day = round(avg_per_day/30, 2)
-
-        return JsonResponse({
-            "average_conversations_per_day_last_30_days": avg_per_day
-        })
-
+        return JsonResponse({"average_conversations_per_day": avg_per_day})
     except Exception as e:
-        return JsonResponse(
-            {'status': 'error', 'message': str(e)},
-            status=400
-        )
+        return JsonResponse({'status': 'error', 'message': str(e)}, status=400)
