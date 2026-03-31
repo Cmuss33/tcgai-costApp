@@ -181,7 +181,17 @@ def auth_check(request):
 
 def get_avg_eval_score(request):
     try:
-        avg_score = round(Chat.objects.aggregate(avg_eval=Avg('evaluation_score'))["avg_eval"], 2)
+        last_30_days = now() - timedelta(days=30)
+
+        daily_counts = (
+            Chat.objects
+            .filter(timestamp__gte=last_30_days)
+            .annotate(day=TruncDate('timestamp'))
+            .values('day')
+            .annotate(avg_day_score=Avg('evaluation_score'))
+        )
+
+        avg_score = round(daily_counts.aggregate(avg_eval=Avg('avg_day_score'))["avg_eval"], 2)
 
         return JsonResponse({"average_eval_score": avg_score})
     except Exception as e:
@@ -190,7 +200,17 @@ def get_avg_eval_score(request):
     
 def get_avg_tokens_in(request):
     try:
-        avg_tokens_in = round(Chat.objects.aggregate(avg_in=Avg('tokens_in'))["avg_in"], 2)
+        last_30_days = now() - timedelta(days=30)
+
+        daily_counts = (
+            Chat.objects
+            .filter(timestamp__gte=last_30_days)
+            .annotate(day=TruncDate('timestamp'))
+            .values('day')
+            .annotate(tok_in=Avg('tokens_in'))
+        )
+
+        avg_tokens_in = round(daily_counts.aggregate(avg_in=Avg('tok_in'))["avg_in"], 2)
 
         return JsonResponse({"average_tokens_in": avg_tokens_in})
     except Exception as e:
@@ -198,7 +218,18 @@ def get_avg_tokens_in(request):
     
 def get_avg_tokens_out(request):
     try:
-        avg_tokens_out = round(Chat.objects.aggregate(avg_out=Avg('tokens_out'))["avg_out"], 2)
+
+        last_30_days = now() - timedelta(days=30)
+
+        daily_counts = (
+            Chat.objects
+            .filter(timestamp__gte=last_30_days)
+            .annotate(day=TruncDate('timestamp'))
+            .values('day')
+            .annotate(tok_out=Avg('tokens_out'))
+        )
+
+        avg_tokens_out = round(daily_counts.aggregate(avg_out=Avg('tok_out'))["avg_out"], 2)
 
         return JsonResponse({"average_tokens_out": avg_tokens_out})
     except Exception as e:
