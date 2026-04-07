@@ -192,7 +192,7 @@ function CostView() {
 
       {/* Analytics Section */}
       <div className="analytics-section">
-        <h2 className="analytics-header">Analytics</h2>
+        <h2 className="analytics-header">Current Month's Analytics</h2>
 
         {/* Period selector */}
         <div className="analytics-period-selector">
@@ -213,22 +213,22 @@ function CostView() {
               {analytics.avg_eval_score}
             </div>
             <div>
-              <strong>Avg Tokens In:</strong>
+              <strong>Avg Tokens In / Conversation:</strong>
               <br />
               {analytics.avg_tokens_in}
             </div>
             <div>
-              <strong>Avg Tokens Out:</strong>
+              <strong>Avg Tokens Out / Conversation:</strong>
               <br />
               {analytics.avg_tokens_out}
             </div>
             <div>
               <strong>Avg Conversations / Day:</strong>
               <br />
-              {analytics.avg_conversations_per_day}
+              {analytics.avg_conversations_per_day != null ? analytics.avg_cost : 0}
             </div>
             <div>
-              <strong>Avg Cost Per Conversation:</strong>
+              <strong>Avg Cost / Conversation:</strong>
               <br />
               ${analytics.avg_cost != null ? analytics.avg_cost.toPrecision(2) : "0.00"}
             </div>
