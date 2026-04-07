@@ -15,6 +15,8 @@ import { useNavigate } from 'react-router-dom';
 function CostView() {
   const API_URL = import.meta.env.VITE_API_URL;
 
+  const costPerInput = 1 / 1000000;
+  const costPerOutput = 5 / 1000000;
   const [data, setData] = useState(null);
   const [monthOffset, setMonthOffset] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -25,7 +27,8 @@ function CostView() {
     avg_eval_score: null,
     avg_tokens_in: null,
     avg_tokens_out: null,
-    avg_conversations_per_day: null
+    avg_conversations_per_day: null,
+    avg_cost: null
   });
   const [loadingAnalytics, setLoadingAnalytics] = useState(false);
   const [analyticsPeriod, setAnalyticsPeriod] = useState("30_days"); // "daily", "7_days", "30_days"
@@ -104,7 +107,8 @@ function CostView() {
           avg_eval_score: avgEvalData.average_eval_score,
           avg_tokens_in: avgInData.average_tokens_in,
           avg_tokens_out: avgOutData.average_tokens_out,
-          avg_conversations_per_day: avgConvData.average_conversations_per_day
+          avg_conversations_per_day: avgConvData.average_conversations_per_day,
+          avg_cost: avgInData.average_tokens_in * costPerInput + avgOutData.average_tokens_out * costPerOutput
         });
       } catch (err) {
         console.error("Error fetching analytics:", err);
@@ -184,6 +188,8 @@ function CostView() {
         </ResponsiveContainer>
       )}
 
+      <h2 className="total-cost-header">Total Month's Cost: ${chartData?.reduce((sum, item) => sum + (item.total_cost ?? 0), 0)?.toFixed(2) ?? "0.00"}</h2>
+
       {/* Analytics Section */}
       <div className="analytics-section">
         <h2 className="analytics-header">Analytics</h2>
@@ -220,6 +226,11 @@ function CostView() {
               <strong>Avg Conversations / Day:</strong>
               <br />
               {analytics.avg_conversations_per_day}
+            </div>
+            <div>
+              <strong>Avg Cost Per Conversation:</strong>
+              <br />
+              ${analytics.avg_cost != null ? analytics.avg_cost.toPrecision(2) : "0.00"}
             </div>
           </div>
         )}

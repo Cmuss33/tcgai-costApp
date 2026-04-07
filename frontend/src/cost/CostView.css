@@ -168,3 +168,9 @@ pre {
   align-items: center;
   height: 80px;
 }
+
+.total-cost-header {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
