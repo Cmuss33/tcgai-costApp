@@ -142,7 +142,7 @@ def get_messages(request):
 
 def get_chat_ids(request):
     try:
-        chats = list(Chat.objects.values())
+        chats = list(Chat.objects.values().order_by('-timestamp'))
         return JsonResponse(chats, safe=False)
     except Exception as e:
         return JsonResponse({'status': 'error', 'message': str(e)}, status=400)
