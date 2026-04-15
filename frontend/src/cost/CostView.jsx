@@ -225,7 +225,7 @@ function CostView() {
             <div>
               <strong>Avg Conversations / Day:</strong>
               <br />
-              {analytics.avg_conversations_per_day != null ? analytics.avg_cost : 0}
+              {analytics.avg_conversations_per_day != null ? analytics.avg_conversations_per_day : 0}
             </div>
             <div>
               <strong>Avg Cost / Conversation:</strong>
