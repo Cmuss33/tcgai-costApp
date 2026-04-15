@@ -11,5 +11,8 @@ urlpatterns = [
     path("login/", views.login_view, name="login"),
     path("auth-check/", views.auth_check, name="auth_check"),
     path('evaluate_chat/', views.evaluate_chat, name="evaluate_chat"),
-
+    path('get_avg_eval_score/', views.get_avg_eval_score, name="get_avg_eval_score"),
+    path('get_avg_tokens_in/', views.get_avg_tokens_in, name="get_avg_tokens_in"),
+    path('get_avg_tokens_out/', views.get_avg_tokens_out, name="get_avg_tokens_out"),
+    path('get_avg_conversations_per_day/', views.get_avg_conversations_per_day, name="get_avg_conversations_per_day"),
 ]
