@@ -142,8 +142,18 @@ def get_messages(request):
 
 def get_chat_ids(request):
     try:
-        chats = list(Chat.objects.values().order_by('-timestamp'))
-        return JsonResponse(chats, safe=False)
+        limit = int(request.GET.get("limit", 10))
+        offset = int(request.GET.get("offset", 0))
+
+        total = Chat.objects.count()
+
+        chats = Chat.objects.all().order_by('-timestamp')[offset:offset + limit]
+
+        return JsonResponse({
+            "results": list(chats.values()),
+            "has_next": offset + limit < total
+        }, safe=False)
+
     except Exception as e:
         return JsonResponse({'status': 'error', 'message': str(e)}, status=400)
 
