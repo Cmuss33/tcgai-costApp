@@ -155,8 +155,20 @@ function CostView() {
         <button onClick={() => setMonthOffset(monthOffset + 1)}>&rarr;</button>
       </div>
       
-      <h2 className="total-cost-header">Total Month's Cost: ${chartData?.reduce((sum, item) => sum + (item.total_cost ?? 0), 0)?.toFixed(2) ?? "0.00"}</h2>
-
+      <h2 className="total-cost-header">
+        Total Month's {viewMode === "cost" ? "Cost" : "Tokens"}:{" "}
+        {viewMode === "cost" ? "$" : ""}
+        {chartData
+          ?.reduce(
+            (sum, item) =>
+              sum +
+              (viewMode === "cost"
+                ? item.total_cost
+                : item.total_tokens),
+            0
+          )
+          ?.toFixed(viewMode === "cost" ? 2 : 0) ?? "0.00"}
+      </h2>
       {loading && (
         <div className="loading-container">
           <div className="spinner"></div>
