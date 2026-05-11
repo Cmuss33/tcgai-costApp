@@ -1,76 +1,89 @@
 .login-screen {
+  min-height: 100vh;
   display: flex;
-  flex-direction: column;
-  justify-content: space-evenly;
-}
-  
-.login-container {
-  display: flex;
-  flex-direction: column;
   justify-content: center;
-  margin: 0 auto;
-  width: 35%;
-  background-color: #8884d8;
-  margin-top: 100px;
-  border-radius: 5px;
-  box-shadow: -4px 4px 10px rgb(59, 59, 59);
+  align-items: center;
+
+  background: #121212;
 }
 
-.login-title {
-  display: flex;
-  flex-direction: row;
-  justify-content: flex-start;
-  color: black;
-  padding-left: 50px;
-  padding-top: 10px;
-  margin-bottom: 10px;
-  margin-top: 20px;
-  font-weight: 700;
-  font-size: 20px;
-}
+/* Card */
+.login-card {
+  width: 380px;
 
-.input-field {
-  color: black;
-  background-color: #D9D9D9;
-  margin-left: 75px;
-  margin-right: 75px;
-  margin-bottom: 10px;
-  border-radius: 10px;
-  border: none;
-  padding: 10px;
-  box-shadow: -2px 5px 10px rgba(0, 0, 0, 0.2);
-}
+  background: #1e1e1e;
+  border: 1px solid #2a2a2a;
 
-.login-btn-container {
+  border-radius: 16px;
+  padding: 28px;
+
+  box-shadow: 0 0 25px rgba(0, 0, 0, 0.5);
+
   display: flex;
   flex-direction: column;
-  justify-content: space-evenly;
-  margin-bottom: 30px;
-  margin-top: 25px;
-  width: 77.5%;
+  gap: 18px;
 }
 
-.login-btn {
-  background-color: #006DD2;
+/* Title */
+.login-title {
+  font-size: 22px;
+  font-weight: 700;
   color: white;
-  border-radius: 5px;
-  border-color: black;
-  border-width: 1px;
-  margin-left: 75px;
-  margin-right: 75px;
-  padding: 8px;
-  width: 100%;
+
+  margin-bottom: 10px;
+}
+
+/* Input groups */
+.input-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.input-group label {
+  font-size: 12px;
+  color: #b3b3b3;
+}
+
+/* Inputs */
+.input-group input {
+  padding: 10px 12px;
+
+  border-radius: 10px;
+  border: 1px solid #2a2a2a;
+
+  background: #2a2a2a;
+  color: white;
+
+  outline: none;
+
+  transition: 0.2s;
+}
+
+.input-group input:focus {
+  border-color: #8b7cf6;
+}
+
+/* Button (matches your eval/chat buttons) */
+.login-btn {
+  margin-top: 10px;
+
+  padding: 10px;
+
+  border-radius: 8px;
+  border: none;
+
+  background: #8b7cf6;
+  color: white;
+
+  font-weight: 600;
+
+  cursor: pointer;
+
+  transition: 0.2s;
 }
 
 .login-btn:hover {
-  cursor: pointer;
-  background-color: grey;
-}
-
-.input-header {
-  color: black;
-  margin-left: 80px;
-  margin-top: 10px;
-  margin-bottom: 2px;
-  font-size: 12px;
+  background: #a69ffb;
+  transform: scale(1.02);
 }
