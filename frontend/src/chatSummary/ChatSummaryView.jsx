@@ -14,9 +14,12 @@ function ChatSummaryView() {
 
   // Modal state
   const [selectedChatId, setSelectedChatId] = useState(null);
-  const [messages, setMessages] = useState([]);
-  const [loadingMessages, setLoadingMessages] = useState(false);
-  const [expandedMessages, setExpandedMessages] = useState({});
+  const [groupedMessages, setGroupedMessages] =
+    useState([]);
+  const [loadingMessages, setLoadingMessages] =
+    useState(false);
+  const [expandedMessages, setExpandedMessages] =
+    useState({});
 
   // Pagination
   const [offset, setOffset] = useState(0);
@@ -114,6 +117,34 @@ function ChatSummaryView() {
     }));
   };
 
+  // GROUP SAME USER MESSAGES
+  const groupMessages = (messages) => {
+    const grouped = [];
+
+    messages.forEach((msg) => {
+      const lastGroup =
+        grouped[grouped.length - 1];
+
+      if (
+        lastGroup &&
+        lastGroup.userMessage === msg.content
+      ) {
+        lastGroup.responses.push(msg);
+      } else {
+        grouped.push({
+          userMessage: msg.content,
+          tokensIn: msg.tokens_in,
+          timestamp: msg.timestamp,
+          formattedMessage:
+            msg.llm_formatted_message,
+          responses: [msg],
+        });
+      }
+    });
+
+    return grouped;
+  };
+
   const openChatModal = async (chatId) => {
     setSelectedChatId(chatId);
     setLoadingMessages(true);
@@ -126,9 +157,12 @@ function ChatSummaryView() {
 
       const data = await res.json();
 
-      setMessages(data);
+      setGroupedMessages(groupMessages(data));
     } catch (err) {
-      console.error("Failed to fetch messages:", err);
+      console.error(
+        "Failed to fetch messages:",
+        err
+      );
     } finally {
       setLoadingMessages(false);
     }
@@ -136,7 +170,7 @@ function ChatSummaryView() {
 
   const closeModal = () => {
     setSelectedChatId(null);
-    setMessages([]);
+    setGroupedMessages([]);
   };
 
   return (
@@ -170,13 +204,16 @@ function ChatSummaryView() {
               </td>
 
               <td>
-                {new Date(chat.timestamp).toLocaleString()}
+                {new Date(
+                  chat.timestamp
+                ).toLocaleString()}
               </td>
 
               <td>{chat.intent}</td>
 
               <td>
-                {accuracy[chat.chat_id] !== undefined ? (
+                {accuracy[chat.chat_id] !==
+                undefined ? (
                   <span className="accuracy-result">
                     {accuracy[chat.chat_id]}%
                   </span>
@@ -184,11 +221,17 @@ function ChatSummaryView() {
                   <button
                     className="eval-button"
                     onClick={() =>
-                      evaluateAccuracy(chat.chat_id)
+                      evaluateAccuracy(
+                        chat.chat_id
+                      )
                     }
-                    disabled={loadingEval[chat.chat_id]}
+                    disabled={
+                      loadingEval[chat.chat_id]
+                    }
                   >
-                    {loadingEval[chat.chat_id] ? (
+                    {loadingEval[
+                      chat.chat_id
+                    ] ? (
                       <span className="spinner" />
                     ) : (
                       "Evaluate"
@@ -204,8 +247,10 @@ function ChatSummaryView() {
               <td>
                 $
                 {(
-                  chat.tokens_in * costPerInput +
-                  chat.tokens_out * costPerOutput
+                  chat.tokens_in *
+                    costPerInput +
+                  chat.tokens_out *
+                    costPerOutput
                 ).toPrecision(2)}
               </td>
 
@@ -239,130 +284,189 @@ function ChatSummaryView() {
       </div>
 
       {/* MODAL */}
-{selectedChatId && (
-  <div className="modal-overlay">
-    <div className="chat-modal">
-      <div className="modal-header">
-        <h2>Chat {selectedChatId}</h2>
-      </div>
-
-      {loadingMessages ? (
-        <div className="spinner"></div>
-      ) : messages.length === 0 ? (
-        <p>No messages found.</p>
-      ) : (
-        <div className="messages-list">
-          {messages.map((msg) => (
-            <div key={msg.id} className="message-pair">
-              {/* USER */}
-              <div className="user-message">
-                <div className="message-label">User</div>
-
-                <div className="message-content">
-                  {msg.content}
-                </div>
-
-                <div className="timestamp">
-                  Tokens In: {msg.tokens_in}
-                </div>
-
-                <div className="timestamp">
-                  $
-                  {(
-                    msg.tokens_in * costPerInput
-                  ).toPrecision(2)}
-                </div>
-
-                <button
-                  className="expand-button"
-                  onClick={() =>
-                    toggleExpand(msg.id, "in")
-                  }
-                >
-                  {expandedMessages[`${msg.id}-in`]
-                    ? "Collapse"
-                    : "Expand"}
-                </button>
-
-                {expandedMessages[`${msg.id}-in`] && (
-                  <div className="formatted-message">
-                    <pre>
-                      {msg.llm_formatted_message
-                        .replace(
-                          /([{,]\s*)'([^']+?)'/g,
-                          '$1"$2"'
-                        )
-                        .replace(
-                          /},\s*{/g,
-                          "},\n\n{"
-                        )}
-                    </pre>
-                  </div>
-                )}
-              </div>
-
-              {/* AI */}
-              <div className="ai-message">
-                <div className="message-label">LLM</div>
-
-                <div className="message-content">
-                  {msg.returned_content}
-                </div>
-
-                <div className="timestamp">
-                  Tokens Out: {msg.tokens_out}
-                </div>
-
-                <div className="timestamp">
-                  $
-                  {(
-                    msg.tokens_out * costPerOutput
-                  ).toPrecision(2)}
-                </div>
-
-                <button
-                  className="expand-button"
-                  onClick={() =>
-                    toggleExpand(msg.id, "out")
-                  }
-                >
-                  {expandedMessages[`${msg.id}-out`]
-                    ? "Collapse"
-                    : "Expand"}
-                </button>
-
-                {expandedMessages[`${msg.id}-out`] && (
-                  <div className="formatted-message">
-                    <pre>
-                      {msg.llm_formatted_returned_message
-                        .replace(
-                          /([{,]\s*)'([^']+?)'/g,
-                          '$1"$2"'
-                        )
-                        .replace(
-                          /},\s*{/g,
-                          "},\n\n{"
-                        )}
-                    </pre>
-                  </div>
-                )}
-              </div>
+      {selectedChatId && (
+        <div className="modal-overlay">
+          <div className="chat-modal">
+            <div className="modal-header">
+              <h2>
+                Chat {selectedChatId}
+              </h2>
             </div>
-          ))}
+
+            {loadingMessages ? (
+              <div className="spinner"></div>
+            ) : groupedMessages.length === 0 ? (
+              <p>No messages found.</p>
+            ) : (
+              <div className="messages-list">
+                {groupedMessages.map(
+                  (group, index) => (
+                    <div
+                      key={index}
+                      className="message-pair"
+                    >
+                      {/* USER */}
+                      <div className="user-message">
+                        <div className="message-label">
+                          User
+                        </div>
+
+                        <div className="message-content">
+                          {group.userMessage}
+                        </div>
+
+                        <div className="timestamp">
+                          Tokens In:{" "}
+                          {group.tokensIn}
+                        </div>
+
+                        <div className="timestamp">
+                          $
+                          {(
+                            group.tokensIn *
+                            costPerInput
+                          ).toPrecision(2)}
+                        </div>
+
+                        <div className="timestamp">
+                          {new Date(
+                            group.timestamp
+                          ).toLocaleString()}
+                        </div>
+
+                        <button
+                          className="expand-button"
+                          onClick={() =>
+                            toggleExpand(
+                              index,
+                              "in"
+                            )
+                          }
+                        >
+                          {expandedMessages[
+                            `${index}-in`
+                          ]
+                            ? "Collapse"
+                            : "Expand"}
+                        </button>
+
+                        {expandedMessages[
+                          `${index}-in`
+                        ] && (
+                          <div className="formatted-message">
+                            <pre>
+                              {group.formattedMessage
+                                .replace(
+                                  /([{,]\s*)'([^']+?)'/g,
+                                  '$1"$2"'
+                                )
+                                .replace(
+                                  /},\s*{/g,
+                                  "},\n\n{"
+                                )}
+                            </pre>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* MULTIPLE AI RESPONSES */}
+                      <div>
+                        {group.responses.map(
+                          (
+                            msg,
+                            responseIndex
+                          ) => (
+                            <div
+                              key={msg.id}
+                              className="ai-message"
+                            >
+                              <div className="message-label">
+                                LLM Response #
+                                {responseIndex +
+                                  1}
+                              </div>
+
+                              <div className="message-content">
+                                {
+                                  msg.returned_content
+                                }
+                              </div>
+
+                              <div className="timestamp">
+                                Tokens Out:{" "}
+                                {
+                                  msg.tokens_out
+                                }
+                              </div>
+
+                              <div className="timestamp">
+                                $
+                                {(
+                                  msg.tokens_out *
+                                  costPerOutput
+                                ).toPrecision(2)}
+                              </div>
+
+                              <div className="timestamp">
+                                {new Date(
+                                  msg.timestamp
+                                ).toLocaleString()}
+                              </div>
+
+                              <button
+                                className="expand-button"
+                                onClick={() =>
+                                  toggleExpand(
+                                    msg.id,
+                                    "out"
+                                  )
+                                }
+                              >
+                                {expandedMessages[
+                                  `${msg.id}-out`
+                                ]
+                                  ? "Collapse"
+                                  : "Expand"}
+                              </button>
+
+                              {expandedMessages[
+                                `${msg.id}-out`
+                              ] && (
+                                <div className="formatted-message">
+                                  <pre>
+                                    {msg.llm_formatted_returned_message
+                                      .replace(
+                                        /([{,]\s*)'([^']+?)'/g,
+                                        '$1"$2"'
+                                      )
+                                      .replace(
+                                        /},\s*{/g,
+                                        "},\n\n{"
+                                      )}
+                                  </pre>
+                                </div>
+                              )}
+                            </div>
+                          )
+                        )}
+                      </div>
+                    </div>
+                  )
+                )}
+              </div>
+            )}
+
+            <div className="modal-footer">
+              <button
+                className="close-modal-button"
+                onClick={closeModal}
+              >
+                Close
+              </button>
+            </div>
+          </div>
         </div>
       )}
-
-      <div className="modal-footer">
-        <button
-          className="close-modal-button"
-          onClick={closeModal}
-        >
-          Close
-        </button>
-      </div>
-    </div>
-  </div>
-)}
     </div>
   );
 }

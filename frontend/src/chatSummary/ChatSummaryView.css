@@ -166,14 +166,31 @@
 .ai-message {
   padding: 16px;
   border-radius: 12px;
+  margin-bottom: 5px;
 }
 
 .user-message {
   background: #2b2b2b;
+
+  align-self: flex-start;
+
+  width: fit-content;
+  max-width: 75%;
+
+  margin-left: 0;
+  margin-right: auto;
 }
 
 .ai-message {
   background: #363636;
+
+  align-self: flex-end;
+
+  width: fit-content;
+  max-width: 75%;
+
+  margin-left: auto;
+  margin-right: 0;
 }
 
 .message-label {
