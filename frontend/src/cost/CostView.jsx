@@ -154,7 +154,21 @@ function CostView() {
         </span>
         <button onClick={() => setMonthOffset(monthOffset + 1)}>&rarr;</button>
       </div>
-
+      
+      <h2 className="total-cost-header">
+        Total Month's {viewMode === "cost" ? "Cost" : "Tokens"}:{" "}
+        {viewMode === "cost" ? "$" : ""}
+        {chartData
+          ?.reduce(
+            (sum, item) =>
+              sum +
+              (viewMode === "cost"
+                ? item.total_cost
+                : item.total_tokens),
+            0
+          )
+          ?.toFixed(viewMode === "cost" ? 2 : 0) ?? "0.00"}
+      </h2>
       {loading && (
         <div className="loading-container">
           <div className="spinner"></div>
@@ -188,12 +202,8 @@ function CostView() {
         </ResponsiveContainer>
       )}
 
-      <h2 className="total-cost-header">Total Month's Cost: ${chartData?.reduce((sum, item) => sum + (item.total_cost ?? 0), 0)?.toFixed(2) ?? "0.00"}</h2>
-
       {/* Analytics Section */}
       <div className="analytics-section">
-        <h2 className="analytics-header">Current Month's Analytics</h2>
-
         {/* Period selector */}
         <div className="analytics-period-selector">
           <button className={analyticsPeriod === "30_days" ? "active" : ""} onClick={() => setAnalyticsPeriod("30_days")}>Last 30 Days</button>
@@ -213,6 +223,11 @@ function CostView() {
               {analytics.avg_eval_score}
             </div>
             <div>
+              <strong>Avg Conversations / Day:</strong>
+              <br />
+              {analytics.avg_conversations_per_day != null ? analytics.avg_conversations_per_day : 0}
+            </div>
+            <div>
               <strong>Avg Tokens In / Conversation:</strong>
               <br />
               {analytics.avg_tokens_in}
@@ -221,11 +236,6 @@ function CostView() {
               <strong>Avg Tokens Out / Conversation:</strong>
               <br />
               {analytics.avg_tokens_out}
-            </div>
-            <div>
-              <strong>Avg Conversations / Day:</strong>
-              <br />
-              {analytics.avg_conversations_per_day != null ? analytics.avg_conversations_per_day : 0}
             </div>
             <div>
               <strong>Avg Cost / Conversation:</strong>
