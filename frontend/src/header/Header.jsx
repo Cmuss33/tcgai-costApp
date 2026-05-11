@@ -7,7 +7,6 @@ function Header() {
       <div className="header-container">
         <div className="header-content">
           <NavLink to="/cost" className="header-btn">Cost Summary</NavLink>
-          <NavLink to="/messages" className="header-btn">View Messages</NavLink>
           <NavLink to="/chats" className="header-btn">Chat Summary</NavLink>
         </div>
       </div>

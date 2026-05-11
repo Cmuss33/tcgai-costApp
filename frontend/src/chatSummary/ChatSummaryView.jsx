@@ -1,52 +1,30 @@
 import { useEffect, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import "./ChatSummaryView.css";
 
 function ChatSummaryView() {
   const API_URL = import.meta.env.VITE_API_URL;
 
+  const navigate = useNavigate();
+
   const [chats, setChats] = useState([]);
+
   const [loadingEval, setLoadingEval] = useState({});
   const [accuracy, setAccuracy] = useState({});
 
-  // Pagination (OFFSET based)
+  // Modal state
+  const [selectedChatId, setSelectedChatId] = useState(null);
+  const [messages, setMessages] = useState([]);
+  const [loadingMessages, setLoadingMessages] = useState(false);
+  const [expandedMessages, setExpandedMessages] = useState({});
+
+  // Pagination
   const [offset, setOffset] = useState(0);
   const limit = 10;
   const [hasNext, setHasNext] = useState(false);
 
-  const navigate = useNavigate();
-
   const costPerInput = 1 / 1000000;
   const costPerOutput = 5 / 1000000;
-
-  // Fetch chats
-  useEffect(() => {
-    fetch(
-      `${API_URL}/api/cost/get_chat_ids/?limit=${limit}&offset=${offset}`
-    )
-      .then((res) => res.json())
-      .then((data) => {
-        const chatsArray = data.results ?? data;
-
-        setChats(chatsArray);
-        setHasNext(data.has_next ?? false);
-
-        // Initialize accuracy for current page
-        const initialAccuracy = {};
-
-        chatsArray.forEach((chat) => {
-          if (
-            chat.evaluation_score !== null &&
-            chat.evaluation_score !== undefined
-          ) {
-            initialAccuracy[chat.chat_id] = chat.evaluation_score;
-          }
-        });
-
-        setAccuracy(initialAccuracy);
-      })
-      .catch((err) => console.error("Error fetching chats:", err));
-  }, [offset]);
 
   // Auth check
   useEffect(() => {
@@ -61,8 +39,42 @@ function ChatSummaryView() {
       });
   }, [navigate]);
 
+  // Fetch chats
+  useEffect(() => {
+    fetch(
+      `${API_URL}/api/cost/get_chat_ids/?limit=${limit}&offset=${offset}`
+    )
+      .then((res) => res.json())
+      .then((data) => {
+        const chatsArray = data.results ?? data;
+
+        setChats(chatsArray);
+        setHasNext(data.has_next ?? false);
+
+        const initialAccuracy = {};
+
+        chatsArray.forEach((chat) => {
+          if (
+            chat.evaluation_score !== null &&
+            chat.evaluation_score !== undefined
+          ) {
+            initialAccuracy[chat.chat_id] =
+              chat.evaluation_score;
+          }
+        });
+
+        setAccuracy(initialAccuracy);
+      })
+      .catch((err) =>
+        console.error("Error fetching chats:", err)
+      );
+  }, [offset]);
+
   const evaluateAccuracy = async (chatId) => {
-    setLoadingEval((prev) => ({ ...prev, [chatId]: true }));
+    setLoadingEval((prev) => ({
+      ...prev,
+      [chatId]: true,
+    }));
 
     try {
       const res = await fetch(
@@ -86,8 +98,45 @@ function ChatSummaryView() {
     } catch (err) {
       console.error("Accuracy evaluation failed:", err);
     } finally {
-      setLoadingEval((prev) => ({ ...prev, [chatId]: false }));
+      setLoadingEval((prev) => ({
+        ...prev,
+        [chatId]: false,
+      }));
     }
+  };
+
+  const toggleExpand = (id, type) => {
+    const key = `${id}-${type}`;
+
+    setExpandedMessages((prev) => ({
+      ...prev,
+      [key]: !prev[key],
+    }));
+  };
+
+  const openChatModal = async (chatId) => {
+    setSelectedChatId(chatId);
+    setLoadingMessages(true);
+    setExpandedMessages({});
+
+    try {
+      const res = await fetch(
+        `${API_URL}/api/cost/get_messages_by_chat_id/${chatId}/`
+      );
+
+      const data = await res.json();
+
+      setMessages(data);
+    } catch (err) {
+      console.error("Failed to fetch messages:", err);
+    } finally {
+      setLoadingMessages(false);
+    }
+  };
+
+  const closeModal = () => {
+    setSelectedChatId(null);
+    setMessages([]);
   };
 
   return (
@@ -110,12 +159,14 @@ function ChatSummaryView() {
           {chats.map((chat) => (
             <tr key={chat.chat_id}>
               <td>
-                <Link
+                <button
                   className="chat-link"
-                  to={`/messages/${chat.chat_id}`}
+                  onClick={() =>
+                    openChatModal(chat.chat_id)
+                  }
                 >
                   {chat.chat_id}
-                </Link>
+                </button>
               </td>
 
               <td>
@@ -147,6 +198,7 @@ function ChatSummaryView() {
               </td>
 
               <td>{chat.tokens_in}</td>
+
               <td>{chat.tokens_out}</td>
 
               <td>
@@ -163,22 +215,154 @@ function ChatSummaryView() {
         </tbody>
       </table>
 
-      {/* Pagination Controls */}
+      {/* Pagination */}
       <div className="chat-pagination">
         <button
-          onClick={() => setOffset((prev) => Math.max(0, prev - limit))}
+          onClick={() =>
+            setOffset((prev) =>
+              Math.max(0, prev - limit)
+            )
+          }
           disabled={offset === 0}
         >
-          ◀ Prev 10 
+          ◀ Prev 10
         </button>
 
         <button
-          onClick={() => setOffset((prev) => prev + limit)}
+          onClick={() =>
+            setOffset((prev) => prev + limit)
+          }
           disabled={!hasNext}
         >
           Next 10 ▶
         </button>
       </div>
+
+      {/* MODAL */}
+{selectedChatId && (
+  <div className="modal-overlay">
+    <div className="chat-modal">
+      <div className="modal-header">
+        <h2>Chat {selectedChatId}</h2>
+      </div>
+
+      {loadingMessages ? (
+        <div className="spinner"></div>
+      ) : messages.length === 0 ? (
+        <p>No messages found.</p>
+      ) : (
+        <div className="messages-list">
+          {messages.map((msg) => (
+            <div key={msg.id} className="message-pair">
+              {/* USER */}
+              <div className="user-message">
+                <div className="message-label">User</div>
+
+                <div className="message-content">
+                  {msg.content}
+                </div>
+
+                <div className="timestamp">
+                  Tokens In: {msg.tokens_in}
+                </div>
+
+                <div className="timestamp">
+                  $
+                  {(
+                    msg.tokens_in * costPerInput
+                  ).toPrecision(2)}
+                </div>
+
+                <button
+                  className="expand-button"
+                  onClick={() =>
+                    toggleExpand(msg.id, "in")
+                  }
+                >
+                  {expandedMessages[`${msg.id}-in`]
+                    ? "Collapse"
+                    : "Expand"}
+                </button>
+
+                {expandedMessages[`${msg.id}-in`] && (
+                  <div className="formatted-message">
+                    <pre>
+                      {msg.llm_formatted_message
+                        .replace(
+                          /([{,]\s*)'([^']+?)'/g,
+                          '$1"$2"'
+                        )
+                        .replace(
+                          /},\s*{/g,
+                          "},\n\n{"
+                        )}
+                    </pre>
+                  </div>
+                )}
+              </div>
+
+              {/* AI */}
+              <div className="ai-message">
+                <div className="message-label">LLM</div>
+
+                <div className="message-content">
+                  {msg.returned_content}
+                </div>
+
+                <div className="timestamp">
+                  Tokens Out: {msg.tokens_out}
+                </div>
+
+                <div className="timestamp">
+                  $
+                  {(
+                    msg.tokens_out * costPerOutput
+                  ).toPrecision(2)}
+                </div>
+
+                <button
+                  className="expand-button"
+                  onClick={() =>
+                    toggleExpand(msg.id, "out")
+                  }
+                >
+                  {expandedMessages[`${msg.id}-out`]
+                    ? "Collapse"
+                    : "Expand"}
+                </button>
+
+                {expandedMessages[`${msg.id}-out`] && (
+                  <div className="formatted-message">
+                    <pre>
+                      {msg.llm_formatted_returned_message
+                        .replace(
+                          /([{,]\s*)'([^']+?)'/g,
+                          '$1"$2"'
+                        )
+                        .replace(
+                          /},\s*{/g,
+                          "},\n\n{"
+                        )}
+                    </pre>
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="modal-footer">
+        <button
+          className="close-modal-button"
+          onClick={closeModal}
+        >
+          Close
+        </button>
+      </div>
+    </div>
+  </div>
+)}
     </div>
   );
 }

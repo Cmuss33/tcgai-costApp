@@ -3,7 +3,6 @@ import { BrowserRouter as Router, Route, Routes, useLocation } from 'react-route
 
 import CostView from './cost/CostView';
 import Header from './header/Header';
-import MessageView from './messages/MessageView';
 import ChatSummaryView from './chatSummary/ChatSummaryView';
 import Login from './login/login';
 
@@ -26,8 +25,6 @@ function AppRoutes() {
     <Routes>
       <Route path="/" element={<Login />} />
       <Route path="/cost" element={<CostView />} />
-      <Route path="/messages" element={<MessageView />} />
-      <Route path="/messages/:chatId" element={<MessageView />} />
       <Route path="/chats" element={<ChatSummaryView />} />
     </Routes>
   );
