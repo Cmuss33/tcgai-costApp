@@ -7,6 +7,7 @@ function Login() {
 
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(false);
 
   const navigate = useNavigate();
 
@@ -23,25 +24,33 @@ function Login() {
   }, [navigate]);
 
   const loginClicked = async () => {
-    const response = await fetch(
-      `${API_URL}/api/cost/login/`,
-      {
-        method: "POST",
-        credentials: "include",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          username,
-          password,
-        }),
-      }
-    );
+    setLoading(true);
 
-    if (response.ok) {
-      navigate("/cost");
-    } else {
-      alert("Invalid credentials");
+    try {
+      const response = await fetch(
+        `${API_URL}/api/cost/login/`,
+        {
+          method: "POST",
+          credentials: "include",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            username,
+            password,
+          }),
+        }
+      );
+
+      if (response.ok) {
+        navigate("/cost");
+      } else {
+        alert("Invalid credentials");
+      }
+    } catch (err) {
+      alert("Login failed");
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -49,7 +58,7 @@ function Login() {
     <div className="login-screen">
       <div className="login-card">
         <div className="login-title">
-          Welcome Back
+          Welcome Back!
         </div>
 
         <div className="input-group">
@@ -60,6 +69,7 @@ function Login() {
               setUsername(e.target.value)
             }
             placeholder="Enter username"
+            disabled={loading}
           />
         </div>
 
@@ -71,14 +81,20 @@ function Login() {
               setPassword(e.target.value)
             }
             placeholder="Enter password"
+            disabled={loading}
           />
         </div>
 
         <button
           className="login-btn"
           onClick={loginClicked}
+          disabled={loading}
         >
-          Login
+          {loading ? (
+            <span className="login-spinner" />
+          ) : (
+            "Login"
+          )}
         </button>
       </div>
     </div>

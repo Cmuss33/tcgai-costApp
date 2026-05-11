@@ -3,15 +3,13 @@
   display: flex;
   justify-content: center;
   align-items: center;
-
-  background: #121212;
 }
 
 /* Card */
 .login-card {
   width: 380px;
 
-  background: #1e1e1e;
+  background: #1a1a1a;
   border: 1px solid #2a2a2a;
 
   border-radius: 16px;
@@ -86,4 +84,23 @@
 .login-btn:hover {
   background: #a69ffb;
   transform: scale(1.02);
+}
+
+.login-spinner {
+  width: 16px;
+  height: 16px;
+
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-top: 2px solid white;
+
+  border-radius: 50%;
+  animation: login-spin 0.8s linear infinite;
+
+  display: inline-block;
+}
+
+@keyframes login-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
