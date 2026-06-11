@@ -45,8 +45,7 @@ function ChatSummaryView() {
   // Fetch chats
   useEffect(() => {
     fetch(
-      `${API_URL}/api/cost/get_chat_ids/?limit=${limit}&offset=${offset}`
-    )
+      `${API_URL}/api/cost/get_chat_ids/?limit=${limit}&offset=${offset}`, { credentials: "include" })
       .then((res) => res.json())
       .then((data) => {
         const chatsArray = data.results ?? data;
@@ -152,8 +151,7 @@ function ChatSummaryView() {
 
     try {
       const res = await fetch(
-        `${API_URL}/api/cost/get_messages_by_chat_id/${chatId}/`
-      );
+        `${API_URL}/api/cost/get_messages_by_chat_id/${chatId}/`, { credentials: "include" });
 
       const data = await res.json();
 
