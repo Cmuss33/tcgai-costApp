@@ -11,9 +11,11 @@ from django.db.models import Avg, Count
 from django.db.models.functions import TruncDate
 from django.utils.timezone import now
 from datetime import timedelta
+from django.contrib.admin.views.decorators import staff_member_required
 
 llmprovider = AnthropicAdapter()
 
+@staff_member_required
 @csrf_exempt
 @require_http_methods(["POST"])
 def evaluate_chat(request):
@@ -56,12 +58,14 @@ def evaluate_chat(request):
 
     return JsonResponse({"eval_percentage": eval_percentage})
 
+@staff_member_required
 def get_cost(request):
     year = request.GET.get("year")
     month = request.GET.get("month")
     response = llmprovider.get_cost(year=year, month=month)
     return JsonResponse(response, safe=False)
 
+@staff_member_required
 def get_tokens(request):
     year = request.GET.get("year")
     month = request.GET.get("month")
@@ -72,6 +76,11 @@ def get_tokens(request):
 @require_http_methods(["POST"])
 def log_message(request):
     try:
+        expected = os.environ.get('MSG_LOG_AUTH')
+        received = request.headers.get("Msg-Log-Auth")
+        if not expected or received != expected:
+            return JsonResponse({"error": "Unauthorized"}, status=401)
+        
         data = json.loads(request.body)
         chat_id = data.get('chat_id')
         content = data.get('content')
@@ -125,6 +134,7 @@ def log_message(request):
     except Exception as e:
         return JsonResponse({'status': 'error', 'message': str(e)}, status=400)
 
+@staff_member_required
 def get_messages(request):
     try:
         chats = Chat.objects.all()
@@ -140,6 +150,7 @@ def get_messages(request):
     except Exception as e:
         return JsonResponse({'status': 'error', 'message': str(e)}, status=400)
 
+@staff_member_required
 def get_chat_ids(request):
     try:
         limit = int(request.GET.get("limit", 10))
@@ -157,6 +168,7 @@ def get_chat_ids(request):
     except Exception as e:
         return JsonResponse({'status': 'error', 'message': str(e)}, status=400)
 
+@staff_member_required
 def get_messages_by_chat_id(request, chat_id):
     try:
         chat = Chat.objects.get(chat_id=chat_id)
@@ -189,6 +201,7 @@ def auth_check(request):
         "authenticated": request.user.is_authenticated
     })
 
+@staff_member_required
 def get_period_start(period: str):
     """Return datetime for start of period based on 'daily', '7days', '30days'."""
     today = now()
@@ -199,6 +212,7 @@ def get_period_start(period: str):
     else:  # default 30 days
         return 30
 
+@staff_member_required
 def get_avg_eval_score(request):
     try:
         period = request.GET.get("period", "30_days")
@@ -220,6 +234,7 @@ def get_avg_eval_score(request):
     except Exception as e:
         return JsonResponse({'status': 'error', 'message': str(e)}, status=400)
 
+@staff_member_required
 def get_avg_tokens_in(request):
     try:
         period = request.GET.get("period", "30_days")
@@ -241,6 +256,7 @@ def get_avg_tokens_in(request):
     except Exception as e:
         return JsonResponse({'status': 'error', 'message': str(e)}, status=400)
 
+@staff_member_required
 def get_avg_tokens_out(request):
     try:
         period = request.GET.get("period", "30_days")
@@ -262,6 +278,7 @@ def get_avg_tokens_out(request):
     except Exception as e:
         return JsonResponse({'status': 'error', 'message': str(e)}, status=400)
 
+@staff_member_required
 def get_avg_conversations_per_day(request):
     try:
         period = request.GET.get("period", "30_days")
