@@ -61,7 +61,7 @@ function CostView() {
         ? `${API_URL}/api/cost/get_cost/?year=${viewedYear}&month=${viewedMonth + 1}`
         : `${API_URL}/api/cost/get_tokens/?year=${viewedYear}&month=${viewedMonth + 1}`;
 
-    fetch(endpoint)
+    fetch(endpoint, { credentials: "include" })
       .then(res => res.json())
       .then(fetchedData => {
         if (viewMode === "tokens" && fetchedData.tokens) {
