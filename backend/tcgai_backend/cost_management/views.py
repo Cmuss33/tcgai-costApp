@@ -201,7 +201,7 @@ def auth_check(request):
         "authenticated": request.user.is_authenticated
     })
 
-@login_required
+# HELPER FUNCTION, DON'T LIMIT ACCESS
 def get_period_start(period: str):
     """Return datetime for start of period based on 'daily', '7days', '30days'."""
     today = now()
