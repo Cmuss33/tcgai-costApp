@@ -76,6 +76,11 @@ def get_tokens(request):
 @require_http_methods(["POST"])
 def log_message(request):
     try:
+        expected = os.environ.get('MSG_LOG_AUTH')
+        received = request.headers.get("Msg-Log-Auth")
+        if not expected or received != expected:
+            return JsonResponse({"error": "Unauthorized"}, status=401)
+        
         data = json.loads(request.body)
         chat_id = data.get('chat_id')
         content = data.get('content')
