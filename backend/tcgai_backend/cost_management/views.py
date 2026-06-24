@@ -86,6 +86,9 @@ def log_message(request):
         tokens_out = data.get('tokens_out')
         model = data.get('model')
 
+        if content == 'hi this is the probe':
+            return JsonResponse({'status': 'error', 'message': 'this was a probe message'}, status=400)
+
         chat, created = Chat.objects.get_or_create(chat_id=chat_id, defaults={"model": model})
 
         message = Message.objects.create(
