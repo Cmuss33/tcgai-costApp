@@ -7,7 +7,7 @@ import json
 from django.contrib.auth import authenticate, login
 import anthropic
 import os
-from django.db.models import Avg, Count
+from django.db.models import Avg, Count, Sum
 from django.db.models.functions import TruncDate
 from django.utils.timezone import now
 from datetime import timedelta
@@ -291,9 +291,8 @@ def get_avg_conversations_per_day(request):
             .annotate(count=Count('chat_id'))
         )
 
-        avg_per_day = daily_counts.aggregate(avg_daily=Avg('count'))["avg_daily"]
-        
-        avg_per_day = round(avg_per_day / num_days, 2)
+        total = daily_counts.aggregate(total=Sum("count"))["total"] or 0
+        avg_per_day = round(total / num_days, 2)
 
         return JsonResponse({"average_conversations_per_day": avg_per_day})
     except Exception as e:
