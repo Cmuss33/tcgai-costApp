@@ -2,6 +2,30 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import "./ChatSummaryView.css";
 
+function ProductCard({ product }) {
+  return (
+    <a
+      className="product-card"
+      href={product.url}
+      target="_blank"
+      rel="noopener noreferrer"
+    >
+      <div className="product-card-image-wrap">
+        <img
+          className="product-card-image"
+          src={product.image_url}
+          alt={product.title}
+        />
+        {product.available === false && (
+          <span className="product-badge-oos">Out of Stock</span>
+        )}
+      </div>
+      <div className="product-card-title">{product.title}</div>
+      <div className="product-card-price">${product.price}</div>
+    </a>
+  );
+}
+
 function ChatSummaryView() {
   const API_URL = import.meta.env.VITE_API_URL;
 
@@ -184,6 +208,7 @@ function ChatSummaryView() {
             <th>Tokens Out</th>
             <th>Est. Cost ($)</th>
             <th>Model</th>
+            <th>Products</th>
           </tr>
         </thead>
 
@@ -253,6 +278,12 @@ function ChatSummaryView() {
               </td>
 
               <td>{chat.model}</td>
+
+              <td>
+                {chat.products_shown_count > 0
+                  ? chat.products_shown_count
+                  : "-"}
+              </td>
             </tr>
           ))}
         </tbody>
@@ -442,6 +473,50 @@ function ChatSummaryView() {
                                         "},\n\n{"
                                       )}
                                   </pre>
+                                </div>
+                              )}
+
+                              {msg.products_shown && (
+                                <div className="products-shown">
+                                  {msg.products_shown.primary?.length > 0 && (
+                                    <div className="product-section">
+                                      <div className="product-section-label">
+                                        Primary
+                                      </div>
+                                      <div className="product-card-list">
+                                        {msg.products_shown.primary.map(
+                                          (product) => (
+                                            <ProductCard
+                                              key={product.id}
+                                              product={product}
+                                            />
+                                          )
+                                        )}
+                                      </div>
+                                    </div>
+                                  )}
+
+                                  {msg.products_shown.complementary?.length >
+                                    0 && (
+                                    <div className="product-section product-section-complementary">
+                                      <div className="product-section-label">
+                                        You Might Also Like{" "}
+                                        <span className="product-badge">
+                                          Recommended
+                                        </span>
+                                      </div>
+                                      <div className="product-card-list">
+                                        {msg.products_shown.complementary.map(
+                                          (product) => (
+                                            <ProductCard
+                                              key={product.id}
+                                              product={product}
+                                            />
+                                          )
+                                        )}
+                                      </div>
+                                    </div>
+                                  )}
                                 </div>
                               )}
                             </div>

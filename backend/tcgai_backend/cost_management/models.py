@@ -32,6 +32,7 @@ class Message(models.Model):
     tokens_in = models.IntegerField()
     tokens_out = models.IntegerField()
     model = models.TextField()
+    products_shown = models.JSONField(null=True, blank=True)
     timestamp = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
