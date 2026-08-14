@@ -91,6 +91,10 @@ def log_message(request):
 
         chat, created = Chat.objects.get_or_create(chat_id=chat_id, defaults={"model": model})
 
+        products_shown = None
+        if isinstance(llm_formatted_message, dict):
+            products_shown = llm_formatted_message.get('products_shown')
+
         message = Message.objects.create(
             chat=chat,
             content=content,
@@ -99,13 +103,17 @@ def log_message(request):
             llm_formatted_returned_message=llm_formatted_returned_message,
             tokens_in=tokens_in,
             tokens_out=tokens_out,
-            model=model
+            model=model,
+            products_shown=products_shown,
         )
 
         chat.tokens_in += tokens_in
         chat.tokens_out += tokens_out
 
         # Only update intent if it is currently "NOT FOUND"
+        # NOTE: inert since the sender stopped including `content` on message
+        # entries (GDPR change, ~Feb 2026) — messages are now role-only, so
+        # content_list below is always [] and this never sets chat.intent.
         if chat.intent == "NOT FOUND" and llm_formatted_message:
             try:
                 parsed_msg = llm_formatted_message
@@ -157,9 +165,22 @@ def get_chat_ids(request):
         total = Chat.objects.count()
 
         chats = Chat.objects.all().order_by('-timestamp')[offset:offset + limit]
+        results = list(chats.values())
+
+        products_shown_counts = {chat["chat_id"]: 0 for chat in results}
+        page_messages = Message.objects.filter(
+            chat_id__in=products_shown_counts.keys(), products_shown__isnull=False
+        ).values_list('chat_id', 'products_shown')
+        for chat_id, products_shown in page_messages:
+            products_shown_counts[chat_id] += len(
+                products_shown.get('primary', [])
+            ) + len(products_shown.get('complementary', []))
+
+        for chat in results:
+            chat["products_shown_count"] = products_shown_counts[chat["chat_id"]]
 
         return JsonResponse({
-            "results": list(chats.values()),
+            "results": results,
             "has_next": offset + limit < total
         }, safe=False)
 
