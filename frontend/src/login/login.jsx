@@ -18,7 +18,7 @@ function Login() {
       .then((res) => res.json())
       .then((data) => {
         if (data.authenticated) {
-          navigate("/cost");
+          navigate("/home");
         }
       });
   }, [navigate]);

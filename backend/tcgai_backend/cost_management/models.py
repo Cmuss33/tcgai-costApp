@@ -42,6 +42,25 @@ class Chat(models.Model):
         return self.chat_id
 
 
+class InsightsSnapshot(models.Model):
+    """One stored `report_insights` result per calendar month.
+
+    The current month's row is upserted on each fresh generation; once the
+    month rolls over the row is never touched again (frozen automatically).
+    """
+    month = models.DateField(unique=True)  # first day of the month covered
+    payload = models.JSONField()
+    conversations_analyzed = models.IntegerField(default=0)
+    generated_at = models.DateTimeField(auto_now=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-month"]
+
+    def __str__(self):
+        return f"InsightsSnapshot {self.month:%Y-%m}"
+
+
 #TODO: use a unique message_id gotten from claude instead of djagno's
 class Message(models.Model):
     chat = models.ForeignKey(Chat, on_delete=models.CASCADE, to_field='chat_id')

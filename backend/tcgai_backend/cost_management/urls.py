@@ -1,6 +1,7 @@
 from django.urls import path
 from . import views
 from . import investigation_views
+from . import insights_views
 
 urlpatterns = [
     path('get_cost/', views.get_cost, name='get_cost'),
@@ -17,4 +18,5 @@ urlpatterns = [
     path('get_avg_tokens_out/', views.get_avg_tokens_out, name="get_avg_tokens_out"),
     path('get_avg_conversations_per_day/', views.get_avg_conversations_per_day, name="get_avg_conversations_per_day"),
     path('flag_chat/', investigation_views.flag_chat, name='flag_chat'),
+    path('insights_summary/', insights_views.insights_summary, name='insights_summary'),
 ]
