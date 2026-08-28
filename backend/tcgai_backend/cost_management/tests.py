@@ -129,3 +129,45 @@ class GetChatIdsProductsShownCountTests(TestCase):
         data = response.json()
         result = next(c for c in data["results"] if c["chat_id"] == "conv-no-products")
         self.assertEqual(result["products_shown_count"], 0)
+
+
+class ChatInvestigationFieldsTests(TestCase):
+    def test_new_chat_defaults_to_unflagged(self):
+        chat = Chat.objects.create(chat_id="conv-defaults", model="claude-haiku-4-5")
+        self.assertEqual(chat.investigation_status, "unflagged")
+        self.assertEqual(chat.flag_reason, "")
+        self.assertIsNone(chat.flagged_at)
+        self.assertEqual(chat.flagged_by, "")
+        self.assertIsNone(chat.github_issue_number)
+        self.assertEqual(chat.github_issue_url, "")
+        self.assertEqual(chat.linear_issue_id, "")
+        self.assertEqual(chat.linear_issue_url, "")
+        self.assertEqual(chat.flag_error, "")
+
+    def test_status_choices_are_the_three_lifecycle_values(self):
+        values = [value for value, _label in Chat.INVESTIGATION_STATUS_CHOICES]
+        self.assertEqual(values, ["unflagged", "flagged", "resolved"])
+
+
+class GetChatIdsInvestigationFieldsTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="owner", password="pw")
+        self.client.force_login(self.user)
+
+    def test_get_chat_ids_row_includes_investigation_fields(self):
+        Chat.objects.create(
+            chat_id="conv-inv",
+            model="claude-haiku-4-5",
+            investigation_status="flagged",
+            flag_reason="looks wrong",
+            github_issue_url="https://github.com/x/y/issues/1",
+            linear_issue_url="https://linear.app/x/issue/ABC-1",
+        )
+
+        response = self.client.get("/api/cost/get_chat_ids/")
+
+        row = next(c for c in response.json()["results"] if c["chat_id"] == "conv-inv")
+        self.assertEqual(row["investigation_status"], "flagged")
+        self.assertEqual(row["flag_reason"], "looks wrong")
+        self.assertEqual(row["github_issue_url"], "https://github.com/x/y/issues/1")
+        self.assertEqual(row["linear_issue_url"], "https://linear.app/x/issue/ABC-1")
