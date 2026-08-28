@@ -397,3 +397,158 @@ class FlagChatHappyPathTests(TestCase):
         self.assertIn("GitHub issue: https://gh/7", linear_body)
         mock_gh.add_comment.assert_called_once()
         self.assertIn("https://lin/9", mock_gh.add_comment.call_args[0][1])
+
+
+@override_settings(**INVESTIGATION_ENV)
+class FlagChatValidationTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="reviewer", password="pw")
+        self.client.force_login(self.user)
+        self.chat = Chat.objects.create(chat_id="conv-v", model="claude-haiku-4-5")
+
+    def _post(self, body):
+        return self.client.post("/api/cost/flag_chat/", data=json.dumps(body),
+                                content_type="application/json")
+
+    @patch("cost_management.investigation_views.github_tracker")
+    def test_blank_reason_is_400_and_calls_no_tracker(self, mock_gh):
+        resp = self._post({"chat_id": "conv-v", "reason": "   "})
+        self.assertEqual(resp.status_code, 400)
+        mock_gh.create_issue.assert_not_called()
+
+    @patch("cost_management.investigation_views.github_tracker")
+    def test_unknown_chat_is_404(self, mock_gh):
+        resp = self._post({"chat_id": "nope", "reason": "something"})
+        self.assertEqual(resp.status_code, 404)
+        mock_gh.create_issue.assert_not_called()
+
+    @patch("cost_management.investigation_views.github_tracker")
+    def test_already_flagged_with_linear_id_is_409(self, mock_gh):
+        Chat.objects.filter(pk="conv-v").update(
+            investigation_status="flagged", github_issue_number=3,
+            github_issue_url="https://gh/3", linear_issue_id="lin-x",
+            linear_issue_url="https://lin/x")
+        resp = self._post({"chat_id": "conv-v", "reason": "again"})
+        self.assertEqual(resp.status_code, 409)
+        mock_gh.create_issue.assert_not_called()
+
+    @override_settings(LINEAR_TEAM_ID="")
+    @patch("cost_management.investigation_views.github_tracker")
+    def test_missing_setting_is_503_with_missing_list(self, mock_gh):
+        resp = self._post({"chat_id": "conv-v", "reason": "x"})
+        self.assertEqual(resp.status_code, 503)
+        self.assertIn("LINEAR_TEAM_ID", resp.json()["missing"])
+        mock_gh.create_issue.assert_not_called()
+
+
+@override_settings(**INVESTIGATION_ENV)
+class FlagChatPartialFailureTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="reviewer", password="pw")
+        self.client.force_login(self.user)
+        self.chat = Chat.objects.create(chat_id="conv-p", model="claude-haiku-4-5")
+        Message.objects.create(chat=self.chat, content="hi", llm_formatted_message="{}",
+                               returned_content="hello", llm_formatted_returned_message="{}",
+                               tokens_in=1, tokens_out=1, model="claude-haiku-4-5")
+
+    def _post(self):
+        return self.client.post(
+            "/api/cost/flag_chat/",
+            data=json.dumps({"chat_id": "conv-p", "reason": "bad answer"}),
+            content_type="application/json",
+        )
+
+    @patch("cost_management.investigation_views.linear_tracker")
+    @patch("cost_management.investigation_views.github_tracker")
+    def test_github_create_failure_is_502_and_persists_nothing(self, mock_gh, mock_linear):
+        from cost_management.issue_trackers import IssueTrackerError
+        mock_gh.create_issue.side_effect = IssueTrackerError("github", "create_issue", 500, "boom")
+
+        resp = self._post()
+
+        self.assertEqual(resp.status_code, 502)
+        mock_linear.create_issue.assert_not_called()
+        chat = Chat.objects.get(pk="conv-p")
+        self.assertEqual(chat.investigation_status, "unflagged")
+        self.assertIsNone(chat.github_issue_number)
+
+    @patch("cost_management.investigation_views.linear_tracker")
+    @patch("cost_management.investigation_views.github_tracker")
+    def test_label_failure_is_soft_and_persists_flag(self, mock_gh, mock_linear):
+        from cost_management.issue_trackers import IssueRef, IssueTrackerError
+        mock_gh.create_issue.return_value = IssueRef(id="I", number=5, url="https://gh/5")
+        mock_gh.add_label.side_effect = IssueTrackerError("github", "add_label", 422, "no label")
+        mock_linear.create_issue.return_value = IssueRef(id="lin", number=None, url="https://lin/5")
+
+        resp = self._post()
+
+        self.assertEqual(resp.status_code, 200)
+        chat = Chat.objects.get(pk="conv-p")
+        self.assertEqual(chat.investigation_status, "flagged")
+        self.assertIn("trigger label", chat.flag_error)
+
+    @patch("cost_management.investigation_views.linear_tracker")
+    @patch("cost_management.investigation_views.github_tracker")
+    def test_linear_failure_persists_github_and_returns_linear_error(self, mock_gh, mock_linear):
+        from cost_management.issue_trackers import IssueRef, IssueTrackerError
+        mock_gh.create_issue.return_value = IssueRef(id="I", number=6, url="https://gh/6")
+        mock_linear.create_issue.side_effect = IssueTrackerError("linear", "create_issue", 400, "bad project")
+
+        resp = self._post()
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("linear_error", resp.json())
+        chat = Chat.objects.get(pk="conv-p")
+        self.assertEqual(chat.investigation_status, "flagged")
+        self.assertEqual(chat.github_issue_number, 6)
+        self.assertEqual(chat.linear_issue_id, "")
+        self.assertIn("linear create failed", chat.flag_error)
+
+    @patch("cost_management.investigation_views.linear_tracker")
+    @patch("cost_management.investigation_views.github_tracker")
+    def test_comment_failure_is_soft(self, mock_gh, mock_linear):
+        from cost_management.issue_trackers import IssueRef, IssueTrackerError
+        mock_gh.create_issue.return_value = IssueRef(id="I", number=8, url="https://gh/8")
+        mock_gh.add_comment.side_effect = IssueTrackerError("github", "add_comment", 500, "oops")
+        mock_linear.create_issue.return_value = IssueRef(id="lin", number=None, url="https://lin/8")
+
+        resp = self._post()
+
+        self.assertEqual(resp.status_code, 200)
+        chat = Chat.objects.get(pk="conv-p")
+        self.assertEqual(chat.investigation_status, "flagged")
+        self.assertEqual(chat.linear_issue_id, "lin")
+        self.assertIn("back-link comment", chat.flag_error)
+
+    @patch("cost_management.investigation_views.linear_tracker")
+    @patch("cost_management.investigation_views.github_tracker")
+    def test_linear_retry_branch_only_calls_linear(self, mock_gh, mock_linear):
+        from cost_management.issue_trackers import IssueRef
+        Chat.objects.filter(pk="conv-p").update(
+            investigation_status="flagged", flag_reason="bad answer",
+            github_issue_number=9, github_issue_url="https://gh/9", linear_issue_id="")
+        mock_linear.create_issue.return_value = IssueRef(id="lin-retry", number=None, url="https://lin/9")
+
+        resp = self._post()
+
+        self.assertEqual(resp.status_code, 200)
+        mock_gh.create_issue.assert_not_called()
+        mock_linear.create_issue.assert_called_once()
+        chat = Chat.objects.get(pk="conv-p")
+        self.assertEqual(chat.linear_issue_id, "lin-retry")
+        self.assertEqual(chat.linear_issue_url, "https://lin/9")
+        self.assertEqual(chat.flag_error, "")
+
+    @patch("cost_management.investigation_views.linear_tracker")
+    @patch("cost_management.investigation_views.github_tracker")
+    def test_sequential_double_submit_creates_one_github_issue(self, mock_gh, mock_linear):
+        from cost_management.issue_trackers import IssueRef
+        mock_gh.create_issue.return_value = IssueRef(id="I", number=10, url="https://gh/10")
+        mock_linear.create_issue.return_value = IssueRef(id="lin", number=None, url="https://lin/10")
+
+        first = self._post()
+        second = self._post()
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 409)
+        self.assertEqual(mock_gh.create_issue.call_count, 1)
