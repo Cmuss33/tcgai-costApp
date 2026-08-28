@@ -48,22 +48,31 @@ function AreaSpark({ values, color, w = 200, h = 36 }) {
   );
 }
 
-function BarSeries({ values, color, w = 1000, h = 96 }) {
-  if (!values || values.length === 0) return null;
-  const max = Math.max(...values, 1);
-  const hi = values.indexOf(Math.max(...values));
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const shortDay = (iso) => {
+  const [, m, d] = iso.split("-").map(Number);
+  return `${MONTHS[m - 1]} ${d}`;
+};
+
+function BarSeries({ data, color, w = 1000, h = 118 }) {
+  if (!data || data.length === 0) return null;
+  const counts = data.map((d) => d.count);
+  const max = Math.max(...counts, 1);
+  const hi = counts.indexOf(Math.max(...counts));
   const gap = 2;
-  const bw = (w - gap * (values.length - 1)) / values.length;
+  const plotH = h - 20; // room for date labels
+  const bw = (w - gap * (data.length - 1)) / data.length;
+  const labelEvery = Math.max(1, Math.ceil(data.length / 6));
   return (
     <svg viewBox={`0 0 ${w} ${h}`} width="100%" height={h}>
-      <line className="cr-grid" x1="0" x2={w} y1={h * 0.5} y2={h * 0.5} />
-      {values.map((v, i) => {
-        const bh = Math.max(2, (v / max) * (h - 3));
+      <line className="cr-grid" x1="0" x2={w} y1={plotH * 0.5} y2={plotH * 0.5} />
+      {data.map((d, i) => {
+        const bh = Math.max(2, (d.count / max) * (plotH - 3));
         return (
           <rect
             key={i}
             x={i * (bw + gap)}
-            y={h - bh}
+            y={plotH - bh}
             width={bw}
             height={bh}
             rx="2"
@@ -72,6 +81,21 @@ function BarSeries({ values, color, w = 1000, h = 96 }) {
           />
         );
       })}
+      {data.map((d, i) =>
+        i % labelEvery === 0 || i === data.length - 1 ? (
+          <text
+            key={`lbl-${i}`}
+            x={i * (bw + gap) + bw / 2}
+            y={h - 5}
+            textAnchor="middle"
+            fontSize="11"
+            fontFamily="var(--font-m)"
+            fill="var(--faint)"
+          >
+            {shortDay(d.day)}
+          </text>
+        ) : null
+      )}
     </svg>
   );
 }
@@ -139,7 +163,7 @@ function StatsBand({ stats }) {
   const ev = stats.eval_score || {};
   const tk = stats.tokens || {};
   const spendSeries = (s.daily || []).map((d) => d.amount);
-  const convSeries = (c.daily || []).map((d) => d.count);
+  const convDaily = c.daily || [];
   const tokSeries = (tk.daily || []).map((d) => d.input + d.output);
 
   return (
@@ -154,12 +178,12 @@ function StatsBand({ stats }) {
       <div className="cr__kpis">
         <Kpi
           accent="--a-spend"
-          label="Spend"
+          label="Anthropic spend"
           value={fmtUsd(s.total)}
           sub={
             s.projected_month_end != null
-              ? `proj. ${fmtUsd(s.projected_month_end)} by month-end`
-              : `prev ${fmtUsd(s.prev_total)}`
+              ? `${fmtUsd(s.projected_month_end)} projected month-end`
+              : `vs ${fmtUsd(s.prev_total)} last month`
           }
           deltaPct={s.delta_pct}
           betterWhen="down"
@@ -173,7 +197,7 @@ function StatsBand({ stats }) {
           sub={`${c.per_day_avg} / day average`}
           deltaPct={c.delta_pct}
           betterWhen="up"
-          spark={convSeries}
+          spark={convDaily.map((d) => d.count)}
           sparkColor="#2fe0a6"
         />
         <Kpi
@@ -204,27 +228,14 @@ function StatsBand({ stats }) {
         />
       </div>
 
-      {(spendSeries.length > 1 || convSeries.length > 0) && (
-        <div className="cr__panel" style={{ "--accent": "var(--a-spend)" }}>
-          <h2>This month at a glance</h2>
-          <div className="cr__note">Daily spend and conversation volume on the same timeline.</div>
-          {spendSeries.length > 1 && (
-            <>
-              <div className="cr__trend-sub" style={{ "--c": "var(--a-spend)" }}>
-                Spend / day · {fmtUsd(s.total)} total
-              </div>
-              <AreaSpark values={spendSeries} color="#6a9bff" w={1000} h={88} />
-            </>
-          )}
-          {convSeries.length > 0 && (
-            <>
-              <div className="cr__trend-sub" style={{ "--c": "var(--a-convo)" }}>
-                Conversations / day · {fmtNum(c.total)} total
-                {c.busiest ? ` · busiest ${c.busiest.day}` : ""}
-              </div>
-              <BarSeries values={convSeries} color="#2fe0a6" />
-            </>
-          )}
+      {convDaily.length > 0 && (
+        <div className="cr__panel" style={{ "--accent": "var(--a-convo)" }}>
+          <h2>Conversations per day</h2>
+          <div className="cr__note">
+            {fmtNum(c.total)} total this month
+            {c.busiest ? ` · busiest ${shortDay(c.busiest.day)} (${c.busiest.count})` : ""}
+          </div>
+          <BarSeries data={convDaily} color="#2fe0a6" />
         </div>
       )}
     </>
