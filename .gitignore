@@ -147,3 +147,6 @@ vite.config.ts.timestamp-*
 
 # Python venv
 backend/tcgai_backend/venv/
+
+# Local SQLite database
+backend/tcgai_backend/db.sqlite3

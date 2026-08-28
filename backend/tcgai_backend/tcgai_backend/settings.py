@@ -4,6 +4,7 @@ Django settings for tcgai_backend project (local dev only).
 
 from pathlib import Path
 import os
+import sys
 import dj_database_url
 from dotenv import load_dotenv
 
@@ -65,7 +66,12 @@ TEMPLATES = [
 WSGI_APPLICATION = 'tcgai_backend.wsgi.application'
 
 # Database
-if os.environ.get('DATABASE_URL'):
+TESTING = 'test' in sys.argv
+
+if TESTING:
+    # Test runs use in-memory SQLite automatically — no Postgres server needed.
+    DATABASES = {'default': {'ENGINE': 'django.db.backends.sqlite3', 'NAME': ':memory:'}}
+elif os.environ.get('DATABASE_URL'):
     DATABASES = {
         'default': dj_database_url.config(
             default=os.environ.get('DATABASE_URL'),
@@ -74,15 +80,8 @@ if os.environ.get('DATABASE_URL'):
         )
     }
 else:
-    # Local fallback when no DATABASE_URL is configured: in-memory SQLite.
-    # This lets `python manage.py test` run without a Postgres server.
-    # Production and real dev environments set DATABASE_URL and use Postgres.
-    DATABASES = {
-        'default': {
-            'ENGINE': 'django.db.backends.sqlite3',
-            'NAME': ':memory:',
-        }
-    }
+    from django.core.exceptions import ImproperlyConfigured
+    raise ImproperlyConfigured("DATABASE_URL is not set")
 
 # Password validation
 AUTH_PASSWORD_VALIDATORS = [

@@ -46,6 +46,14 @@ class GitHubIssueTracker:
     def _repo_url(self, suffix):
         return f"{GITHUB_API}/repos/{settings.GITHUB_ISSUE_REPO}{suffix}"
 
+    def _post(self, url, payload, operation):
+        try:
+            return requests.post(
+                url, headers=self._headers(), json=payload, timeout=HTTP_TIMEOUT
+            )
+        except requests.RequestException as exc:
+            raise IssueTrackerError("github", operation, None, str(exc)[:500])
+
     def _check(self, resp, operation):
         if resp.status_code >= 300:
             raise IssueTrackerError("github", operation, resp.status_code, resp.text[:500])
@@ -54,31 +62,30 @@ class GitHubIssueTracker:
         payload = {"title": title, "body": body}
         if labels:
             payload["labels"] = labels
-        resp = requests.post(
-            self._repo_url("/issues"),
-            headers=self._headers(),
-            json=payload,
-            timeout=HTTP_TIMEOUT,
-        )
+        resp = self._post(self._repo_url("/issues"), payload, "create_issue")
         self._check(resp, "create_issue")
-        data = resp.json()
+        try:
+            data = resp.json()
+        except ValueError:
+            raise IssueTrackerError(
+                "github", "create_issue", resp.status_code,
+                "invalid JSON response: " + resp.text[:300],
+            )
         return IssueRef(id=data["node_id"], number=data["number"], url=data["html_url"])
 
     def add_label(self, ref, label):
-        resp = requests.post(
+        resp = self._post(
             self._repo_url(f"/issues/{ref.number}/labels"),
-            headers=self._headers(),
-            json={"labels": [label]},
-            timeout=HTTP_TIMEOUT,
+            {"labels": [label]},
+            "add_label",
         )
         self._check(resp, "add_label")
 
     def add_comment(self, ref, body):
-        resp = requests.post(
+        resp = self._post(
             self._repo_url(f"/issues/{ref.number}/comments"),
-            headers=self._headers(),
-            json={"body": body},
-            timeout=HTTP_TIMEOUT,
+            {"body": body},
+            "add_comment",
         )
         self._check(resp, "add_comment")
 
@@ -107,20 +114,34 @@ class LinearIssueTracker:
                 "description": body,
             }
         }
-        resp = requests.post(
-            LINEAR_API,
-            headers=self._headers(),
-            json={"query": self._MUTATION, "variables": variables},
-            timeout=HTTP_TIMEOUT,
-        )
+        try:
+            resp = requests.post(
+                LINEAR_API,
+                headers=self._headers(),
+                json={"query": self._MUTATION, "variables": variables},
+                timeout=HTTP_TIMEOUT,
+            )
+        except requests.RequestException as exc:
+            raise IssueTrackerError("linear", "create_issue", None, str(exc)[:500])
         if resp.status_code >= 300:
             raise IssueTrackerError("linear", "create_issue", resp.status_code, resp.text[:500])
-        data = resp.json()
+        try:
+            data = resp.json()
+        except ValueError:
+            raise IssueTrackerError(
+                "linear", "create_issue", resp.status_code,
+                "invalid JSON response: " + resp.text[:300],
+            )
         if data.get("errors"):
             raise IssueTrackerError(
                 "linear", "create_issue", resp.status_code, json.dumps(data["errors"])[:500]
             )
-        issue = data["data"]["issueCreate"]["issue"]
+        issue = (((data or {}).get("data") or {}).get("issueCreate") or {}).get("issue")
+        if not issue:
+            raise IssueTrackerError(
+                "linear", "create_issue", resp.status_code,
+                "unexpected response: " + json.dumps(data)[:300],
+            )
         return IssueRef(id=issue["id"], number=None, url=issue["url"])
 
 

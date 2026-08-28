@@ -181,7 +181,7 @@ function ChatSummaryView() {
                 investigation_status: data.investigation_status || "flagged",
                 github_issue_url: data.github_issue_url ?? c.github_issue_url,
                 linear_issue_url: data.linear_issue_url ?? c.linear_issue_url,
-                flag_error: data.flag_error ?? "",
+                flag_error: data.flag_error ?? data.linear_error ?? "",
               }
             : c
         )
@@ -228,8 +228,15 @@ function ChatSummaryView() {
 
     return (
       <span className="investigation-cell">
-        <span className="badge badge-flagged">Flagged</span>
-        {chat.flag_error ? (
+        <span
+          className="badge badge-flagged"
+          title={
+            chat.flag_error && chat.linear_issue_url ? chat.flag_error : undefined
+          }
+        >
+          Flagged
+        </span>
+        {chat.flag_error && !chat.linear_issue_url ? (
           <button
             className="retry-link"
             title={chat.flag_error}
