@@ -10,6 +10,12 @@ class Cost(models.Model):
         return f"{self.name} - {self.amount} {self.currency}"
 
 class Chat(models.Model):
+    INVESTIGATION_STATUS_CHOICES = [
+        ("unflagged", "Unflagged"),
+        ("flagged", "Flagged"),
+        ("resolved", "Resolved"),
+    ]
+
     chat_id = models.CharField(max_length=255, primary_key=True)
     model = models.TextField()
     tokens_in = models.IntegerField(default=0)
@@ -17,6 +23,20 @@ class Chat(models.Model):
     intent = models.TextField(default='NOT FOUND')
     timestamp = models.DateTimeField(auto_now_add=True)
     evaluation_score = models.IntegerField(null=True, blank=True)
+
+    investigation_status = models.CharField(
+        max_length=20,
+        choices=INVESTIGATION_STATUS_CHOICES,
+        default="unflagged",
+    )
+    flag_reason = models.TextField(blank=True, default="")
+    flagged_at = models.DateTimeField(null=True, blank=True)
+    flagged_by = models.CharField(max_length=150, blank=True, default="")
+    github_issue_number = models.IntegerField(null=True, blank=True)
+    github_issue_url = models.URLField(blank=True, default="")
+    linear_issue_id = models.CharField(max_length=64, blank=True, default="")
+    linear_issue_url = models.URLField(blank=True, default="")
+    flag_error = models.TextField(blank=True, default="")
 
     def __str__(self):
         return self.chat_id

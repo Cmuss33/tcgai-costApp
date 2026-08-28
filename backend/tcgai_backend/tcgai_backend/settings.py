@@ -4,6 +4,7 @@ Django settings for tcgai_backend project (local dev only).
 
 from pathlib import Path
 import os
+import sys
 import dj_database_url
 from dotenv import load_dotenv
 
@@ -65,13 +66,22 @@ TEMPLATES = [
 WSGI_APPLICATION = 'tcgai_backend.wsgi.application'
 
 # Database
-DATABASES = {
-    'default': dj_database_url.config(
-        default=os.environ.get('DATABASE_URL'),
-        conn_max_age=600,
-        ssl_require=True
-    )
-}
+TESTING = 'test' in sys.argv
+
+if TESTING:
+    # Test runs use in-memory SQLite automatically — no Postgres server needed.
+    DATABASES = {'default': {'ENGINE': 'django.db.backends.sqlite3', 'NAME': ':memory:'}}
+elif os.environ.get('DATABASE_URL'):
+    DATABASES = {
+        'default': dj_database_url.config(
+            default=os.environ.get('DATABASE_URL'),
+            conn_max_age=600,
+            ssl_require=True
+        )
+    }
+else:
+    from django.core.exceptions import ImproperlyConfigured
+    raise ImproperlyConfigured("DATABASE_URL is not set")
 
 # Password validation
 AUTH_PASSWORD_VALIDATORS = [
@@ -127,3 +137,14 @@ CSRF_COOKIE_SAMESITE = "None"
 SESSION_COOKIE_HTTPONLY = True
 CSRF_COOKIE_HTTPONLY = False
 SESSION_EXPIRE_AT_BROWSER_CLOSE = False
+
+# -----------------------------
+# Investigation issue trackers (Phase 1)
+# -----------------------------
+GITHUB_TOKEN = os.environ.get('GITHUB_TOKEN', '')
+GITHUB_ISSUE_REPO = os.environ.get('GITHUB_ISSUE_REPO', 'professormeta/agentic-shopify-chatbot')
+GITHUB_TRIGGER_LABEL = os.environ.get('GITHUB_TRIGGER_LABEL', 'agent:queued')
+LINEAR_API_KEY = os.environ.get('LINEAR_API_KEY', '')
+LINEAR_TEAM_ID = os.environ.get('LINEAR_TEAM_ID', '')
+LINEAR_PROJECT_ID = os.environ.get('LINEAR_PROJECT_ID', '')
+COST_APP_PUBLIC_URL = os.environ.get('COST_APP_PUBLIC_URL', '')

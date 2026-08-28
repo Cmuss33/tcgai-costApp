@@ -1,9 +1,13 @@
 import json
+from unittest.mock import patch, MagicMock
+
+import requests
 
 from django.contrib.auth.models import User
-from django.test import TestCase
+from django.test import TestCase, override_settings
 
 from .models import Chat, Message
+from .issue_trackers import GitHubIssueTracker, IssueRef, IssueTrackerError, LinearIssueTracker
 
 
 PRODUCTS_SHOWN = {
@@ -129,3 +133,524 @@ class GetChatIdsProductsShownCountTests(TestCase):
         data = response.json()
         result = next(c for c in data["results"] if c["chat_id"] == "conv-no-products")
         self.assertEqual(result["products_shown_count"], 0)
+
+
+class ChatInvestigationFieldsTests(TestCase):
+    def test_new_chat_defaults_to_unflagged(self):
+        chat = Chat.objects.create(chat_id="conv-defaults", model="claude-haiku-4-5")
+        self.assertEqual(chat.investigation_status, "unflagged")
+        self.assertEqual(chat.flag_reason, "")
+        self.assertIsNone(chat.flagged_at)
+        self.assertEqual(chat.flagged_by, "")
+        self.assertIsNone(chat.github_issue_number)
+        self.assertEqual(chat.github_issue_url, "")
+        self.assertEqual(chat.linear_issue_id, "")
+        self.assertEqual(chat.linear_issue_url, "")
+        self.assertEqual(chat.flag_error, "")
+
+    def test_status_choices_are_the_three_lifecycle_values(self):
+        values = [value for value, _label in Chat.INVESTIGATION_STATUS_CHOICES]
+        self.assertEqual(values, ["unflagged", "flagged", "resolved"])
+
+
+class GetChatIdsInvestigationFieldsTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="owner", password="pw")
+        self.client.force_login(self.user)
+
+    def test_get_chat_ids_row_includes_investigation_fields(self):
+        Chat.objects.create(
+            chat_id="conv-inv",
+            model="claude-haiku-4-5",
+            investigation_status="flagged",
+            flag_reason="looks wrong",
+            github_issue_url="https://github.com/x/y/issues/1",
+            linear_issue_url="https://linear.app/x/issue/ABC-1",
+        )
+
+        response = self.client.get("/api/cost/get_chat_ids/")
+
+        row = next(c for c in response.json()["results"] if c["chat_id"] == "conv-inv")
+        self.assertEqual(row["investigation_status"], "flagged")
+        self.assertEqual(row["flag_reason"], "looks wrong")
+        self.assertEqual(row["github_issue_url"], "https://github.com/x/y/issues/1")
+        self.assertEqual(row["linear_issue_url"], "https://linear.app/x/issue/ABC-1")
+
+
+def _fake_response(status_code, json_body=None, text=""):
+    resp = MagicMock()
+    resp.status_code = status_code
+    resp.json.return_value = json_body or {}
+    resp.text = text
+    return resp
+
+
+@override_settings(GITHUB_TOKEN="tok", GITHUB_ISSUE_REPO="acme/widgets")
+class GitHubIssueTrackerTests(TestCase):
+    @patch("cost_management.issue_trackers.requests.post")
+    def test_create_issue_posts_payload_and_parses_ref(self, mock_post):
+        mock_post.return_value = _fake_response(
+            201,
+            {
+                "number": 42,
+                "node_id": "I_abc",
+                "html_url": "https://github.com/acme/widgets/issues/42",
+            },
+        )
+
+        ref = GitHubIssueTracker().create_issue("A title", "A body")
+
+        url, kwargs = mock_post.call_args[0][0], mock_post.call_args[1]
+        self.assertEqual(url, "https://api.github.com/repos/acme/widgets/issues")
+        self.assertEqual(kwargs["json"], {"title": "A title", "body": "A body"})
+        self.assertEqual(kwargs["headers"]["Authorization"], "Bearer tok")
+        self.assertEqual(kwargs["timeout"], 10)
+        self.assertEqual(ref, IssueRef(id="I_abc", number=42,
+                                       url="https://github.com/acme/widgets/issues/42"))
+
+    @patch("cost_management.issue_trackers.requests.post")
+    def test_create_issue_raises_on_non_2xx(self, mock_post):
+        mock_post.return_value = _fake_response(422, text="Validation failed")
+
+        with self.assertRaises(IssueTrackerError) as ctx:
+            GitHubIssueTracker().create_issue("t", "b")
+
+        self.assertEqual(ctx.exception.tracker, "github")
+        self.assertEqual(ctx.exception.operation, "create_issue")
+        self.assertEqual(ctx.exception.status, 422)
+        self.assertIn("Validation failed", ctx.exception.detail)
+
+    @patch("cost_management.issue_trackers.requests.post")
+    def test_add_label_posts_to_labels_endpoint(self, mock_post):
+        mock_post.return_value = _fake_response(200, [])
+        ref = IssueRef(id="I_abc", number=42, url="https://github.com/acme/widgets/issues/42")
+
+        GitHubIssueTracker().add_label(ref, "agent:queued")
+
+        url, kwargs = mock_post.call_args[0][0], mock_post.call_args[1]
+        self.assertEqual(url, "https://api.github.com/repos/acme/widgets/issues/42/labels")
+        self.assertEqual(kwargs["json"], {"labels": ["agent:queued"]})
+
+    @patch("cost_management.issue_trackers.requests.post")
+    def test_add_comment_posts_body(self, mock_post):
+        mock_post.return_value = _fake_response(201, {"id": 1})
+        ref = IssueRef(id="I_abc", number=42, url="https://github.com/acme/widgets/issues/42")
+
+        GitHubIssueTracker().add_comment(ref, "Linked Linear issue: https://linear.app/x/ABC-1")
+
+        url, kwargs = mock_post.call_args[0][0], mock_post.call_args[1]
+        self.assertEqual(url, "https://api.github.com/repos/acme/widgets/issues/42/comments")
+        self.assertEqual(kwargs["json"], {"body": "Linked Linear issue: https://linear.app/x/ABC-1"})
+
+    @patch("cost_management.issue_trackers.requests.post")
+    def test_add_label_raises_on_error(self, mock_post):
+        mock_post.return_value = _fake_response(404, text="Not Found")
+        ref = IssueRef(id="I_abc", number=42, url="u")
+
+        with self.assertRaises(IssueTrackerError):
+            GitHubIssueTracker().add_label(ref, "agent:queued")
+
+    @patch("cost_management.issue_trackers.requests.post")
+    def test_create_issue_wraps_request_exception(self, mock_post):
+        mock_post.side_effect = requests.Timeout("connection timed out")
+
+        with self.assertRaises(IssueTrackerError) as ctx:
+            GitHubIssueTracker().create_issue("t", "b")
+
+        self.assertEqual(ctx.exception.tracker, "github")
+        self.assertEqual(ctx.exception.operation, "create_issue")
+
+    @patch("cost_management.issue_trackers.requests.post")
+    def test_create_issue_wraps_invalid_json(self, mock_post):
+        resp = _fake_response(200, {})
+        resp.json.side_effect = ValueError("no json")
+        resp.text = "<html>gateway error</html>"
+        mock_post.return_value = resp
+
+        with self.assertRaises(IssueTrackerError) as ctx:
+            GitHubIssueTracker().create_issue("t", "b")
+
+        self.assertEqual(ctx.exception.tracker, "github")
+        self.assertIn("invalid JSON", ctx.exception.detail)
+
+
+@override_settings(LINEAR_API_KEY="lin_key", LINEAR_TEAM_ID="team-123", LINEAR_PROJECT_ID="proj-456")
+class LinearIssueTrackerTests(TestCase):
+    @patch("cost_management.issue_trackers.requests.post")
+    def test_create_issue_sends_mutation_and_parses_ref(self, mock_post):
+        mock_post.return_value = _fake_response(
+            200,
+            {
+                "data": {
+                    "issueCreate": {
+                        "success": True,
+                        "issue": {
+                            "id": "uuid-1",
+                            "identifier": "SHO-7",
+                            "url": "https://linear.app/professor-meta/issue/SHO-7",
+                        },
+                    }
+                }
+            },
+        )
+
+        ref = LinearIssueTracker().create_issue("A title", "A body")
+
+        url, kwargs = mock_post.call_args[0][0], mock_post.call_args[1]
+        self.assertEqual(url, "https://api.linear.app/graphql")
+        self.assertEqual(kwargs["headers"]["Authorization"], "lin_key")
+        self.assertEqual(kwargs["timeout"], 10)
+        variables = kwargs["json"]["variables"]["input"]
+        self.assertEqual(variables["teamId"], "team-123")
+        self.assertEqual(variables["projectId"], "proj-456")
+        self.assertEqual(variables["title"], "A title")
+        self.assertEqual(variables["description"], "A body")
+        self.assertIn("issueCreate", kwargs["json"]["query"])
+        self.assertEqual(ref.id, "uuid-1")
+        self.assertIsNone(ref.number)
+        self.assertEqual(ref.url, "https://linear.app/professor-meta/issue/SHO-7")
+
+    @patch("cost_management.issue_trackers.requests.post")
+    def test_create_issue_raises_on_graphql_errors(self, mock_post):
+        mock_post.return_value = _fake_response(
+            200, {"errors": [{"message": "project not found"}]}
+        )
+
+        with self.assertRaises(IssueTrackerError) as ctx:
+            LinearIssueTracker().create_issue("t", "b")
+
+        self.assertEqual(ctx.exception.tracker, "linear")
+        self.assertIn("project not found", ctx.exception.detail)
+
+    @patch("cost_management.issue_trackers.requests.post")
+    def test_create_issue_raises_on_http_error(self, mock_post):
+        mock_post.return_value = _fake_response(401, text="Unauthorized")
+
+        with self.assertRaises(IssueTrackerError) as ctx:
+            LinearIssueTracker().create_issue("t", "b")
+
+        self.assertEqual(ctx.exception.status, 401)
+
+    @patch("cost_management.issue_trackers.requests.post")
+    def test_create_issue_wraps_request_exception(self, mock_post):
+        mock_post.side_effect = requests.Timeout("connection timed out")
+
+        with self.assertRaises(IssueTrackerError) as ctx:
+            LinearIssueTracker().create_issue("t", "b")
+
+        self.assertEqual(ctx.exception.tracker, "linear")
+        self.assertEqual(ctx.exception.operation, "create_issue")
+
+    @patch("cost_management.issue_trackers.requests.post")
+    def test_create_issue_wraps_invalid_json(self, mock_post):
+        resp = _fake_response(200, {})
+        resp.json.side_effect = ValueError("no json")
+        resp.text = "<html>gateway error</html>"
+        mock_post.return_value = resp
+
+        with self.assertRaises(IssueTrackerError) as ctx:
+            LinearIssueTracker().create_issue("t", "b")
+
+        self.assertEqual(ctx.exception.tracker, "linear")
+        self.assertIn("invalid JSON", ctx.exception.detail)
+
+    @patch("cost_management.issue_trackers.requests.post")
+    def test_create_issue_raises_on_missing_issue_in_response(self, mock_post):
+        mock_post.return_value = _fake_response(
+            200, {"data": {"issueCreate": {"success": False, "issue": None}}}
+        )
+
+        with self.assertRaises(IssueTrackerError) as ctx:
+            LinearIssueTracker().create_issue("t", "b")
+
+        self.assertEqual(ctx.exception.tracker, "linear")
+        self.assertIn("unexpected response", ctx.exception.detail)
+
+
+INVESTIGATION_ENV = dict(
+    GITHUB_TOKEN="tok",
+    GITHUB_ISSUE_REPO="acme/widgets",
+    GITHUB_TRIGGER_LABEL="agent:queued",
+    LINEAR_API_KEY="lin_key",
+    LINEAR_TEAM_ID="team-123",
+    LINEAR_PROJECT_ID="proj-456",
+    COST_APP_PUBLIC_URL="https://costapp.example.com",
+)
+
+
+@override_settings(**INVESTIGATION_ENV)
+class FlagChatHappyPathTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="reviewer", password="pw")
+        self.client.force_login(self.user)
+        self.chat = Chat.objects.create(chat_id="conv-flag-1", model="claude-haiku-4-5",
+                                        intent="return_request", tokens_in=100, tokens_out=50)
+        Message.objects.create(
+            chat=self.chat, content="i want to return my order",
+            llm_formatted_message="{}", returned_content="Sure, I can help with that.",
+            llm_formatted_returned_message="{}", tokens_in=100, tokens_out=50,
+            model="claude-haiku-4-5",
+        )
+
+    def _post(self, body=None):
+        return self.client.post(
+            "/api/cost/flag_chat/",
+            data=json.dumps({"chat_id": "conv-flag-1", "reason": "Bot gave a wrong refund policy"}
+                            if body is None else body),
+            content_type="application/json",
+        )
+
+    @patch("cost_management.investigation_views.linear_tracker")
+    @patch("cost_management.investigation_views.github_tracker")
+    def test_flag_creates_both_issues_and_persists(self, mock_gh, mock_linear):
+        from cost_management.issue_trackers import IssueRef
+        mock_gh.create_issue.return_value = IssueRef(
+            id="I_1", number=7, url="https://github.com/acme/widgets/issues/7")
+        mock_linear.create_issue.return_value = IssueRef(
+            id="lin-uuid", number=None, url="https://linear.app/pm/issue/SHO-9")
+
+        response = self._post()
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["investigation_status"], "flagged")
+        self.assertEqual(data["github_issue_url"], "https://github.com/acme/widgets/issues/7")
+        self.assertEqual(data["linear_issue_url"], "https://linear.app/pm/issue/SHO-9")
+        self.assertEqual(data["flag_error"], "")
+
+        chat = Chat.objects.get(chat_id="conv-flag-1")
+        self.assertEqual(chat.investigation_status, "flagged")
+        self.assertEqual(chat.flag_reason, "Bot gave a wrong refund policy")
+        self.assertEqual(chat.flagged_by, "reviewer")
+        self.assertIsNotNone(chat.flagged_at)
+        self.assertEqual(chat.github_issue_number, 7)
+        self.assertEqual(chat.github_issue_url, "https://github.com/acme/widgets/issues/7")
+        self.assertEqual(chat.linear_issue_id, "lin-uuid")
+        self.assertEqual(chat.linear_issue_url, "https://linear.app/pm/issue/SHO-9")
+        self.assertEqual(chat.flag_error, "")
+
+    @patch("cost_management.investigation_views.linear_tracker")
+    @patch("cost_management.investigation_views.github_tracker")
+    def test_flag_issue_body_has_reason_metadata_and_transcript(self, mock_gh, mock_linear):
+        from cost_management.issue_trackers import IssueRef
+        mock_gh.create_issue.return_value = IssueRef(id="I_1", number=7, url="https://gh/7")
+        mock_linear.create_issue.return_value = IssueRef(id="lin", number=None, url="https://lin/9")
+
+        self._post()
+
+        gh_title, gh_body = mock_gh.create_issue.call_args[0][0], mock_gh.create_issue.call_args[0][1]
+        self.assertIn("conv-flag-1", gh_title)
+        self.assertIn("Bot gave a wrong refund policy", gh_body)
+        self.assertIn("## Flag reason", gh_body)
+        self.assertIn("## Chat metadata", gh_body)
+        self.assertIn("return_request", gh_body)
+        self.assertIn("https://costapp.example.com/chats?chat=conv-flag-1", gh_body)
+        self.assertIn("## Transcript", gh_body)
+        self.assertIn("i want to return my order", gh_body)
+        self.assertIn("Sure, I can help with that.", gh_body)
+
+        # GitHub gets the trigger label; Linear description carries the GH url;
+        # GitHub gets a back-link comment.
+        mock_gh.add_label.assert_called_once()
+        self.assertEqual(mock_gh.add_label.call_args[0][1], "agent:queued")
+        linear_body = mock_linear.create_issue.call_args[0][1]
+        self.assertIn("GitHub issue: https://gh/7", linear_body)
+        mock_gh.add_comment.assert_called_once()
+        self.assertIn("https://lin/9", mock_gh.add_comment.call_args[0][1])
+
+    @patch("cost_management.investigation_views.linear_tracker")
+    @patch("cost_management.investigation_views.github_tracker")
+    def test_issue_body_uses_no_user_text_fallback_for_empty_content(self, mock_gh, mock_linear):
+        from cost_management.issue_trackers import IssueRef
+        mock_gh.create_issue.return_value = IssueRef(id="I_1", number=7, url="https://gh/7")
+        mock_linear.create_issue.return_value = IssueRef(id="lin", number=None, url="https://lin/9")
+        Message.objects.filter(chat=self.chat).update(content="")
+
+        self._post()
+
+        gh_body = mock_gh.create_issue.call_args[0][1]
+        self.assertIn("*(no user text recorded)*", gh_body)
+
+    @patch("cost_management.investigation_views.linear_tracker")
+    @patch("cost_management.investigation_views.github_tracker")
+    def test_issue_body_is_truncated_when_transcript_is_huge(self, mock_gh, mock_linear):
+        from cost_management.issue_trackers import IssueRef
+        mock_gh.create_issue.return_value = IssueRef(id="I_1", number=7, url="https://gh/7")
+        mock_linear.create_issue.return_value = IssueRef(id="lin", number=None, url="https://lin/9")
+        Message.objects.filter(chat=self.chat).update(returned_content="x" * 70000)
+
+        self._post()
+
+        gh_body = mock_gh.create_issue.call_args[0][1]
+        self.assertLessEqual(len(gh_body), 65536)
+        self.assertTrue(gh_body.endswith(
+            "*(transcript truncated — see the Cost app link above for the full conversation)*"
+        ))
+
+
+@override_settings(**INVESTIGATION_ENV)
+class FlagChatValidationTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="reviewer", password="pw")
+        self.client.force_login(self.user)
+        self.chat = Chat.objects.create(chat_id="conv-v", model="claude-haiku-4-5")
+
+    def _post(self, body):
+        return self.client.post("/api/cost/flag_chat/", data=json.dumps(body),
+                                content_type="application/json")
+
+    @patch("cost_management.investigation_views.github_tracker")
+    def test_blank_reason_is_400_and_calls_no_tracker(self, mock_gh):
+        resp = self._post({"chat_id": "conv-v", "reason": "   "})
+        self.assertEqual(resp.status_code, 400)
+        mock_gh.create_issue.assert_not_called()
+
+    @patch("cost_management.investigation_views.github_tracker")
+    def test_unknown_chat_is_404(self, mock_gh):
+        resp = self._post({"chat_id": "nope", "reason": "something"})
+        self.assertEqual(resp.status_code, 404)
+        mock_gh.create_issue.assert_not_called()
+
+    @patch("cost_management.investigation_views.github_tracker")
+    def test_already_flagged_with_linear_id_is_409(self, mock_gh):
+        Chat.objects.filter(pk="conv-v").update(
+            investigation_status="flagged", github_issue_number=3,
+            github_issue_url="https://gh/3", linear_issue_id="lin-x",
+            linear_issue_url="https://lin/x")
+        resp = self._post({"chat_id": "conv-v", "reason": "again"})
+        self.assertEqual(resp.status_code, 409)
+        mock_gh.create_issue.assert_not_called()
+
+    @override_settings(LINEAR_TEAM_ID="")
+    @patch("cost_management.investigation_views.github_tracker")
+    def test_missing_setting_is_503_with_missing_list(self, mock_gh):
+        resp = self._post({"chat_id": "conv-v", "reason": "x"})
+        self.assertEqual(resp.status_code, 503)
+        self.assertIn("LINEAR_TEAM_ID", resp.json()["missing"])
+        mock_gh.create_issue.assert_not_called()
+
+    @patch("cost_management.investigation_views.linear_tracker")
+    @patch("cost_management.investigation_views.github_tracker")
+    def test_non_json_content_type_is_415_and_calls_no_tracker(self, mock_gh, mock_linear):
+        resp = self.client.post(
+            "/api/cost/flag_chat/",
+            data=json.dumps({"chat_id": "conv-v", "reason": "something"}),
+            content_type="text/plain",
+        )
+        self.assertEqual(resp.status_code, 415)
+        mock_gh.create_issue.assert_not_called()
+        mock_linear.create_issue.assert_not_called()
+
+
+@override_settings(**INVESTIGATION_ENV)
+class FlagChatPartialFailureTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="reviewer", password="pw")
+        self.client.force_login(self.user)
+        self.chat = Chat.objects.create(chat_id="conv-p", model="claude-haiku-4-5")
+        Message.objects.create(chat=self.chat, content="hi", llm_formatted_message="{}",
+                               returned_content="hello", llm_formatted_returned_message="{}",
+                               tokens_in=1, tokens_out=1, model="claude-haiku-4-5")
+
+    def _post(self):
+        return self.client.post(
+            "/api/cost/flag_chat/",
+            data=json.dumps({"chat_id": "conv-p", "reason": "bad answer"}),
+            content_type="application/json",
+        )
+
+    @patch("cost_management.investigation_views.linear_tracker")
+    @patch("cost_management.investigation_views.github_tracker")
+    def test_github_create_failure_is_502_and_persists_nothing(self, mock_gh, mock_linear):
+        from cost_management.issue_trackers import IssueTrackerError
+        mock_gh.create_issue.side_effect = IssueTrackerError("github", "create_issue", 500, "boom")
+
+        resp = self._post()
+
+        self.assertEqual(resp.status_code, 502)
+        mock_linear.create_issue.assert_not_called()
+        chat = Chat.objects.get(pk="conv-p")
+        self.assertEqual(chat.investigation_status, "unflagged")
+        self.assertIsNone(chat.github_issue_number)
+
+    @patch("cost_management.investigation_views.linear_tracker")
+    @patch("cost_management.investigation_views.github_tracker")
+    def test_label_failure_is_soft_and_persists_flag(self, mock_gh, mock_linear):
+        from cost_management.issue_trackers import IssueRef, IssueTrackerError
+        mock_gh.create_issue.return_value = IssueRef(id="I", number=5, url="https://gh/5")
+        mock_gh.add_label.side_effect = IssueTrackerError("github", "add_label", 422, "no label")
+        mock_linear.create_issue.return_value = IssueRef(id="lin", number=None, url="https://lin/5")
+
+        resp = self._post()
+
+        self.assertEqual(resp.status_code, 200)
+        chat = Chat.objects.get(pk="conv-p")
+        self.assertEqual(chat.investigation_status, "flagged")
+        self.assertIn("trigger label", chat.flag_error)
+
+    @patch("cost_management.investigation_views.linear_tracker")
+    @patch("cost_management.investigation_views.github_tracker")
+    def test_linear_failure_persists_github_and_returns_linear_error(self, mock_gh, mock_linear):
+        from cost_management.issue_trackers import IssueRef, IssueTrackerError
+        mock_gh.create_issue.return_value = IssueRef(id="I", number=6, url="https://gh/6")
+        mock_linear.create_issue.side_effect = IssueTrackerError("linear", "create_issue", 400, "bad project")
+
+        resp = self._post()
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("linear_error", resp.json())
+        self.assertIn("linear create failed", resp.json()["flag_error"])
+        chat = Chat.objects.get(pk="conv-p")
+        self.assertEqual(chat.investigation_status, "flagged")
+        self.assertEqual(chat.github_issue_number, 6)
+        self.assertEqual(chat.linear_issue_id, "")
+        self.assertIn("linear create failed", chat.flag_error)
+
+    @patch("cost_management.investigation_views.linear_tracker")
+    @patch("cost_management.investigation_views.github_tracker")
+    def test_comment_failure_is_soft(self, mock_gh, mock_linear):
+        from cost_management.issue_trackers import IssueRef, IssueTrackerError
+        mock_gh.create_issue.return_value = IssueRef(id="I", number=8, url="https://gh/8")
+        mock_gh.add_comment.side_effect = IssueTrackerError("github", "add_comment", 500, "oops")
+        mock_linear.create_issue.return_value = IssueRef(id="lin", number=None, url="https://lin/8")
+
+        resp = self._post()
+
+        self.assertEqual(resp.status_code, 200)
+        chat = Chat.objects.get(pk="conv-p")
+        self.assertEqual(chat.investigation_status, "flagged")
+        self.assertEqual(chat.linear_issue_id, "lin")
+        self.assertIn("back-link comment", chat.flag_error)
+
+    @patch("cost_management.investigation_views.linear_tracker")
+    @patch("cost_management.investigation_views.github_tracker")
+    def test_linear_retry_branch_only_calls_linear(self, mock_gh, mock_linear):
+        from cost_management.issue_trackers import IssueRef
+        Chat.objects.filter(pk="conv-p").update(
+            investigation_status="flagged", flag_reason="bad answer",
+            github_issue_number=9, github_issue_url="https://gh/9", linear_issue_id="")
+        mock_linear.create_issue.return_value = IssueRef(id="lin-retry", number=None, url="https://lin/9")
+
+        resp = self._post()
+
+        self.assertEqual(resp.status_code, 200)
+        mock_gh.create_issue.assert_not_called()
+        mock_linear.create_issue.assert_called_once()
+        chat = Chat.objects.get(pk="conv-p")
+        self.assertEqual(chat.linear_issue_id, "lin-retry")
+        self.assertEqual(chat.linear_issue_url, "https://lin/9")
+        self.assertEqual(chat.flag_error, "")
+
+    @patch("cost_management.investigation_views.linear_tracker")
+    @patch("cost_management.investigation_views.github_tracker")
+    def test_sequential_double_submit_creates_one_github_issue(self, mock_gh, mock_linear):
+        from cost_management.issue_trackers import IssueRef
+        mock_gh.create_issue.return_value = IssueRef(id="I", number=10, url="https://gh/10")
+        mock_linear.create_issue.return_value = IssueRef(id="lin", number=None, url="https://lin/10")
+
+        first = self._post()
+        second = self._post()
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 409)
+        self.assertEqual(mock_gh.create_issue.call_count, 1)

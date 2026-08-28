@@ -425,3 +425,115 @@
   font-size: 12px;
   font-weight: 600;
 }
+
+/* --- Investigation flag column --- */
+.flag-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
+  background-color: #8b7cf6;
+  color: #d6d6d6;
+  border: none;
+  border-radius: 6px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.2s, transform 0.2s;
+}
+
+.flag-button:hover {
+  background-color: #a69ffb;
+  transform: scale(1.05);
+}
+
+.investigation-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.badge {
+  display: inline-block;
+  padding: 3px 8px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.badge-flagged {
+  color: #1e1e1e;
+  background-color: #f0b429;
+}
+
+.badge-resolved {
+  color: #1e1e1e;
+  background-color: #6bd968;
+}
+
+.issue-links {
+  display: inline-flex;
+  gap: 8px;
+}
+
+.issue-links a {
+  color: #b2a8ff;
+  font-size: 12px;
+  text-decoration: none;
+}
+
+.issue-links a:hover {
+  text-decoration: underline;
+}
+
+.retry-link {
+  background: transparent;
+  color: #f0b429;
+  border: 1px solid #f0b429;
+  border-radius: 4px;
+  font-size: 11px;
+  padding: 2px 6px;
+  cursor: pointer;
+}
+
+.flag-modal {
+  width: 480px;
+  max-width: 90%;
+  background: #1e1e1e;
+  border-radius: 16px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 0 25px rgba(0, 0, 0, 0.5);
+}
+
+.flag-modal-body {
+  padding: 20px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  color: #ddd;
+}
+
+.flag-reason-input {
+  width: 100%;
+  background: #111;
+  color: #eee;
+  border: 1px solid #333;
+  border-radius: 8px;
+  padding: 10px;
+  font-family: inherit;
+  font-size: 14px;
+  resize: vertical;
+}
+
+.flag-error {
+  color: #ff7a7a;
+  font-size: 13px;
+}
+
+.flag-cancel {
+  background: #3a3a3a;
+}

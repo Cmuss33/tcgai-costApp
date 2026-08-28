@@ -141,3 +141,12 @@ dist
 # Vite logs files
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
+
+# Superpowers SDD scratch
+.superpowers/
+
+# Python venv
+backend/tcgai_backend/venv/
+
+# Local SQLite database
+backend/tcgai_backend/db.sqlite3
