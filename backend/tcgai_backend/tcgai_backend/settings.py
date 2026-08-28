@@ -65,13 +65,24 @@ TEMPLATES = [
 WSGI_APPLICATION = 'tcgai_backend.wsgi.application'
 
 # Database
-DATABASES = {
-    'default': dj_database_url.config(
-        default=os.environ.get('DATABASE_URL'),
-        conn_max_age=600,
-        ssl_require=True
-    )
-}
+if os.environ.get('DATABASE_URL'):
+    DATABASES = {
+        'default': dj_database_url.config(
+            default=os.environ.get('DATABASE_URL'),
+            conn_max_age=600,
+            ssl_require=True
+        )
+    }
+else:
+    # Local fallback when no DATABASE_URL is configured: in-memory SQLite.
+    # This lets `python manage.py test` run without a Postgres server.
+    # Production and real dev environments set DATABASE_URL and use Postgres.
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': ':memory:',
+        }
+    }
 
 # Password validation
 AUTH_PASSWORD_VALIDATORS = [
