@@ -138,3 +138,14 @@ CSRF_COOKIE_SAMESITE = "None"
 SESSION_COOKIE_HTTPONLY = True
 CSRF_COOKIE_HTTPONLY = False
 SESSION_EXPIRE_AT_BROWSER_CLOSE = False
+
+# -----------------------------
+# Investigation issue trackers (Phase 1)
+# -----------------------------
+GITHUB_TOKEN = os.environ.get('GITHUB_TOKEN', '')
+GITHUB_ISSUE_REPO = os.environ.get('GITHUB_ISSUE_REPO', 'professormeta/agentic-shopify-chatbot')
+GITHUB_TRIGGER_LABEL = os.environ.get('GITHUB_TRIGGER_LABEL', 'agent:queued')
+LINEAR_API_KEY = os.environ.get('LINEAR_API_KEY', '')
+LINEAR_TEAM_ID = os.environ.get('LINEAR_TEAM_ID', '')
+LINEAR_PROJECT_ID = os.environ.get('LINEAR_PROJECT_ID', '')
+COST_APP_PUBLIC_URL = os.environ.get('COST_APP_PUBLIC_URL', '')

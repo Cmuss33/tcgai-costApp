@@ -1,9 +1,11 @@
 import json
+from unittest.mock import patch, MagicMock
 
 from django.contrib.auth.models import User
-from django.test import TestCase
+from django.test import TestCase, override_settings
 
 from .models import Chat, Message
+from .issue_trackers import GitHubIssueTracker, IssueRef, IssueTrackerError
 
 
 PRODUCTS_SHOWN = {
@@ -171,3 +173,77 @@ class GetChatIdsInvestigationFieldsTests(TestCase):
         self.assertEqual(row["flag_reason"], "looks wrong")
         self.assertEqual(row["github_issue_url"], "https://github.com/x/y/issues/1")
         self.assertEqual(row["linear_issue_url"], "https://linear.app/x/issue/ABC-1")
+
+
+def _fake_response(status_code, json_body=None, text=""):
+    resp = MagicMock()
+    resp.status_code = status_code
+    resp.json.return_value = json_body or {}
+    resp.text = text
+    return resp
+
+
+@override_settings(GITHUB_TOKEN="tok", GITHUB_ISSUE_REPO="acme/widgets")
+class GitHubIssueTrackerTests(TestCase):
+    @patch("cost_management.issue_trackers.requests.post")
+    def test_create_issue_posts_payload_and_parses_ref(self, mock_post):
+        mock_post.return_value = _fake_response(
+            201,
+            {
+                "number": 42,
+                "node_id": "I_abc",
+                "html_url": "https://github.com/acme/widgets/issues/42",
+            },
+        )
+
+        ref = GitHubIssueTracker().create_issue("A title", "A body")
+
+        url, kwargs = mock_post.call_args[0][0], mock_post.call_args[1]
+        self.assertEqual(url, "https://api.github.com/repos/acme/widgets/issues")
+        self.assertEqual(kwargs["json"], {"title": "A title", "body": "A body"})
+        self.assertEqual(kwargs["headers"]["Authorization"], "Bearer tok")
+        self.assertEqual(kwargs["timeout"], 10)
+        self.assertEqual(ref, IssueRef(id="I_abc", number=42,
+                                       url="https://github.com/acme/widgets/issues/42"))
+
+    @patch("cost_management.issue_trackers.requests.post")
+    def test_create_issue_raises_on_non_2xx(self, mock_post):
+        mock_post.return_value = _fake_response(422, text="Validation failed")
+
+        with self.assertRaises(IssueTrackerError) as ctx:
+            GitHubIssueTracker().create_issue("t", "b")
+
+        self.assertEqual(ctx.exception.tracker, "github")
+        self.assertEqual(ctx.exception.operation, "create_issue")
+        self.assertEqual(ctx.exception.status, 422)
+        self.assertIn("Validation failed", ctx.exception.detail)
+
+    @patch("cost_management.issue_trackers.requests.post")
+    def test_add_label_posts_to_labels_endpoint(self, mock_post):
+        mock_post.return_value = _fake_response(200, [])
+        ref = IssueRef(id="I_abc", number=42, url="https://github.com/acme/widgets/issues/42")
+
+        GitHubIssueTracker().add_label(ref, "agent:queued")
+
+        url, kwargs = mock_post.call_args[0][0], mock_post.call_args[1]
+        self.assertEqual(url, "https://api.github.com/repos/acme/widgets/issues/42/labels")
+        self.assertEqual(kwargs["json"], {"labels": ["agent:queued"]})
+
+    @patch("cost_management.issue_trackers.requests.post")
+    def test_add_comment_posts_body(self, mock_post):
+        mock_post.return_value = _fake_response(201, {"id": 1})
+        ref = IssueRef(id="I_abc", number=42, url="https://github.com/acme/widgets/issues/42")
+
+        GitHubIssueTracker().add_comment(ref, "Linked Linear issue: https://linear.app/x/ABC-1")
+
+        url, kwargs = mock_post.call_args[0][0], mock_post.call_args[1]
+        self.assertEqual(url, "https://api.github.com/repos/acme/widgets/issues/42/comments")
+        self.assertEqual(kwargs["json"], {"body": "Linked Linear issue: https://linear.app/x/ABC-1"})
+
+    @patch("cost_management.issue_trackers.requests.post")
+    def test_add_label_raises_on_error(self, mock_post):
+        mock_post.return_value = _fake_response(404, text="Not Found")
+        ref = IssueRef(id="I_abc", number=42, url="u")
+
+        with self.assertRaises(IssueTrackerError):
+            GitHubIssueTracker().add_label(ref, "agent:queued")
