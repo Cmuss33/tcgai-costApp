@@ -1,6 +1,8 @@
 import os
+import threading
 from datetime import datetime, timedelta
 
+from django.conf import settings
 from django.contrib.auth.decorators import login_required
 from django.core.cache import cache
 from django.http import JsonResponse
@@ -12,8 +14,12 @@ MAX_CONVERSATIONS = 200
 MIN_CONVERSATIONS = 5
 MAX_CHARS_PER_CONVO = 1200
 CACHE_TIMEOUT = 3600
+LOCK_TIMEOUT = 600
 CACHE_KEY = "insights_summary:current"
 INSIGHTS_MODEL = "claude-sonnet-5"
+
+MIN_DEMAND_COUNT = 2
+MAX_DEMAND_ITEMS = 10
 
 REPORT_INSIGHTS_TOOL = {
     "name": "report_insights",
@@ -73,7 +79,7 @@ REPORT_INSIGHTS_TOOL = {
     },
 }
 
-_RUNTIME_ONLY_KEYS = ("cached", "available_months", "stale")
+_RUNTIME_ONLY_KEYS = ("cached", "available_months", "stale", "generating", "regenerating")
 
 
 def _current_month_start():
@@ -94,6 +100,10 @@ def _month_range(month_start):
     else:
         end = timezone.make_aware(datetime(month_start.year, month_start.month + 1, 1))
     return start, end
+
+
+def _lock_key(month_start):
+    return f"insights_summary:generating:{month_start:%Y-%m}"
 
 
 def _format_products_shown(products_shown):
@@ -152,6 +162,18 @@ def _for_storage(payload):
     return {key: value for key, value in payload.items() if key not in _RUNTIME_ONLY_KEYS}
 
 
+def _trim_findings(core):
+    core = {**core}
+    demand = core.get("product_demand") or []
+    kept = [d for d in demand if (d.get("count") or 0) >= MIN_DEMAND_COUNT]
+    kept.sort(key=lambda d: d.get("count") or 0, reverse=True)
+    one_offs = len(demand) - len(kept)
+    core["product_demand"] = kept[:MAX_DEMAND_ITEMS]
+    if one_offs > 0:
+        core["product_demand_one_offs"] = one_offs
+    return core
+
+
 def _generate_insights(transcripts, month_label):
     """Single Claude call. Patched out in tests."""
     import anthropic
@@ -205,7 +227,7 @@ def _build_payload(month_start):
             with_customer_text += 1
 
     try:
-        core = _generate_insights(transcripts, label)
+        core = _trim_findings(_generate_insights(transcripts, label))
     except Exception as exc:  # degrade gracefully — never 500 the page
         snap = InsightsSnapshot.objects.filter(month=month_start).first()
         return {
@@ -247,12 +269,45 @@ def _maybe_backfill_previous_month(current_start):
         _store_snapshot(previous, payload)
 
 
+def _generate_and_store(month_start, is_current):
+    try:
+        payload = _build_payload(month_start)
+        if not payload.get("insufficient_data") and not payload.get("error"):
+            _store_snapshot(month_start, payload)
+            if is_current:
+                cache.set(CACHE_KEY, payload, CACHE_TIMEOUT)
+                _maybe_backfill_previous_month(month_start)
+        return payload
+    finally:
+        cache.delete(_lock_key(month_start))
+
+
+def _kick_generation(month_start, is_current):
+    """Run generation off the request path. Returns the payload synchronously
+    under tests; otherwise spawns a background thread and returns None."""
+    if getattr(settings, "TESTING", False):
+        return _generate_and_store(month_start, is_current)
+    if cache.add(_lock_key(month_start), "1", LOCK_TIMEOUT):
+        threading.Thread(
+            target=_generate_and_store,
+            args=(month_start, is_current),
+            daemon=True,
+        ).start()
+    return None
+
+
+def _finalize(payload, cached=False):
+    body = {**payload, "available_months": _available_months()}
+    if cached:
+        body["cached"] = True
+    return JsonResponse(body)
+
+
 @login_required
 def insights_summary(request):
     refresh = request.GET.get("refresh", "").lower() in ("1", "true", "yes")
     month_param = request.GET.get("month")
     current_start = _current_month_start()
-    target_start = current_start
 
     if month_param:
         parsed = _parse_month_param(month_param)
@@ -262,34 +317,27 @@ def insights_summary(request):
                 status=400,
             )
         if parsed < current_start:
+            # Past months are frozen — always served straight from storage.
             snapshot = InsightsSnapshot.objects.filter(month=parsed).first()
-            if snapshot and not refresh:
-                return JsonResponse(
-                    {**snapshot.payload, "cached": True, "available_months": _available_months()}
-                )
-            if not snapshot and not refresh:
+            if snapshot is None:
                 return JsonResponse(
                     {"error": f"no snapshot for {month_param}", "available_months": _available_months()},
                     status=404,
                 )
-            target_start = parsed  # explicit refresh of a past month
+            return _finalize(dict(snapshot.payload), cached=True)
 
-    is_current = target_start == current_start
+    # Current month.
+    if not refresh:
+        fresh = cache.get(CACHE_KEY)
+        if fresh is not None:
+            return _finalize(fresh, cached=True)
 
-    if is_current and not refresh:
-        cached = cache.get(CACHE_KEY)
-        if cached is not None:
-            return JsonResponse(
-                {**cached, "cached": True, "available_months": _available_months()}
-            )
+    snapshot = InsightsSnapshot.objects.filter(month=current_start).first()
+    inline = _kick_generation(current_start, is_current=True)  # payload under tests, else None
 
-    payload = _build_payload(target_start)
-    generated_ok = not payload.get("insufficient_data") and not payload.get("error")
-    if generated_ok:
-        _store_snapshot(target_start, payload)
-        if is_current:
-            cache.set(CACHE_KEY, payload, CACHE_TIMEOUT)
-            _maybe_backfill_previous_month(current_start)
-
-    payload["available_months"] = _available_months()
-    return JsonResponse(payload)
+    if inline is not None:
+        return _finalize(inline)
+    if snapshot is not None:
+        # Serve the last saved result now; a refresh is running in the background.
+        return _finalize({**snapshot.payload, "regenerating": True})
+    return _finalize({"generating": True})
