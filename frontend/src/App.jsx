@@ -1,7 +1,6 @@
 import './App.css';
-import { BrowserRouter as Router, Route, Routes, useLocation } from 'react-router-dom';
+import { BrowserRouter as Router, Route, Routes, Navigate, useLocation } from 'react-router-dom';
 
-import CostView from './cost/CostView';
 import Header from './header/Header';
 import ChatSummaryView from './chatSummary/ChatSummaryView';
 import HomeView from './home/HomeView';
@@ -26,7 +25,7 @@ function AppRoutes() {
     <Routes>
       <Route path="/" element={<Login />} />
       <Route path="/home" element={<HomeView />} />
-      <Route path="/cost" element={<CostView />} />
+      <Route path="/cost" element={<Navigate to="/home" replace />} />
       <Route path="/chats" element={<ChatSummaryView />} />
     </Routes>
   );

@@ -6,8 +6,7 @@ function Header() {
     <>
       <div className="header-container">
         <div className="header-content">
-          <NavLink to="/home" className="header-btn">Home</NavLink>
-          <NavLink to="/cost" className="header-btn">Cost Summary</NavLink>
+          <NavLink to="/home" className="header-btn">Overview</NavLink>
           <NavLink to="/chats" className="header-btn">Chat Summary</NavLink>
         </div>
       </div>

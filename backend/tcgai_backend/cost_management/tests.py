@@ -689,6 +689,14 @@ CANNED_INSIGHTS = {
     "product_demand": [
         {"product": "Charizard VMAX", "count": 3, "status": "out_of_stock", "examples": ["conv-4"]},
     ],
+    "recommendations": [
+        {"title": "Tune catalog search", "detail": "…", "impact": "low", "effort": "medium effort",
+         "addresses": "catalog gap", "evidence_count": 3, "examples": ["conv-9"]},
+        {"title": "Load store policies", "detail": "…", "impact": "high", "effort": "low effort",
+         "addresses": "policy gap", "evidence_count": 9, "examples": ["conv-3"]},
+        {"title": "Connect order-status lookup", "detail": "…", "impact": "high", "effort": "medium effort",
+         "addresses": "capability gap", "evidence_count": 7, "examples": ["conv-5"]},
+    ],
 }
 
 
@@ -921,3 +929,171 @@ class InsightsSummaryTests(TestCase):
 
         self.assertEqual([d["product"] for d in data["product_demand"]], ["OP17 Booster Box"])
         self.assertEqual(data["product_demand_one_offs"], 2)
+
+    @patch("cost_management.insights_views._generate_insights", return_value=dict(CANNED_INSIGHTS))
+    def test_recommendations_pass_through_sorted_by_impact_then_evidence(self, mock_gen):
+        self._make_conversations(6)
+        self.client.force_login(self.user)
+
+        data = self.client.get("/api/cost/insights_summary/").json()
+
+        self.assertEqual(
+            [r["title"] for r in data["recommendations"]],
+            ["Load store policies", "Connect order-status lookup", "Tune catalog search"],
+        )
+        self.assertEqual(data["recommendations"][0]["examples"], ["conv-3"])
+
+
+def _cost_resp(*totals):
+    return {"costs": [{"day": f"2026-08-{i + 1:02d}", "total_cost": t} for i, t in enumerate(totals)]}
+
+
+def _tok_resp(*pairs):
+    return {"tokens": [
+        {"day": f"2026-08-{i + 1:02d}", "input_tokens": a, "output_tokens": b}
+        for i, (a, b) in enumerate(pairs)
+    ]}
+
+
+class MonthlyStatsTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.user = User.objects.create_user(username="owner", password="pw")
+        self.this_month = _now().replace(day=1)
+        self.prev_month = (self.this_month - timedelta(days=2)).replace(day=1)
+
+    def tearDown(self):
+        cache.clear()
+
+    def _seed(self, n, when, tokens_in=1000, tokens_out=300, score=None,
+              model="claude-haiku-4-5", prefix="c"):
+        for i in range(n):
+            chat = Chat.objects.create(
+                chat_id=f"{prefix}-{when:%Y%m%d}-{i}", model=model,
+                tokens_in=tokens_in, tokens_out=tokens_out, evaluation_score=score,
+            )
+            Chat.objects.filter(pk=chat.pk).update(timestamp=when)
+
+    def _patch_adapter(self):
+        # month M (current) totals 15.0 spend / 3000 in / 700 out; month P totals 10.0 / 800 / 200
+        cur, prev = self.this_month.month, self.prev_month.month
+        get_cost = MagicMock(side_effect=lambda year, month:
+                             _cost_resp(5.0, 7.0, 3.0) if month == cur else _cost_resp(4.0, 6.0))
+        get_tokens = MagicMock(side_effect=lambda year, month:
+                               _tok_resp((1000, 300), (2000, 400)) if month == cur else _tok_resp((800, 200)))
+        p = patch.multiple("cost_management.views.llmprovider",
+                           get_cost=get_cost, get_tokens=get_tokens)
+        p.start()
+        self.addCleanup(p.stop)
+        return get_cost, get_tokens
+
+    def test_requires_login(self):
+        self.assertEqual(self.client.get("/api/cost/monthly_stats/").status_code, 302)
+
+    def test_totals_and_month_over_month_deltas(self):
+        self._patch_adapter()
+        self._seed(3, self.this_month.replace(day=10))
+        self._seed(1, self.this_month.replace(day=20))
+        self._seed(2, self.prev_month.replace(day=15))
+        self.client.force_login(self.user)
+
+        d = self.client.get("/api/cost/monthly_stats/").json()
+
+        self.assertEqual(d["spend"]["total"], 15.0)
+        self.assertEqual(d["spend"]["prev_total"], 10.0)
+        self.assertEqual(d["spend"]["delta_pct"], 50.0)
+        self.assertEqual(d["tokens"]["input"], 3000)
+        self.assertEqual(d["tokens"]["output"], 700)
+        self.assertEqual(d["conversations"]["total"], 4)
+        self.assertEqual(d["conversations"]["prev_total"], 2)
+        self.assertEqual(d["conversations"]["delta_pct"], 100.0)
+        self.assertEqual(len(d["spend"]["daily"]), 3)
+        self.assertEqual(len(d["conversations"]["daily"]), 2)
+        self.assertEqual(d["conversations"]["busiest"]["count"], 3)
+        self.assertEqual(d["per_conversation"]["cost"], round(15.0 / 4, 4))
+
+    def test_eval_coverage(self):
+        self._patch_adapter()
+        self._seed(2, self.this_month.replace(day=5), score=80)
+        self._seed(1, self.this_month.replace(day=6), score=90)
+        self._seed(1, self.this_month.replace(day=7))  # unscored
+        self.client.force_login(self.user)
+
+        ev = self.client.get("/api/cost/monthly_stats/").json()["eval_score"]
+
+        self.assertEqual(ev["scored"], 3)
+        self.assertEqual(ev["total"], 4)
+        self.assertEqual(ev["coverage_pct"], 75.0)
+        self.assertIsNotNone(ev["avg"])
+
+    def test_cost_source_failure_degrades_but_keeps_db_sections(self):
+        p = patch.multiple(
+            "cost_management.views.llmprovider",
+            get_cost=MagicMock(return_value={"error": "boom"}),
+            get_tokens=MagicMock(return_value={"error": "boom"}),
+        )
+        p.start()
+        self.addCleanup(p.stop)
+        self._seed(3, self.this_month.replace(day=9))
+        self.client.force_login(self.user)
+
+        d = self.client.get("/api/cost/monthly_stats/").json()
+
+        self.assertEqual(d["cost_source_error"], "boom")
+        self.assertIsNone(d["spend"]["total"])
+        self.assertIsNone(d["per_conversation"]["cost"])
+        self.assertEqual(d["conversations"]["total"], 3)
+
+    def test_projection_only_for_current_month(self):
+        self._patch_adapter()
+        self._seed(3, self.this_month.replace(day=9))
+        self._seed(3, self.prev_month.replace(day=9))
+        self.client.force_login(self.user)
+
+        current = self.client.get("/api/cost/monthly_stats/").json()
+        past = self.client.get(f"/api/cost/monthly_stats/?month={self.prev_month:%Y-%m}").json()
+
+        self.assertIsNotNone(current["spend"]["projected_month_end"])
+        self.assertIsNone(past["spend"]["projected_month_end"])
+        self.assertTrue(current["is_current"])
+        self.assertFalse(past["is_current"])
+
+    def test_caches_and_refresh_bypasses(self):
+        get_cost, _ = self._patch_adapter()
+        self._seed(3, self.this_month.replace(day=9))
+        self.client.force_login(self.user)
+
+        self.client.get("/api/cost/monthly_stats/")
+        calls_after_first = get_cost.call_count
+        cached = self.client.get("/api/cost/monthly_stats/").json()
+        self.assertTrue(cached["cached"])
+        self.assertEqual(get_cost.call_count, calls_after_first)
+
+        self.client.get("/api/cost/monthly_stats/?refresh=1")
+        self.assertGreater(get_cost.call_count, calls_after_first)
+
+    def test_model_mix(self):
+        self._patch_adapter()
+        self._seed(3, self.this_month.replace(day=8), model="claude-haiku-4-5", prefix="h")
+        self._seed(1, self.this_month.replace(day=8), model="claude-sonnet-5", prefix="s")
+        self.client.force_login(self.user)
+
+        mix = self.client.get("/api/cost/monthly_stats/").json()["model_mix"]
+
+        self.assertEqual(mix[0]["model"], "claude-haiku-4-5")
+        self.assertEqual(mix[0]["conversations"], 3)
+        self.assertEqual(mix[0]["share_pct"], 75.0)
+
+    def test_invalid_month_is_400(self):
+        self.client.force_login(self.user)
+        self.assertEqual(self.client.get("/api/cost/monthly_stats/?month=nope").status_code, 400)
+
+    def test_month_with_no_data(self):
+        self._patch_adapter()
+        self.client.force_login(self.user)
+
+        d = self.client.get("/api/cost/monthly_stats/?month=2020-01").json()
+
+        self.assertEqual(d["conversations"]["total"], 0)
+        self.assertIsNone(d["per_conversation"]["cost"])
+        self.assertEqual(d["model_mix"], [])
