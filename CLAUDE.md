@@ -21,7 +21,11 @@ python manage.py test                               # run tests
 python manage.py test cost_management.tests.SomeTestCase.test_name  # single test
 python manage.py makemigrations cost_management     # after model changes
 ```
-Requires a `.env` file (loaded via `python-dotenv`) with at least: `DATABASE_URL`, `ANTHROPIC_API_KEY`, `ANTHROPIC_ADMIN_KEY`. `requirements.txt` is UTF-16 encoded — edit with a tool that preserves that encoding, or re-save as UTF-16 after editing.
+Requires a `.env` file (loaded via `python-dotenv`) with at least: `DATABASE_URL`, `ANTHROPIC_API_KEY`, `ANTHROPIC_ADMIN_KEY`.
+
+For the conversation-flagging feature (Phase 1) also set: `GITHUB_TOKEN` (fine-grained PAT, Issues read/write + Metadata read on the issue repo), `GITHUB_ISSUE_REPO` (defaults to `professormeta/agentic-shopify-chatbot`), `GITHUB_TRIGGER_LABEL` (defaults to `agent:queued`), `LINEAR_API_KEY`, `LINEAR_TEAM_ID`, `LINEAR_PROJECT_ID`, and `COST_APP_PUBLIC_URL` (deployed frontend origin, used to build deep links in issues). Resolve the Linear team/project IDs once with a GraphQL call — `query { teams { nodes { id name } } }` and `query { projects { nodes { id name } } }` — then paste the IDs into `.env`.
+
+`requirements.txt` is UTF-16 encoded — edit with a tool that preserves that encoding, or re-save as UTF-16 after editing.
 
 ### Frontend (run from `frontend/`)
 ```bash

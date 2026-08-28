@@ -83,4 +83,46 @@ class GitHubIssueTracker:
         self._check(resp, "add_comment")
 
 
+class LinearIssueTracker:
+    _MUTATION = (
+        "mutation IssueCreate($input: IssueCreateInput!) {"
+        "  issueCreate(input: $input) {"
+        "    success issue { id identifier url }"
+        "  }"
+        "}"
+    )
+
+    def _headers(self):
+        return {
+            "Authorization": settings.LINEAR_API_KEY,
+            "Content-Type": "application/json",
+        }
+
+    def create_issue(self, title, body, labels=None):
+        variables = {
+            "input": {
+                "teamId": settings.LINEAR_TEAM_ID,
+                "projectId": settings.LINEAR_PROJECT_ID,
+                "title": title,
+                "description": body,
+            }
+        }
+        resp = requests.post(
+            LINEAR_API,
+            headers=self._headers(),
+            json={"query": self._MUTATION, "variables": variables},
+            timeout=HTTP_TIMEOUT,
+        )
+        if resp.status_code >= 300:
+            raise IssueTrackerError("linear", "create_issue", resp.status_code, resp.text[:500])
+        data = resp.json()
+        if data.get("errors"):
+            raise IssueTrackerError(
+                "linear", "create_issue", resp.status_code, json.dumps(data["errors"])[:500]
+            )
+        issue = data["data"]["issueCreate"]["issue"]
+        return IssueRef(id=issue["id"], number=None, url=issue["url"])
+
+
 github_tracker = GitHubIssueTracker()
+linear_tracker = LinearIssueTracker()

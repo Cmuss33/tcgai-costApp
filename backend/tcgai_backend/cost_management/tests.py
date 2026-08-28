@@ -5,7 +5,7 @@ from django.contrib.auth.models import User
 from django.test import TestCase, override_settings
 
 from .models import Chat, Message
-from .issue_trackers import GitHubIssueTracker, IssueRef, IssueTrackerError
+from .issue_trackers import GitHubIssueTracker, IssueRef, IssueTrackerError, LinearIssueTracker
 
 
 PRODUCTS_SHOWN = {
@@ -247,3 +247,61 @@ class GitHubIssueTrackerTests(TestCase):
 
         with self.assertRaises(IssueTrackerError):
             GitHubIssueTracker().add_label(ref, "agent:queued")
+
+
+@override_settings(LINEAR_API_KEY="lin_key", LINEAR_TEAM_ID="team-123", LINEAR_PROJECT_ID="proj-456")
+class LinearIssueTrackerTests(TestCase):
+    @patch("cost_management.issue_trackers.requests.post")
+    def test_create_issue_sends_mutation_and_parses_ref(self, mock_post):
+        mock_post.return_value = _fake_response(
+            200,
+            {
+                "data": {
+                    "issueCreate": {
+                        "success": True,
+                        "issue": {
+                            "id": "uuid-1",
+                            "identifier": "SHО-7",
+                            "url": "https://linear.app/professor-meta/issue/SHO-7",
+                        },
+                    }
+                }
+            },
+        )
+
+        ref = LinearIssueTracker().create_issue("A title", "A body")
+
+        url, kwargs = mock_post.call_args[0][0], mock_post.call_args[1]
+        self.assertEqual(url, "https://api.linear.app/graphql")
+        self.assertEqual(kwargs["headers"]["Authorization"], "lin_key")
+        self.assertEqual(kwargs["timeout"], 10)
+        variables = kwargs["json"]["variables"]["input"]
+        self.assertEqual(variables["teamId"], "team-123")
+        self.assertEqual(variables["projectId"], "proj-456")
+        self.assertEqual(variables["title"], "A title")
+        self.assertEqual(variables["description"], "A body")
+        self.assertIn("issueCreate", kwargs["json"]["query"])
+        self.assertEqual(ref.id, "uuid-1")
+        self.assertIsNone(ref.number)
+        self.assertEqual(ref.url, "https://linear.app/professor-meta/issue/SHO-7")
+
+    @patch("cost_management.issue_trackers.requests.post")
+    def test_create_issue_raises_on_graphql_errors(self, mock_post):
+        mock_post.return_value = _fake_response(
+            200, {"errors": [{"message": "project not found"}]}
+        )
+
+        with self.assertRaises(IssueTrackerError) as ctx:
+            LinearIssueTracker().create_issue("t", "b")
+
+        self.assertEqual(ctx.exception.tracker, "linear")
+        self.assertIn("project not found", ctx.exception.detail)
+
+    @patch("cost_management.issue_trackers.requests.post")
+    def test_create_issue_raises_on_http_error(self, mock_post):
+        mock_post.return_value = _fake_response(401, text="Unauthorized")
+
+        with self.assertRaises(IssueTrackerError) as ctx:
+            LinearIssueTracker().create_issue("t", "b")
+
+        self.assertEqual(ctx.exception.status, 401)
