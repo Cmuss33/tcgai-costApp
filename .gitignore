@@ -144,3 +144,6 @@ vite.config.ts.timestamp-*
 
 # Superpowers SDD scratch
 .superpowers/
+
+# Python venv
+backend/tcgai_backend/venv/
