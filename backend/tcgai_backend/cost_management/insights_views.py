@@ -102,6 +102,24 @@ def _month_range(month_start):
     return start, end
 
 
+def _next_month(month_start):
+    if month_start.month == 12:
+        return month_start.replace(year=month_start.year + 1, month=1)
+    return month_start.replace(month=month_start.month + 1)
+
+
+def _month_iter(first, last):
+    month = first
+    while month <= last:
+        yield month
+        month = _next_month(month)
+
+
+def _conversation_count(month_start):
+    start_dt, end_dt = _month_range(month_start)
+    return Chat.objects.filter(timestamp__gte=start_dt, timestamp__lt=end_dt).count()
+
+
 def _lock_key(month_start):
     return f"insights_summary:generating:{month_start:%Y-%m}"
 
@@ -146,8 +164,12 @@ def _build_transcript(chat_id, messages):
 
 def _available_months():
     current = _current_month_start()
-    months = {snap.month for snap in InsightsSnapshot.objects.all()}
+    months = set(InsightsSnapshot.objects.values_list("month", flat=True))
     months.add(current)
+    earliest = Chat.objects.order_by("timestamp").values_list("timestamp", flat=True).first()
+    if earliest is not None:
+        for month in _month_iter(earliest.date().replace(day=1), current):
+            months.add(month)
     return [
         {
             "value": month.strftime("%Y-%m"),
@@ -317,14 +339,26 @@ def insights_summary(request):
                 status=400,
             )
         if parsed < current_start:
-            # Past months are frozen — always served straight from storage.
+            # Past months: served frozen from storage once generated. A month
+            # with no snapshot yet (e.g. before the safety net reached it) is
+            # generated on demand the first time it is requested.
             snapshot = InsightsSnapshot.objects.filter(month=parsed).first()
-            if snapshot is None:
-                return JsonResponse(
-                    {"error": f"no snapshot for {month_param}", "available_months": _available_months()},
-                    status=404,
+            if snapshot is not None and not refresh:
+                return _finalize(dict(snapshot.payload), cached=True)
+            if _conversation_count(parsed) < MIN_CONVERSATIONS:
+                return _finalize(
+                    {
+                        "insufficient_data": True,
+                        "conversations_analyzed": _conversation_count(parsed),
+                        "month": parsed.strftime("%Y-%m"),
+                    }
                 )
-            return _finalize(dict(snapshot.payload), cached=True)
+            inline = _kick_generation(parsed, is_current=False)
+            if inline is not None:
+                return _finalize(inline)
+            if snapshot is not None:
+                return _finalize({**snapshot.payload, "regenerating": True})
+            return _finalize({"generating": True})
 
     # Current month.
     if not refresh:

@@ -782,13 +782,46 @@ class InsightsSummaryTests(TestCase):
         self.assertIn("available_months", data)
         mock_gen.assert_not_called()
 
-    def test_past_month_with_no_snapshot_is_404(self):
+    def test_past_month_with_no_data_reports_insufficient(self):
         self.client.force_login(self.user)
 
         response = self.client.get("/api/cost/insights_summary/?month=2020-01")
 
-        self.assertEqual(response.status_code, 404)
-        self.assertIn("available_months", response.json())
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data["insufficient_data"])
+        self.assertIn("available_months", data)
+
+    def test_available_months_span_from_the_first_conversation_to_now(self):
+        first_dt = _now().replace(day=1)
+        for _ in range(2):
+            first_dt = (first_dt - timedelta(days=1)).replace(day=1)
+        self._make_conversations(3, when=first_dt.replace(day=10), prefix="old")
+        self._make_conversations(3, prefix="new")
+        self.client.force_login(self.user)
+
+        values = [m["value"] for m in self.client.get("/api/cost/insights_summary/").json()["available_months"]]
+
+        self.assertEqual(values[0], _now().strftime("%Y-%m"))       # sorted newest-first
+        self.assertEqual(values[-1], first_dt.strftime("%Y-%m"))
+        self.assertGreaterEqual(len(values), 3)
+
+    @patch("cost_management.insights_views._generate_insights", return_value=dict(CANNED_INSIGHTS))
+    def test_missing_past_month_with_data_is_generated_on_request(self, mock_gen):
+        from cost_management.models import InsightsSnapshot
+        prev_dt = (_now().replace(day=1) - timedelta(days=1)).replace(day=15)
+        self._make_conversations(6, when=prev_dt, prefix="prev")
+        self.client.force_login(self.user)
+
+        data = self.client.get(
+            f"/api/cost/insights_summary/?month={prev_dt.strftime('%Y-%m')}"
+        ).json()
+
+        self.assertEqual(data["headline"], CANNED_INSIGHTS["headline"])
+        mock_gen.assert_called_once()
+        self.assertTrue(
+            InsightsSnapshot.objects.filter(month=prev_dt.date().replace(day=1)).exists()
+        )
 
     @patch("cost_management.insights_views._generate_insights", return_value=dict(CANNED_INSIGHTS))
     def test_previous_month_is_backfilled_on_a_current_month_generation(self, mock_gen):
