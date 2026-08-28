@@ -43,7 +43,7 @@ function Login() {
       );
 
       if (response.ok) {
-        navigate("/cost");
+        navigate("/home");
       } else {
         alert("Invalid credentials");
       }

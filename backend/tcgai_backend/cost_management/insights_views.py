@@ -1,6 +1,6 @@
 import os
 import threading
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 from django.conf import settings
 from django.contrib.auth.decorators import login_required
@@ -9,6 +9,14 @@ from django.http import JsonResponse
 from django.utils import timezone
 
 from .models import Chat, InsightsSnapshot
+from .month_utils import (
+    conversation_count as _conversation_count,
+    current_month_start as _current_month_start,
+    month_iter as _month_iter,
+    month_range as _month_range,
+    next_month as _next_month,
+    parse_month_param as _parse_month_param,
+)
 
 MAX_CONVERSATIONS = 200
 MIN_CONVERSATIONS = 5
@@ -20,6 +28,8 @@ INSIGHTS_MODEL = "claude-sonnet-5"
 
 MIN_DEMAND_COUNT = 2
 MAX_DEMAND_ITEMS = 10
+MAX_RECOMMENDATIONS = 6
+_IMPACT_ORDER = {"high": 0, "medium": 1, "low": 2}
 
 REPORT_INSIGHTS_TOOL = {
     "name": "report_insights",
@@ -74,50 +84,30 @@ REPORT_INSIGHTS_TOOL = {
                     "required": ["product", "count", "status", "examples"],
                 },
             },
+            "recommendations": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string"},
+                        "detail": {"type": "string"},
+                        "impact": {"type": "string", "enum": ["high", "medium", "low"]},
+                        "effort": {"type": "string"},
+                        "addresses": {"type": "string"},
+                        "evidence_count": {"type": "integer"},
+                        "examples": {"type": "array", "items": {"type": "string"}},
+                    },
+                    "required": ["title", "detail", "impact", "addresses", "evidence_count", "examples"],
+                },
+            },
         },
-        "required": ["headline", "top_requests", "unmet_needs", "product_demand"],
+        "required": [
+            "headline", "top_requests", "unmet_needs", "product_demand", "recommendations",
+        ],
     },
 }
 
 _RUNTIME_ONLY_KEYS = ("cached", "available_months", "stale", "generating", "regenerating")
-
-
-def _current_month_start():
-    return timezone.now().date().replace(day=1)
-
-
-def _parse_month_param(value):
-    try:
-        return datetime.strptime(value, "%Y-%m").date().replace(day=1)
-    except (ValueError, TypeError):
-        return None
-
-
-def _month_range(month_start):
-    start = timezone.make_aware(datetime(month_start.year, month_start.month, 1))
-    if month_start.month == 12:
-        end = timezone.make_aware(datetime(month_start.year + 1, 1, 1))
-    else:
-        end = timezone.make_aware(datetime(month_start.year, month_start.month + 1, 1))
-    return start, end
-
-
-def _next_month(month_start):
-    if month_start.month == 12:
-        return month_start.replace(year=month_start.year + 1, month=1)
-    return month_start.replace(month=month_start.month + 1)
-
-
-def _month_iter(first, last):
-    month = first
-    while month <= last:
-        yield month
-        month = _next_month(month)
-
-
-def _conversation_count(month_start):
-    start_dt, end_dt = _month_range(month_start)
-    return Chat.objects.filter(timestamp__gte=start_dt, timestamp__lt=end_dt).count()
 
 
 def _lock_key(month_start):
@@ -193,6 +183,10 @@ def _trim_findings(core):
     core["product_demand"] = kept[:MAX_DEMAND_ITEMS]
     if one_offs > 0:
         core["product_demand_one_offs"] = one_offs
+
+    recs = list(core.get("recommendations") or [])
+    recs.sort(key=lambda r: (_IMPACT_ORDER.get(r.get("impact"), 3), -(r.get("evidence_count") or 0)))
+    core["recommendations"] = recs[:MAX_RECOMMENDATIONS]
     return core
 
 
@@ -207,11 +201,22 @@ def _generate_insights(transcripts, month_label):
     )
     prompt = (
         f"Transcripts for {month_label} follow; each <conversation> carries an id "
-        "attribute. Identify the top things customers asked for (top_requests), the "
-        "categories the bot could not handle (unmet_needs), and specific products "
-        "customers wanted that were unavailable (product_demand). For every item "
-        "include 2-3 example conversation ids taken from the id attributes. Counts are "
-        "your best tally across these transcripts.\n\n" + "\n\n".join(transcripts)
+        "attribute.\n\n"
+        "Produce, through the report_insights tool:\n"
+        "- top_requests: the things customers most asked for.\n"
+        "- unmet_needs: categories the bot could not handle.\n"
+        "- product_demand: specific products customers wanted that were unavailable.\n"
+        "- recommendations: 3-6 concrete changes that would close those gaps or meet "
+        "that demand. Each needs an impact (high/medium/low), a short effort note, "
+        "the gap or demand it addresses, and how many conversations it would help. "
+        "Order by impact, then by evidence.\n"
+        "- headline: the month in at most two plain sentences. Lead with the verdict "
+        "— is the bot earning its keep, weighing cost against volume and quality "
+        "— then name the single highest-impact recommendation. One concrete "
+        "number per claim; no slang.\n\n"
+        "For every list item include 2-3 example conversation ids drawn from the id "
+        "attributes. Counts are your best tally across these transcripts.\n\n"
+        + "\n\n".join(transcripts)
     )
     client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
     message = client.messages.create(
