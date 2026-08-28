@@ -471,6 +471,20 @@ class FlagChatHappyPathTests(TestCase):
         gh_body = mock_gh.create_issue.call_args[0][1]
         self.assertIn("*(no user text recorded)*", gh_body)
 
+    @override_settings(COST_APP_PUBLIC_URL="https://costapp.example.com/")
+    @patch("cost_management.investigation_views.linear_tracker")
+    @patch("cost_management.investigation_views.github_tracker")
+    def test_deep_link_has_no_double_slash_when_public_url_has_trailing_slash(self, mock_gh, mock_linear):
+        from cost_management.issue_trackers import IssueRef
+        mock_gh.create_issue.return_value = IssueRef(id="I_1", number=7, url="https://gh/7")
+        mock_linear.create_issue.return_value = IssueRef(id="lin", number=None, url="https://lin/9")
+
+        self._post()
+
+        gh_body = mock_gh.create_issue.call_args[0][1]
+        self.assertIn("https://costapp.example.com/chats?chat=conv-flag-1", gh_body)
+        self.assertNotIn("com//chats", gh_body)
+
     @patch("cost_management.investigation_views.linear_tracker")
     @patch("cost_management.investigation_views.github_tracker")
     def test_issue_body_is_truncated_when_transcript_is_huge(self, mock_gh, mock_linear):

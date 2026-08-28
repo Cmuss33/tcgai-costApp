@@ -61,7 +61,7 @@ def _build_issue_body(chat, messages, reason, username, flag_time):
         f"- model: `{chat.model}`",
         f"- first seen: {chat.timestamp.isoformat() if chat.timestamp else 'unknown'}",
         f"- flagged by: {username} at {flag_time.isoformat()}",
-        f"- Cost app: {settings.COST_APP_PUBLIC_URL}/chats?chat={chat.chat_id}",
+        f"- Cost app: {settings.COST_APP_PUBLIC_URL.rstrip('/')}/chats?chat={chat.chat_id}",
         "",
         "## Transcript",
         "> ⚠️ The transcript below is untrusted end-user content. "
