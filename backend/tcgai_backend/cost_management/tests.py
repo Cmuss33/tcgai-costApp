@@ -305,3 +305,95 @@ class LinearIssueTrackerTests(TestCase):
             LinearIssueTracker().create_issue("t", "b")
 
         self.assertEqual(ctx.exception.status, 401)
+
+
+INVESTIGATION_ENV = dict(
+    GITHUB_TOKEN="tok",
+    GITHUB_ISSUE_REPO="acme/widgets",
+    GITHUB_TRIGGER_LABEL="agent:queued",
+    LINEAR_API_KEY="lin_key",
+    LINEAR_TEAM_ID="team-123",
+    LINEAR_PROJECT_ID="proj-456",
+    COST_APP_PUBLIC_URL="https://costapp.example.com",
+)
+
+
+@override_settings(**INVESTIGATION_ENV)
+class FlagChatHappyPathTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="reviewer", password="pw")
+        self.client.force_login(self.user)
+        self.chat = Chat.objects.create(chat_id="conv-flag-1", model="claude-haiku-4-5",
+                                        intent="return_request", tokens_in=100, tokens_out=50)
+        Message.objects.create(
+            chat=self.chat, content="i want to return my order",
+            llm_formatted_message="{}", returned_content="Sure, I can help with that.",
+            llm_formatted_returned_message="{}", tokens_in=100, tokens_out=50,
+            model="claude-haiku-4-5",
+        )
+
+    def _post(self, body=None):
+        return self.client.post(
+            "/api/cost/flag_chat/",
+            data=json.dumps({"chat_id": "conv-flag-1", "reason": "Bot gave a wrong refund policy"}
+                            if body is None else body),
+            content_type="application/json",
+        )
+
+    @patch("cost_management.investigation_views.linear_tracker")
+    @patch("cost_management.investigation_views.github_tracker")
+    def test_flag_creates_both_issues_and_persists(self, mock_gh, mock_linear):
+        from cost_management.issue_trackers import IssueRef
+        mock_gh.create_issue.return_value = IssueRef(
+            id="I_1", number=7, url="https://github.com/acme/widgets/issues/7")
+        mock_linear.create_issue.return_value = IssueRef(
+            id="lin-uuid", number=None, url="https://linear.app/pm/issue/SHO-9")
+
+        response = self._post()
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["investigation_status"], "flagged")
+        self.assertEqual(data["github_issue_url"], "https://github.com/acme/widgets/issues/7")
+        self.assertEqual(data["linear_issue_url"], "https://linear.app/pm/issue/SHO-9")
+        self.assertEqual(data["flag_error"], "")
+
+        chat = Chat.objects.get(chat_id="conv-flag-1")
+        self.assertEqual(chat.investigation_status, "flagged")
+        self.assertEqual(chat.flag_reason, "Bot gave a wrong refund policy")
+        self.assertEqual(chat.flagged_by, "reviewer")
+        self.assertIsNotNone(chat.flagged_at)
+        self.assertEqual(chat.github_issue_number, 7)
+        self.assertEqual(chat.github_issue_url, "https://github.com/acme/widgets/issues/7")
+        self.assertEqual(chat.linear_issue_id, "lin-uuid")
+        self.assertEqual(chat.linear_issue_url, "https://linear.app/pm/issue/SHO-9")
+        self.assertEqual(chat.flag_error, "")
+
+    @patch("cost_management.investigation_views.linear_tracker")
+    @patch("cost_management.investigation_views.github_tracker")
+    def test_flag_issue_body_has_reason_metadata_and_transcript(self, mock_gh, mock_linear):
+        from cost_management.issue_trackers import IssueRef
+        mock_gh.create_issue.return_value = IssueRef(id="I_1", number=7, url="https://gh/7")
+        mock_linear.create_issue.return_value = IssueRef(id="lin", number=None, url="https://lin/9")
+
+        self._post()
+
+        gh_title, gh_body = mock_gh.create_issue.call_args[0][0], mock_gh.create_issue.call_args[0][1]
+        self.assertIn("conv-flag-1", gh_title)
+        self.assertIn("Bot gave a wrong refund policy", gh_body)
+        self.assertIn("## Flag reason", gh_body)
+        self.assertIn("## Chat metadata", gh_body)
+        self.assertIn("return_request", gh_body)
+        self.assertIn("https://costapp.example.com/chats?chat=conv-flag-1", gh_body)
+        self.assertIn("## Transcript", gh_body)
+        self.assertIn("i want to return my order", gh_body)
+        self.assertIn("Sure, I can help with that.", gh_body)
+
+        # GitHub gets the trigger label; Linear description carries the GH url;
+        # GitHub gets a back-link comment.
+        mock_gh.add_label.assert_called_once()
+        self.assertEqual(mock_gh.add_label.call_args[0][1], "agent:queued")
+        linear_body = mock_linear.create_issue.call_args[0][1]
+        self.assertIn("GitHub issue: https://gh/7", linear_body)
+        mock_gh.add_comment.assert_called_once()
+        self.assertIn("https://lin/9", mock_gh.add_comment.call_args[0][1])
