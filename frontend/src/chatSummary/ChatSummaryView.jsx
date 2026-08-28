@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import "./ChatSummaryView.css";
+import FlagChatModal from "./FlagChatModal";
 
 function ProductCard({ product }) {
   return (
@@ -32,6 +33,9 @@ function ChatSummaryView() {
   const navigate = useNavigate();
 
   const [chats, setChats] = useState([]);
+
+  const [searchParams] = useSearchParams();
+  const [flagState, setFlagState] = useState(null); // { chatId, pending, error }
 
   const [loadingEval, setLoadingEval] = useState({});
   const [accuracy, setAccuracy] = useState({});
@@ -96,6 +100,15 @@ function ChatSummaryView() {
       );
   }, [offset]);
 
+  // Deep link: /chats?chat=<id> auto-opens that chat's transcript modal
+  useEffect(() => {
+    const chatParam = searchParams.get("chat");
+    if (chatParam) {
+      openChatModal(chatParam);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
+
   const evaluateAccuracy = async (chatId) => {
     setLoadingEval((prev) => ({
       ...prev,
@@ -129,6 +142,105 @@ function ChatSummaryView() {
         [chatId]: false,
       }));
     }
+  };
+
+  const openFlagModal = (chatId) => {
+    setFlagState({ chatId, pending: false, error: null });
+  };
+
+  const closeFlagModal = () => setFlagState(null);
+
+  const submitFlag = async (reason) => {
+    if (!reason) return;
+    const chatId = flagState.chatId;
+    setFlagState((s) => ({ ...s, pending: true, error: null }));
+
+    try {
+      const res = await fetch(`${API_URL}/api/cost/flag_chat/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ chat_id: chatId, reason }),
+      });
+      const data = await res.json();
+
+      if (!res.ok) {
+        setFlagState((s) => ({
+          ...s,
+          pending: false,
+          error: data.error || `Request failed (${res.status})`,
+        }));
+        return;
+      }
+
+      setChats((prev) =>
+        prev.map((c) =>
+          c.chat_id === chatId
+            ? {
+                ...c,
+                investigation_status: data.investigation_status || "flagged",
+                github_issue_url: data.github_issue_url ?? c.github_issue_url,
+                linear_issue_url: data.linear_issue_url ?? c.linear_issue_url,
+                flag_error: data.flag_error ?? "",
+              }
+            : c
+        )
+      );
+      setFlagState(null);
+    } catch (err) {
+      setFlagState((s) => ({ ...s, pending: false, error: String(err) }));
+    }
+  };
+
+  const renderInvestigationCell = (chat) => {
+    const status = chat.investigation_status || "unflagged";
+    const links = (
+      <span className="issue-links">
+        {chat.github_issue_url && (
+          <a href={chat.github_issue_url} target="_blank" rel="noopener noreferrer">
+            GitHub ↗
+          </a>
+        )}
+        {chat.linear_issue_url && (
+          <a href={chat.linear_issue_url} target="_blank" rel="noopener noreferrer">
+            Linear ↗
+          </a>
+        )}
+      </span>
+    );
+
+    if (status === "unflagged") {
+      return (
+        <button className="flag-button" onClick={() => openFlagModal(chat.chat_id)}>
+          🚩 Flag
+        </button>
+      );
+    }
+
+    if (status === "resolved") {
+      return (
+        <span className="investigation-cell">
+          <span className="badge badge-resolved">Resolved ✓</span>
+          {links}
+        </span>
+      );
+    }
+
+    return (
+      <span className="investigation-cell">
+        <span className="badge badge-flagged">Flagged</span>
+        {chat.flag_error ? (
+          <button
+            className="retry-link"
+            title={chat.flag_error}
+            onClick={() => openFlagModal(chat.chat_id)}
+          >
+            ⚠ Retry
+          </button>
+        ) : null}
+        {links}
+      </span>
+    );
   };
 
   const toggleExpand = (id, type) => {
@@ -209,6 +321,7 @@ function ChatSummaryView() {
             <th>Est. Cost ($)</th>
             <th>Model</th>
             <th>Products</th>
+            <th>Investigation</th>
           </tr>
         </thead>
 
@@ -284,6 +397,8 @@ function ChatSummaryView() {
                   ? chat.products_shown_count
                   : "-"}
               </td>
+
+              <td>{renderInvestigationCell(chat)}</td>
             </tr>
           ))}
         </tbody>
@@ -539,6 +654,19 @@ function ChatSummaryView() {
             </div>
           </div>
         </div>
+      )}
+
+      {flagState && (
+        <FlagChatModal
+          chatId={flagState.chatId}
+          initialReason={
+            chats.find((c) => c.chat_id === flagState.chatId)?.flag_reason || ""
+          }
+          pending={flagState.pending}
+          error={flagState.error}
+          onSubmit={submitFlag}
+          onClose={closeFlagModal}
+        />
       )}
     </div>
   );
