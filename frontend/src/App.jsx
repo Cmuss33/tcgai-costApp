@@ -4,6 +4,7 @@ import { BrowserRouter as Router, Route, Routes, useLocation } from 'react-route
 import CostView from './cost/CostView';
 import Header from './header/Header';
 import ChatSummaryView from './chatSummary/ChatSummaryView';
+import HomeView from './home/HomeView';
 import Login from './login/login';
 
 function Layout({ children }) {
@@ -24,6 +25,7 @@ function AppRoutes() {
   return (
     <Routes>
       <Route path="/" element={<Login />} />
+      <Route path="/home" element={<HomeView />} />
       <Route path="/cost" element={<CostView />} />
       <Route path="/chats" element={<ChatSummaryView />} />
     </Routes>

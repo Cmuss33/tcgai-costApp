@@ -668,3 +668,174 @@ class FlagChatPartialFailureTests(TestCase):
         self.assertEqual(first.status_code, 200)
         self.assertEqual(second.status_code, 409)
         self.assertEqual(mock_gh.create_issue.call_count, 1)
+
+
+from datetime import timedelta
+
+from django.core.cache import cache
+from django.utils.timezone import now as _now
+
+
+CANNED_INSIGHTS = {
+    "headline": "One Piece singles are the top request.",
+    "top_requests": [
+        {"topic": "One Piece single cards", "count": 4, "share_pct": 40,
+         "examples": ["conv-1", "conv-2"]},
+    ],
+    "unmet_needs": [
+        {"gap": "Grading / PSA submission questions", "gap_type": "capability", "count": 2,
+         "summary": "Bot has no grading info and defers to email.", "examples": ["conv-3"]},
+    ],
+    "product_demand": [
+        {"product": "Charizard VMAX", "count": 3, "status": "out_of_stock", "examples": ["conv-4"]},
+    ],
+}
+
+
+class InsightsSummaryTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.user = User.objects.create_user(username="owner", password="pw")
+
+    def tearDown(self):
+        cache.clear()
+
+    def _make_conversations(self, count, when=None, with_customer_text=0, prefix="conv"):
+        when = when or _now()
+        for i in range(count):
+            chat = Chat.objects.create(chat_id=f"{prefix}-{i}", model="claude-haiku-4-5")
+            Chat.objects.filter(pk=chat.pk).update(timestamp=when)
+            Message.objects.create(
+                chat=chat,
+                content="do you have charizard" if i < with_customer_text else "",
+                llm_formatted_message="{}",
+                returned_content="Yes, we have a Charizard VMAX for $89.99.",
+                llm_formatted_returned_message="{}",
+                tokens_in=10, tokens_out=5, model="claude-haiku-4-5",
+            )
+
+    def test_requires_login(self):
+        response = self.client.get("/api/cost/insights_summary/")
+        self.assertEqual(response.status_code, 302)
+
+    @patch("cost_management.insights_views._generate_insights", return_value=dict(CANNED_INSIGHTS))
+    def test_generates_and_stores_current_month_snapshot(self, mock_gen):
+        self._make_conversations(6, with_customer_text=2)
+        self.client.force_login(self.user)
+
+        response = self.client.get("/api/cost/insights_summary/")
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["top_requests"], CANNED_INSIGHTS["top_requests"])
+        self.assertEqual(data["unmet_needs"], CANNED_INSIGHTS["unmet_needs"])
+        self.assertEqual(data["product_demand"], CANNED_INSIGHTS["product_demand"])
+        self.assertEqual(data["conversations_analyzed"], 6)
+        self.assertEqual(data["conversations_with_customer_text"], 2)
+        self.assertFalse(data["cached"])
+        self.assertIn("generated_at", data)
+        self.assertTrue(any(m["is_current"] for m in data["available_months"]))
+        mock_gen.assert_called_once()
+
+        from cost_management.models import InsightsSnapshot
+        first_of_month = _now().date().replace(day=1)
+        snap = InsightsSnapshot.objects.get(month=first_of_month)
+        self.assertEqual(snap.conversations_analyzed, 6)
+
+    @patch("cost_management.insights_views._generate_insights", return_value=dict(CANNED_INSIGHTS))
+    def test_second_call_within_the_hour_is_served_from_cache(self, mock_gen):
+        self._make_conversations(6)
+        self.client.force_login(self.user)
+
+        first = self.client.get("/api/cost/insights_summary/").json()
+        second = self.client.get("/api/cost/insights_summary/").json()
+
+        self.assertFalse(first["cached"])
+        self.assertTrue(second["cached"])
+        self.assertEqual(second["top_requests"], CANNED_INSIGHTS["top_requests"])
+        mock_gen.assert_called_once()
+
+    @patch("cost_management.insights_views._generate_insights", return_value=dict(CANNED_INSIGHTS))
+    def test_refresh_forces_regeneration(self, mock_gen):
+        self._make_conversations(6)
+        self.client.force_login(self.user)
+
+        self.client.get("/api/cost/insights_summary/")
+        self.client.get("/api/cost/insights_summary/?refresh=1")
+
+        self.assertEqual(mock_gen.call_count, 2)
+
+    @patch("cost_management.insights_views._generate_insights")
+    def test_past_month_returns_stored_payload_without_calling_the_model(self, mock_gen):
+        from cost_management.models import InsightsSnapshot
+        past = (_now().date().replace(day=1) - timedelta(days=1)).replace(day=1)
+        stored = {**CANNED_INSIGHTS, "month": past.strftime("%Y-%m"), "conversations_analyzed": 40}
+        InsightsSnapshot.objects.create(month=past, payload=stored, conversations_analyzed=40)
+        self.client.force_login(self.user)
+
+        response = self.client.get(f"/api/cost/insights_summary/?month={past:%Y-%m}")
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["headline"], CANNED_INSIGHTS["headline"])
+        self.assertTrue(data["cached"])
+        self.assertIn("available_months", data)
+        mock_gen.assert_not_called()
+
+    def test_past_month_with_no_snapshot_is_404(self):
+        self.client.force_login(self.user)
+
+        response = self.client.get("/api/cost/insights_summary/?month=2020-01")
+
+        self.assertEqual(response.status_code, 404)
+        self.assertIn("available_months", response.json())
+
+    @patch("cost_management.insights_views._generate_insights", return_value=dict(CANNED_INSIGHTS))
+    def test_previous_month_is_backfilled_on_a_current_month_generation(self, mock_gen):
+        from cost_management.models import InsightsSnapshot
+        current_start = _now().date().replace(day=1)
+        prev_start = (current_start - timedelta(days=1)).replace(day=1)
+        prev_when = _now().replace(day=1) - timedelta(days=1)
+        self._make_conversations(6, prefix="cur")
+        self._make_conversations(6, when=prev_when, prefix="prev")
+        self.client.force_login(self.user)
+
+        self.client.get("/api/cost/insights_summary/")
+
+        self.assertTrue(InsightsSnapshot.objects.filter(month=prev_start).exists())
+
+    @patch("cost_management.insights_views._generate_insights")
+    def test_insufficient_data_makes_no_model_call(self, mock_gen):
+        self._make_conversations(3)
+        self.client.force_login(self.user)
+
+        data = self.client.get("/api/cost/insights_summary/").json()
+
+        self.assertTrue(data["insufficient_data"])
+        self.assertIn("available_months", data)
+        mock_gen.assert_not_called()
+
+    @patch("cost_management.insights_views._generate_insights", side_effect=RuntimeError("boom"))
+    def test_model_error_returns_200_with_error_field(self, mock_gen):
+        from cost_management.models import InsightsSnapshot
+        self._make_conversations(6)
+        self.client.force_login(self.user)
+
+        response = self.client.get("/api/cost/insights_summary/")
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["error"], "boom")
+        self.assertIsNone(data["stale"])
+        self.assertFalse(InsightsSnapshot.objects.exists())
+
+    @patch("cost_management.insights_views._generate_insights", return_value=dict(CANNED_INSIGHTS))
+    def test_conversation_list_is_capped_and_flagged_sampled(self, mock_gen):
+        self._make_conversations(205)
+        self.client.force_login(self.user)
+
+        data = self.client.get("/api/cost/insights_summary/").json()
+
+        self.assertTrue(data["sampled"])
+        transcripts_arg = mock_gen.call_args.args[0]
+        self.assertEqual(len(transcripts_arg), 200)
