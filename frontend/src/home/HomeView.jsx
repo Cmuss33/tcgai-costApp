@@ -4,6 +4,7 @@ import "./HomeView.css";
 
 const API_URL = import.meta.env.VITE_API_URL;
 const POLL_MS = 4000;
+const MAX_POLLS = 20;
 
 const GAP_LABELS = {
   catalog: "catalog gap",
@@ -129,12 +130,14 @@ function HomeView() {
   const [payload, setPayload] = useState(null);
   const [firstLoad, setFirstLoad] = useState(true);
   const [netError, setNetError] = useState(false);
+  const [pollTimedOut, setPollTimedOut] = useState(false);
   const [selectedMonth, setSelectedMonth] = useState(null);
   const pollRef = useRef(null);
 
   const load = useCallback(
-    async ({ month, refresh } = {}) => {
+    async ({ month, refresh, poll = 0 } = {}) => {
       setNetError(false);
+      if (poll === 0) setPollTimedOut(false);
       try {
         const params = new URLSearchParams();
         if (month) params.set("month", month);
@@ -154,7 +157,11 @@ function HomeView() {
 
         clearTimeout(pollRef.current);
         if (data.generating || data.regenerating) {
-          pollRef.current = setTimeout(() => load({ month }), POLL_MS);
+          if (poll < MAX_POLLS) {
+            pollRef.current = setTimeout(() => load({ month, poll: poll + 1 }), POLL_MS);
+          } else {
+            setPollTimedOut(true);
+          }
         }
       } catch {
         setNetError(true);
@@ -235,7 +242,7 @@ function HomeView() {
             <button
               className="insights__refresh"
               onClick={() => load({ refresh: true })}
-              disabled={!!payload?.regenerating || !!generatingFresh}
+              disabled={(!!payload?.regenerating || !!generatingFresh) && !pollTimedOut}
             >
               Refresh
             </button>
@@ -243,12 +250,19 @@ function HomeView() {
         </div>
       </header>
 
-      {generatingFresh && (
+      {generatingFresh && !pollTimedOut && (
         <div className="insights__center insights__center--tall">
           <div className="spinner" />
-          <p>Analyzing this month&rsquo;s conversations&hellip;</p>
-          <p className="insights__muted">This runs once a month and can take a minute.</p>
+          <p>Analyzing {isCurrent ? "this" : "that"} month&rsquo;s conversations&hellip;</p>
+          <p className="insights__muted">This runs once per month and can take a minute.</p>
         </div>
+      )}
+
+      {pollTimedOut && (
+        <p className="insights__notice">
+          Still working on it &mdash; this is taking longer than usual. Use Refresh in a
+          moment to check again.
+        </p>
       )}
 
       {payload?.error && (
