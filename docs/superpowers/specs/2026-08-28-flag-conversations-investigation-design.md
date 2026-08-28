@@ -4,6 +4,27 @@
 **Status:** Approved for implementation planning
 **Author:** brainstormed with Claude Code
 
+## Phasing
+
+This design ships in two phases with a clean seam between them. Each phase gets
+its own implementation plan and its own merge.
+
+- **Phase 1 — Flag + create issues.** Reviewer flags a chat with a reason; a
+  GitHub issue and a cross-linked Linear issue are created; the row shows
+  `Flagged` with links. Flagged chats stay `flagged` — there is no resolve
+  path yet. Independently shippable and delivers the core value. Exercises the
+  two unverified external APIs first, so payload corrections are contained
+  before Phase 2 builds on them.
+- **Phase 2 — Resolve detection.** GitHub webhook (HMAC-verified) plus a
+  cached load-time reconcile flip a flagged chat to `resolved` when its GitHub
+  issue closes, and back to `flagged` on reopen. Purely additive — no rework of
+  Phase 1.
+
+Migration `0009` (Phase 1) defines **all three** `investigation_status` values
+(`unflagged` / `flagged` / `resolved`) so Phase 2 needs no migration.
+
+Each component section below is tagged **[P1]** or **[P2]**.
+
 ## Problem
 
 Reviewers looking at logged chatbot conversations in the TCGai Cost App have no
@@ -80,16 +101,16 @@ Register all new fields in `cost_management/admin.py` as
 
 ## Components
 
-### 1. `cost_management/issue_trackers.py` (new)
+### 1. `cost_management/issue_trackers.py` (new) — [P1] create, [P2] get_states
 
 Mirrors the `LLMAdapter` pattern in `api_clients.py`.
 
 ```
 IssueTracker(ABC)
-    create_issue(title, body, labels=None) -> IssueRef
-    add_label(ref, label) -> None
-    add_comment(ref, body) -> None
-    get_states(numbers_or_ids) -> dict            # id/number -> "open" | "closed"
+    create_issue(title, body, labels=None) -> IssueRef      # [P1]
+    add_label(ref, label) -> None                           # [P1]
+    add_comment(ref, body) -> None                           # [P1]
+    get_states(numbers_or_ids) -> dict            # [P2] id/number -> "open" | "closed"
 
 IssueRef = dataclass(id: str, number: int | None, url: str)
 ```
@@ -103,8 +124,8 @@ IssueRef = dataclass(id: str, number: int | None, url: str)
   `IssueRef(id=node_id, number=number, url=html_url)`.
 - `add_label`: `POST /repos/{repo}/issues/{number}/labels` `{labels:[label]}`.
 - `add_comment`: `POST /repos/{repo}/issues/{number}/comments` `{body}`.
-- `get_states`: `GET /repos/{repo}/issues/{number}` per number (small N),
-  map `state` field. Batched caller decides caching.
+- `get_states` **[P2]**: `GET /repos/{repo}/issues/{number}` per number
+  (small N), map `state` field. Batched caller decides caching.
 - All calls: `timeout=10`. Non-2xx raises `IssueTrackerError` carrying the
   status code and a response-body snippet.
 - Handles GitHub secondary-rate-limit `403` / `429` by raising
@@ -124,10 +145,9 @@ IssueRef = dataclass(id: str, number: int | None, url: str)
   ```
   input `{ teamId: settings.LINEAR_TEAM_ID, projectId: settings.LINEAR_PROJECT_ID,
   title, description }`. `labels` param ignored for Linear in v1.
-- `get_states`: query `issue(id:...) { state { type } }`; map
-  `type in ("completed", "canceled")` → `"closed"`, else `"open"`.
-  (Not used by the lifecycle, but implemented for symmetry / future use — may be
-  cut if it adds cost; see YAGNI.)
+- `get_states` **[P2, likely cut]**: query `issue(id:...) { state { type } }`;
+  map `type in ("completed", "canceled")` → `"closed"`, else `"open"`. Not used
+  by the lifecycle (GitHub is the sole resolve signal); see YAGNI.
 - `timeout=10`. `errors` array in response or non-2xx → `IssueTrackerError`.
 
 Module-level singletons, like `llmprovider`:
@@ -141,11 +161,11 @@ implementation — query `teams { nodes { id name } }` and
 `projects { nodes { id name } }` with the real key, put the IDs in `.env`, and
 document them in `CLAUDE.md`. Not done dynamically at runtime.
 
-### 2. `cost_management/investigation_views.py` (new)
+### 2. `cost_management/investigation_views.py` (new) — [P1] flag_chat, [P2] github_webhook
 
 Keeps this feature out of the already-long `views.py`.
 
-#### `flag_chat(request)` — `@login_required`, `@csrf_exempt`, `POST`
+#### `flag_chat(request)` — `@login_required`, `@csrf_exempt`, `POST` — [P1]
 
 Body: `{ "chat_id": str, "reason": str }`.
 
@@ -225,7 +245,7 @@ Structured logging (lever, debuggability): every external call logs one line
 prefixed `[investigation]` with `chat_id`, operation, target URL, HTTP status,
 and — on error — a response snippet.
 
-#### `github_webhook(request)` — `@csrf_exempt`, `POST`, no auth
+#### `github_webhook(request)` — `@csrf_exempt`, `POST`, no auth — [P2]
 
 - Read raw body. Compute `hmac.new(GITHUB_WEBHOOK_SECRET, body, sha256)`,
   compare `sha256=<hex>` to `X-Hub-Signature-256` with
@@ -241,7 +261,7 @@ and — on error — a response snippet.
   `403` signature failure.
 - Log `[investigation] webhook action=... issue=... matched=<n>`.
 
-### 3. Reconcile fallback (in `views.py::get_chat_ids`)
+### 3. Reconcile fallback (in `views.py::get_chat_ids`) — [P2]
 
 After `results` is assembled, before returning:
 
@@ -264,39 +284,42 @@ case each web worker makes one call per 5 min.
 ### 4. URLs (`cost_management/urls.py`)
 
 ```python
-path('flag_chat/', investigation_views.flag_chat, name='flag_chat'),
-path('github_webhook/', investigation_views.github_webhook, name='github_webhook'),
+path('flag_chat/', investigation_views.flag_chat, name='flag_chat'),           # [P1]
+path('github_webhook/', investigation_views.github_webhook, name='github_webhook'),  # [P2]
 ```
 
 ### 5. Settings (`tcgai_backend/settings.py`)
 
-Read into module constants near the bottom:
+Read into module constants near the bottom. **[P1]** adds all except
+`GITHUB_WEBHOOK_SECRET`, which **[P2]** adds.
 
 ```python
-GITHUB_TOKEN          = os.environ.get('GITHUB_TOKEN', '')
-GITHUB_ISSUE_REPO     = os.environ.get('GITHUB_ISSUE_REPO', 'professormeta/agentic-shopify-chatbot')
-GITHUB_TRIGGER_LABEL  = os.environ.get('GITHUB_TRIGGER_LABEL', 'agent:queued')
-GITHUB_WEBHOOK_SECRET = os.environ.get('GITHUB_WEBHOOK_SECRET', '')
-LINEAR_API_KEY        = os.environ.get('LINEAR_API_KEY', '')
-LINEAR_TEAM_ID        = os.environ.get('LINEAR_TEAM_ID', '')
-LINEAR_PROJECT_ID     = os.environ.get('LINEAR_PROJECT_ID', '')
-COST_APP_PUBLIC_URL   = os.environ.get('COST_APP_PUBLIC_URL', '')
+GITHUB_TOKEN          = os.environ.get('GITHUB_TOKEN', '')                    # [P1]
+GITHUB_ISSUE_REPO     = os.environ.get('GITHUB_ISSUE_REPO', 'professormeta/agentic-shopify-chatbot')  # [P1]
+GITHUB_TRIGGER_LABEL  = os.environ.get('GITHUB_TRIGGER_LABEL', 'agent:queued')  # [P1]
+GITHUB_WEBHOOK_SECRET = os.environ.get('GITHUB_WEBHOOK_SECRET', '')          # [P2]
+LINEAR_API_KEY        = os.environ.get('LINEAR_API_KEY', '')                  # [P1]
+LINEAR_TEAM_ID        = os.environ.get('LINEAR_TEAM_ID', '')                  # [P1]
+LINEAR_PROJECT_ID     = os.environ.get('LINEAR_PROJECT_ID', '')              # [P1]
+COST_APP_PUBLIC_URL   = os.environ.get('COST_APP_PUBLIC_URL', '')            # [P1]
 ```
 
-Document all eight in `CLAUDE.md` (backend env section).
+Document all eight in `CLAUDE.md` (backend env section) — the P1 seven when
+Phase 1 lands, `GITHUB_WEBHOOK_SECRET` when Phase 2 lands.
 
-### 6. Frontend (`frontend/src/chatSummary/`)
+### 6. Frontend (`frontend/src/chatSummary/`) — [P1] flag/flagged, [P2] resolved badge
 
 **`ChatSummaryView.jsx`**
 
-- New table column **"Investigation"** (header + cell).
+- New table column **"Investigation"** (header + cell). **[P1]**
 - Cell renders by `chat.investigation_status`:
-  - `unflagged` (or missing) → `<button class="flag-button">🚩 Flag</button>`.
+  - `unflagged` (or missing) → `<button class="flag-button">🚩 Flag</button>`. **[P1]**
   - `flagged` → `<span class="badge badge-flagged">Flagged</span>` +
     `GitHub ↗` / `Linear ↗` anchors (`target="_blank"`,
     `rel="noopener noreferrer"`). If `chat.flag_error` is non-empty, show
-    `⚠ Retry` instead of/next to the badge, wired to re-open the modal.
-  - `resolved` → `<span class="badge badge-resolved">Resolved ✓</span>` + links.
+    `⚠ Retry` instead of/next to the badge, wired to re-open the modal. **[P1]**
+  - `resolved` → `<span class="badge badge-resolved">Resolved ✓</span>` +
+    links. **[P2]** (P1 renders it as `flagged` since resolve never fires yet.)
 - `flag` button opens `<FlagChatModal>` for that `chat_id`.
 - `flagChat(chatId, reason)`:
   `POST ${API_URL}/api/cost/flag_chat/`, `credentials:"include"`,
@@ -316,8 +339,8 @@ Document all eight in `CLAUDE.md` (backend env section).
 - Follows existing modal styling conventions.
 
 **`ChatSummaryView.css`** — add `.flag-button`, `.badge`, `.badge-flagged`,
-`.badge-resolved`, `.retry-link`, and flag-modal rules, reusing existing
-modal/overlay classes where possible.
+`.retry-link`, and flag-modal rules **[P1]**; `.badge-resolved` **[P2]**.
+Reuse existing modal/overlay classes where possible.
 
 ## Error handling summary
 
@@ -366,7 +389,7 @@ Model / migration:
 - Double-submit (two calls, second while first "in flight" simulated) creates
   only one GitHub issue (assert `create_issue` called once).
 
-`github_webhook`:
+`github_webhook` **[P2]**:
 - Valid signature + `action=closed` + matching `github_issue_number` →
   chat becomes `resolved`; response 200.
 - Valid signature + `action=reopened` on a `resolved` chat → back to `flagged`.
@@ -374,7 +397,7 @@ Model / migration:
 - `action=edited` (or non-`issues` event) → 200 no-op.
 - `closed` with no matching chat → 200, `matched=0`.
 
-`get_chat_ids` reconcile:
+`get_chat_ids` reconcile **[P2]**:
 - `flagged` chat whose mocked `get_states` returns `closed` → row returned as
   `resolved` and DB updated.
 - `get_states` raises → listing still returns 200 with rows unchanged.
@@ -386,39 +409,42 @@ Frontend: no test runner in repo. Manual verification checklist in the plan +
 ## Files
 
 **New**
-- `backend/tcgai_backend/cost_management/issue_trackers.py`
-- `backend/tcgai_backend/cost_management/investigation_views.py`
-- `backend/tcgai_backend/cost_management/migrations/0009_chat_investigation_fields.py`
-- `frontend/src/chatSummary/FlagChatModal.jsx`
+- `backend/tcgai_backend/cost_management/issue_trackers.py` — [P1] (get_states added [P2])
+- `backend/tcgai_backend/cost_management/investigation_views.py` — [P1] `flag_chat` (`github_webhook` added [P2])
+- `backend/tcgai_backend/cost_management/migrations/0009_chat_investigation_fields.py` — [P1]
+- `frontend/src/chatSummary/FlagChatModal.jsx` — [P1]
 
 **Modified**
-- `backend/tcgai_backend/cost_management/models.py` — new `Chat` fields
-- `backend/tcgai_backend/cost_management/admin.py` — register new fields
-- `backend/tcgai_backend/cost_management/urls.py` — 2 routes
-- `backend/tcgai_backend/cost_management/views.py` — reconcile block in `get_chat_ids`
-- `backend/tcgai_backend/cost_management/tests.py` — new test classes
-- `backend/tcgai_backend/tcgai_backend/settings.py` — 8 env constants
-- `frontend/src/chatSummary/ChatSummaryView.jsx` — column, modal wiring, deep link
-- `frontend/src/chatSummary/ChatSummaryView.css` — badges, button, modal
-- `CLAUDE.md` — document new env vars + Linear ID lookup note
+- `backend/tcgai_backend/cost_management/models.py` — new `Chat` fields — [P1]
+- `backend/tcgai_backend/cost_management/admin.py` — register new fields — [P1]
+- `backend/tcgai_backend/cost_management/urls.py` — `flag_chat` route [P1], `github_webhook` route [P2]
+- `backend/tcgai_backend/cost_management/views.py` — reconcile block in `get_chat_ids` — [P2]
+- `backend/tcgai_backend/cost_management/tests.py` — new test classes — [P1] and [P2]
+- `backend/tcgai_backend/tcgai_backend/settings.py` — 7 env constants [P1], `GITHUB_WEBHOOK_SECRET` [P2]
+- `frontend/src/chatSummary/ChatSummaryView.jsx` — column, modal wiring, deep link [P1]; `resolved` badge [P2]
+- `frontend/src/chatSummary/ChatSummaryView.css` — button, `flagged` badge, modal [P1]; `resolved` badge [P2]
+- `CLAUDE.md` — document new env vars + Linear ID lookup note — [P1] (webhook secret [P2])
 
 **Not touched**
 - `requirements.txt` (no new packages — uses `requests`)
 
 ## External setup (operator, out of code)
 
+**Phase 1:**
 1. Fine-grained GitHub PAT: Issues R/W + Metadata R on
    `professormeta/agentic-shopify-chatbot` → `GITHUB_TOKEN`.
 2. Ensure the `agent:queued` label exists in that repo (the workflow's
    `labeled` trigger needs the exact name).
-3. GitHub repo webhook → `https://<backend>/api/cost/github_webhook/`,
+3. Linear personal API key → `LINEAR_API_KEY`; resolve + set `LINEAR_TEAM_ID`
+   and `LINEAR_PROJECT_ID` (shopify-chatbot project).
+4. `COST_APP_PUBLIC_URL` = deployed frontend origin.
+5. Confirm Linear's GitHub integration is installed on the workspace (for the
+   native auto-link; the explicit URL cross-link works regardless).
+
+**Phase 2:**
+6. GitHub repo webhook → `https://<backend>/api/cost/github_webhook/`,
    content-type `application/json`, secret = `GITHUB_WEBHOOK_SECRET`,
    events = **Issues** only.
-4. Linear personal API key → `LINEAR_API_KEY`; resolve + set `LINEAR_TEAM_ID`
-   and `LINEAR_PROJECT_ID` (shopify-chatbot project).
-5. `COST_APP_PUBLIC_URL` = deployed frontend origin.
-6. Confirm Linear's GitHub integration is installed on the workspace (for the
-   native auto-link; the explicit URL cross-link works regardless).
 
 ## YAGNI — explicitly out of scope
 
