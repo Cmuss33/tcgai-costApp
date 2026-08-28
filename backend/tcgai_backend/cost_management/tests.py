@@ -839,3 +839,52 @@ class InsightsSummaryTests(TestCase):
         self.assertTrue(data["sampled"])
         transcripts_arg = mock_gen.call_args.args[0]
         self.assertEqual(len(transcripts_arg), 200)
+
+    @override_settings(TESTING=False)
+    @patch("cost_management.insights_views.threading.Thread")
+    @patch("cost_management.insights_views._generate_insights", return_value=dict(CANNED_INSIGHTS))
+    def test_stale_snapshot_is_served_immediately_while_refreshing_in_background(self, mock_gen, mock_thread):
+        from cost_management.models import InsightsSnapshot
+        current = _now().date().replace(day=1)
+        stored = {**CANNED_INSIGHTS, "month": current.strftime("%Y-%m"),
+                  "conversations_analyzed": 20, "headline": "old headline"}
+        InsightsSnapshot.objects.create(month=current, payload=stored, conversations_analyzed=20)
+        self._make_conversations(6)
+        self.client.force_login(self.user)
+
+        data = self.client.get("/api/cost/insights_summary/").json()
+
+        self.assertTrue(data["regenerating"])
+        self.assertEqual(data["headline"], "old headline")
+        mock_thread.assert_called_once()
+        mock_gen.assert_not_called()
+
+    @override_settings(TESTING=False)
+    @patch("cost_management.insights_views.threading.Thread")
+    def test_first_ever_load_returns_generating_flag(self, mock_thread):
+        self._make_conversations(6)
+        self.client.force_login(self.user)
+
+        data = self.client.get("/api/cost/insights_summary/").json()
+
+        self.assertTrue(data["generating"])
+        self.assertIn("available_months", data)
+        mock_thread.assert_called_once()
+
+    @patch("cost_management.insights_views._generate_insights")
+    def test_product_demand_drops_one_off_requests(self, mock_gen):
+        mock_gen.return_value = {
+            **CANNED_INSIGHTS,
+            "product_demand": [
+                {"product": "OP17 Booster Box", "count": 4, "status": "out_of_stock", "examples": ["c1"]},
+                {"product": "Darkrai VSTAR single", "count": 1, "status": "out_of_stock", "examples": ["c2"]},
+                {"product": "The Mind board game", "count": 1, "status": "not_carried", "examples": ["c3"]},
+            ],
+        }
+        self._make_conversations(6)
+        self.client.force_login(self.user)
+
+        data = self.client.get("/api/cost/insights_summary/").json()
+
+        self.assertEqual([d["product"] for d in data["product_demand"]], ["OP17 Booster Box"])
+        self.assertEqual(data["product_demand_one_offs"], 2)
