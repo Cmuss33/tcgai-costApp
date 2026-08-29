@@ -243,11 +243,13 @@ function StatsBand({ stats }) {
 }
 
 /* ---------- insight sections ---------- */
+const asList = (v) => (Array.isArray(v) ? v : []);
+
 function Findings({ view }) {
-  const requests = view.top_requests ?? [];
-  const gaps = view.unmet_needs ?? [];
-  const demand = view.product_demand ?? [];
-  const recs = view.recommendations ?? [];
+  const requests = asList(view.top_requests);
+  const gaps = asList(view.unmet_needs);
+  const demand = asList(view.product_demand);
+  const recs = asList(view.recommendations);
   const maxReq = Math.max(1, ...requests.map((r) => r.count || 0));
 
   return (

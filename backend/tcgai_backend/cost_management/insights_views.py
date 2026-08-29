@@ -174,6 +174,26 @@ def _for_storage(payload):
     return {key: value for key, value in payload.items() if key not in _RUNTIME_ONLY_KEYS}
 
 
+_LIST_FIELDS = ("top_requests", "unmet_needs", "product_demand", "recommendations")
+
+
+def _sanitize_report(core):
+    """The model is instructed to call report_insights with a fixed schema, but
+    tool-call arguments aren't schema-validated by the API — a malformed
+    generation (e.g. a field emitted as a string instead of a list of objects)
+    would otherwise flow straight through to storage and the frontend, which
+    calls .map() on these fields and crashes the whole page. Drop any field
+    that doesn't match the expected shape rather than passing it through."""
+    core = dict(core)
+    for field in _LIST_FIELDS:
+        value = core.get(field)
+        if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
+            core[field] = []
+    if not isinstance(core.get("headline"), str):
+        core["headline"] = ""
+    return core
+
+
 def _trim_findings(core):
     core = {**core}
     demand = core.get("product_demand") or []
@@ -254,7 +274,7 @@ def _build_payload(month_start):
             with_customer_text += 1
 
     try:
-        core = _trim_findings(_generate_insights(transcripts, label))
+        core = _trim_findings(_sanitize_report(_generate_insights(transcripts, label)))
     except Exception as exc:  # degrade gracefully — never 500 the page
         snap = InsightsSnapshot.objects.filter(month=month_start).first()
         return {

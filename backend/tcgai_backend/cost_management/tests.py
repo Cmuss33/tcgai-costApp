@@ -750,6 +750,41 @@ class InsightsSummaryTests(TestCase):
         snap = InsightsSnapshot.objects.get(month=first_of_month)
         self.assertEqual(snap.conversations_analyzed, 6)
 
+    @patch(
+        "cost_management.insights_views._generate_insights",
+        return_value={
+            "headline": "One Piece singles are the top request.",
+            "top_requests": "One Piece singles, mostly.",
+            "count": 4,
+            "share_pct": 40,
+            "examples": ["conv-1", "conv-2"],
+            "unmet_needs": [
+                {"gap": "Grading questions", "gap_type": "capability", "count": 2,
+                 "summary": "Bot defers to email.", "examples": ["conv-3"]},
+            ],
+            "product_demand": [],
+            "recommendations": [],
+        },
+    )
+    def test_malformed_model_output_is_sanitized_not_passed_through(self, mock_gen):
+        """report_insights tool-call arguments aren't schema-validated by the
+        API, so a malformed generation (a list field emitted as a string)
+        must not reach the response — the frontend calls .map() on these
+        fields and a non-list crashes the whole /home page."""
+        self._make_conversations(6, with_customer_text=2)
+        self.client.force_login(self.user)
+
+        response = self.client.get("/api/cost/insights_summary/")
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["top_requests"], [])
+        self.assertEqual(
+            data["unmet_needs"],
+            [{"gap": "Grading questions", "gap_type": "capability", "count": 2,
+              "summary": "Bot defers to email.", "examples": ["conv-3"]}],
+        )
+
     @patch("cost_management.insights_views._generate_insights", return_value=dict(CANNED_INSIGHTS))
     def test_second_call_within_the_hour_is_served_from_cache(self, mock_gen):
         self._make_conversations(6)
