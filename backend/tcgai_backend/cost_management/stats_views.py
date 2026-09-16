@@ -39,11 +39,17 @@ def _spend_for(month_start):
 
 
 def _tokens_for(month_start):
-    """(input, output, [{day, input, output}], error) from the Anthropic usage report."""
+    """(input, output, [{day, input, output}], cache_info, error) from the
+    Anthropic usage report. `input` is the TRUE total (uncached + cache
+    creation + cache read, per AnthropicAdapter.get_tokens -- ENG-148),
+    not just uncached input as before. cache_info is {creation_tokens,
+    read_tokens, hit_rate} -- defaults to all-zero/None if the adapter
+    response doesn't carry a "cache" key at all (an older/unpatched adapter,
+    or an error response), so callers never need a None-check of their own."""
     resp = base_views.llmprovider.get_tokens(year=month_start.year, month=month_start.month)
     if not isinstance(resp, dict) or resp.get("error"):
         err = resp.get("error") if isinstance(resp, dict) else "usage source unavailable"
-        return None, None, [], err
+        return None, None, [], {"creation_tokens": 0, "read_tokens": 0, "hit_rate": None}, err
     rows = resp.get("tokens") or []
     total_in = sum(int(r.get("input_tokens") or 0) for r in rows)
     total_out = sum(int(r.get("output_tokens") or 0) for r in rows)
@@ -52,7 +58,13 @@ def _tokens_for(month_start):
          "output": int(r.get("output_tokens") or 0)}
         for r in rows
     ]
-    return total_in, total_out, daily, None
+    cache_info = resp.get("cache") or {}
+    cache_info = {
+        "creation_tokens": cache_info.get("creation_tokens", 0),
+        "read_tokens": cache_info.get("read_tokens", 0),
+        "hit_rate": cache_info.get("hit_rate"),
+    }
+    return total_in, total_out, daily, cache_info, None
 
 
 def _chat_qs(month_start):
@@ -95,8 +107,8 @@ def _build_stats(month_start):
 
     spend, spend_daily, cost_err = _spend_for(month_start)
     prev_spend, _, _ = _spend_for(previous)
-    tok_in, tok_out, tok_daily, tok_err = _tokens_for(month_start)
-    prev_in, prev_out, _, _ = _tokens_for(previous)
+    tok_in, tok_out, tok_daily, cache_info, tok_err = _tokens_for(month_start)
+    prev_in, prev_out, _, _, _ = _tokens_for(previous)
 
     convs = _chat_qs(month_start).count()
     prev_convs = _chat_qs(previous).count()
@@ -154,6 +166,15 @@ def _build_stats(month_start):
             "input_delta_pct": _pct_delta(tok_in, prev_in),
             "output_delta_pct": _pct_delta(tok_out, prev_out),
             "daily": tok_daily,
+            # ENG-148: "input" above already includes cache tokens (see
+            # _tokens_for) -- these are the breakdown + the actual "how well
+            # is caching doing" metric the store owner asked to see. A high
+            # hit_rate means most input tokens are billed at Anthropic's
+            # cache-read discount rather than full price -- caching reduces
+            # cost, it does not make those calls free.
+            "cache_creation": cache_info["creation_tokens"],
+            "cache_read": cache_info["read_tokens"],
+            "cache_hit_rate": cache_info["hit_rate"],
         },
         "conversations": {
             "total": convs,
@@ -233,5 +254,67 @@ def model_rates(request):
             return JsonResponse({**cached, "cached": True})
 
     payload = base_views.llmprovider.get_model_rates(year=month_start.year, month=month_start.month)
+    cache.set(key, payload, CURRENT_TTL if month_start == current else PAST_TTL)
+    return JsonResponse(payload)
+
+
+@login_required
+def usage_by_key(request):
+    """Per-API-key token usage + an estimated $ cost this month, combining
+    AnthropicAdapter.get_usage_by_key (real per-key token counts) with
+    get_model_rates (this month's real effective $/token per model, from
+    model_rates above). The per-key dollar figure is necessarily an
+    estimate -- Anthropic's cost_report has no per-key breakdown to derive a
+    real billed figure from (see get_usage_by_key's docstring) -- so this
+    multiplies each key's per-model token counts by that model's blended
+    rate rather than reporting Anthropic's own billed cost per key."""
+    refresh = request.GET.get("refresh", "").lower() in ("1", "true", "yes")
+    month_param = request.GET.get("month")
+    current = current_month_start()
+
+    month_start = current
+    if month_param:
+        parsed = parse_month_param(month_param)
+        if parsed is None:
+            return JsonResponse({"error": "invalid month; expected YYYY-MM"}, status=400)
+        month_start = parsed
+
+    key = f"usage_by_key:{month_start:%Y-%m}"
+    if not refresh:
+        cached = cache.get(key)
+        if cached is not None:
+            return JsonResponse({**cached, "cached": True})
+
+    usage_resp = base_views.llmprovider.get_usage_by_key(year=month_start.year, month=month_start.month)
+    if not isinstance(usage_resp, dict) or usage_resp.get("error"):
+        err = usage_resp.get("error") if isinstance(usage_resp, dict) else "usage source unavailable"
+        payload = {"keys": [], "workspace_id": None, "estimated": True, "error": err}
+        cache.set(key, payload, CURRENT_TTL if month_start == current else PAST_TTL)
+        return JsonResponse(payload)
+
+    rates_resp = base_views.llmprovider.get_model_rates(year=month_start.year, month=month_start.month)
+    rates = rates_resp.get("rates", {}) if isinstance(rates_resp, dict) else {}
+
+    keys = []
+    for k in usage_resp.get("keys", []):
+        estimated_cost = 0.0
+        for model, tok in k.get("by_model", {}).items():
+            rate = rates.get(model, {})
+            estimated_cost += tok.get("input_tokens", 0) * rate.get("input", 0)
+            estimated_cost += tok.get("output_tokens", 0) * rate.get("output", 0)
+        keys.append({
+            "api_key_id": k["api_key_id"],
+            "name": k["name"],
+            "input_tokens": k["input_tokens"],
+            "output_tokens": k["output_tokens"],
+            "estimated_cost": round(estimated_cost, 2),
+        })
+    keys.sort(key=lambda k: k["estimated_cost"], reverse=True)
+
+    payload = {
+        "keys": keys,
+        "workspace_id": usage_resp.get("workspace_id"),
+        "estimated": True,
+    }
     cache.set(key, payload, CURRENT_TTL if month_start == current else PAST_TTL)
     return JsonResponse(payload)

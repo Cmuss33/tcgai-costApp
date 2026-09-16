@@ -96,6 +96,91 @@ class LogMessageProductsShownTests(TestCase):
         self.assertIsNone(message.products_shown)
 
 
+class LogMessageAccumulationTests(TestCase):
+    """The Chat row's tokens_in/tokens_out are an incrementally-cached
+    running total (not derived from Message rows on read), updated inside
+    select_for_update()+transaction.atomic() specifically so concurrent
+    log_message calls for the same chat_id -- routine during a multi-step
+    tool-use turn, which logs each LLM round-trip separately, sometimes
+    within the same second -- can't race on the += and silently drop one
+    side's update. This is a proportionate regression test for the
+    accumulation logic itself (sequential calls must sum correctly); a true
+    concurrent-write race is Django's/the DB's own well-established
+    locking guarantee, not something worth a flaky threaded test here."""
+
+    def test_two_calls_for_the_same_chat_sum_tokens_not_overwrite(self):
+        first = make_log_message_payload("conv-accum")
+        second = make_log_message_payload("conv-accum")
+        second["tokens_in"] = 40
+        second["tokens_out"] = 15
+
+        for payload in (first, second):
+            response = self.client.post(
+                "/api/cost/log_message/",
+                data=json.dumps(payload),
+                content_type="application/json",
+            )
+            self.assertEqual(response.status_code, 200)
+
+        chat = Chat.objects.get(chat_id="conv-accum")
+        self.assertEqual(chat.tokens_in, 100 + 40)
+        self.assertEqual(chat.tokens_out, 50 + 15)
+        self.assertEqual(Message.objects.filter(chat=chat).count(), 2)
+
+
+class LogMessageCacheTokensTests(TestCase):
+    """ENG-148: real, billed prompt-cache token counts, previously not sent
+    by the chatbot at all -- see claude.server.js's sendCostLog fix."""
+
+    def test_stores_cache_tokens_when_present(self):
+        payload = make_log_message_payload("conv-with-cache")
+        payload["cache_creation_tokens"] = 800
+        payload["cache_read_tokens"] = 1200
+
+        response = self.client.post(
+            "/api/cost/log_message/",
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        message = Message.objects.get(chat_id="conv-with-cache")
+        self.assertEqual(message.cache_creation_tokens, 800)
+        self.assertEqual(message.cache_read_tokens, 1200)
+
+    def test_defaults_to_zero_when_absent(self):
+        """A sender that hasn't deployed the cache-reporting fix yet (or a
+        turn with no caching activity) must keep working exactly as before."""
+        payload = make_log_message_payload("conv-no-cache-fields")
+
+        response = self.client.post(
+            "/api/cost/log_message/",
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        message = Message.objects.get(chat_id="conv-no-cache-fields")
+        self.assertEqual(message.cache_creation_tokens, 0)
+        self.assertEqual(message.cache_read_tokens, 0)
+
+    def test_null_cache_values_are_treated_as_zero_not_stored_as_null(self):
+        payload = make_log_message_payload("conv-null-cache")
+        payload["cache_creation_tokens"] = None
+        payload["cache_read_tokens"] = None
+
+        response = self.client.post(
+            "/api/cost/log_message/",
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        message = Message.objects.get(chat_id="conv-null-cache")
+        self.assertEqual(message.cache_creation_tokens, 0)
+        self.assertEqual(message.cache_read_tokens, 0)
+
+
 class GetChatIdsProductsShownCountTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="owner", password="pw")
@@ -134,6 +219,54 @@ class GetChatIdsProductsShownCountTests(TestCase):
         data = response.json()
         result = next(c for c in data["results"] if c["chat_id"] == "conv-no-products")
         self.assertEqual(result["products_shown_count"], 0)
+
+
+class GetChatIdsCacheTokenTotalsTests(TestCase):
+    """ENG-148: cache_creation_tokens/cache_read_tokens on each result are
+    summed live from Message rows, not a cached Chat field -- deliberately
+    not extending the same incrementally-cached-total pattern that needed a
+    concurrency fix for tokens_in/tokens_out (see log_message)."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="owner", password="pw")
+        self.client.force_login(self.user)
+
+    def _create_message(self, chat, cache_creation_tokens, cache_read_tokens):
+        return Message.objects.create(
+            chat=chat,
+            content="hi",
+            llm_formatted_message="{}",
+            returned_content="hello",
+            llm_formatted_returned_message="{}",
+            tokens_in=10,
+            tokens_out=5,
+            cache_creation_tokens=cache_creation_tokens,
+            cache_read_tokens=cache_read_tokens,
+            model="claude-haiku-4-5",
+        )
+
+    def test_sums_cache_tokens_across_a_chats_messages(self):
+        chat = Chat.objects.create(chat_id="conv-cached", model="claude-haiku-4-5")
+        self._create_message(chat, 500, 1000)
+        self._create_message(chat, 0, 2000)
+
+        response = self.client.get("/api/cost/get_chat_ids/")
+
+        data = response.json()
+        result = next(c for c in data["results"] if c["chat_id"] == "conv-cached")
+        self.assertEqual(result["cache_creation_tokens"], 500)
+        self.assertEqual(result["cache_read_tokens"], 3000)
+
+    def test_is_zero_when_no_cache_activity(self):
+        chat = Chat.objects.create(chat_id="conv-no-cache", model="claude-haiku-4-5")
+        self._create_message(chat, 0, 0)
+
+        response = self.client.get("/api/cost/get_chat_ids/")
+
+        data = response.json()
+        result = next(c for c in data["results"] if c["chat_id"] == "conv-no-cache")
+        self.assertEqual(result["cache_creation_tokens"], 0)
+        self.assertEqual(result["cache_read_tokens"], 0)
 
 
 class ChatInvestigationFieldsTests(TestCase):
@@ -984,11 +1117,14 @@ def _cost_resp(*totals):
     return {"costs": [{"day": f"2026-08-{i + 1:02d}", "total_cost": t} for i, t in enumerate(totals)]}
 
 
-def _tok_resp(*pairs):
-    return {"tokens": [
+def _tok_resp(*pairs, cache=None):
+    resp = {"tokens": [
         {"day": f"2026-08-{i + 1:02d}", "input_tokens": a, "output_tokens": b}
         for i, (a, b) in enumerate(pairs)
     ]}
+    if cache is not None:
+        resp["cache"] = cache
+    return resp
 
 
 class MonthlyStatsTests(TestCase):
@@ -1149,6 +1285,61 @@ class MonthlyStatsTests(TestCase):
         self.assertIsNone(d["workspace_id"])
 
 
+class MonthlyStatsCacheHitRateTests(TestCase):
+    """ENG-148: the store-owner-facing "how well is caching doing" metric --
+    surfaced on monthly_stats so it renders on the same home dashboard as
+    spend/tokens, not buried in a separate call."""
+
+    def setUp(self):
+        cache.clear()
+        self.user = User.objects.create_user(username="owner", password="pw")
+        self.this_month = _now().replace(day=1)
+
+    def tearDown(self):
+        cache.clear()
+
+    def _patch_adapter(self, cache_info):
+        get_cost = MagicMock(return_value=_cost_resp(5.0))
+        get_tokens = MagicMock(return_value=_tok_resp((1000, 300), cache=cache_info))
+        p = patch.multiple("cost_management.views.llmprovider", get_cost=get_cost, get_tokens=get_tokens)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_reports_cache_hit_rate_and_token_breakdown(self):
+        self._patch_adapter({"creation_tokens": 500, "read_tokens": 4500, "hit_rate": 0.9})
+        self.client.force_login(self.user)
+
+        d = self.client.get("/api/cost/monthly_stats/").json()
+
+        self.assertEqual(d["tokens"]["cache_creation"], 500)
+        self.assertEqual(d["tokens"]["cache_read"], 4500)
+        self.assertEqual(d["tokens"]["cache_hit_rate"], 0.9)
+
+    def test_hit_rate_none_when_adapter_reports_none(self):
+        self._patch_adapter({"creation_tokens": 0, "read_tokens": 0, "hit_rate": None})
+        self.client.force_login(self.user)
+
+        d = self.client.get("/api/cost/monthly_stats/").json()
+
+        self.assertIsNone(d["tokens"]["cache_hit_rate"])
+
+    def test_degrades_gracefully_when_adapter_omits_cache_entirely(self):
+        """An older/unpatched adapter response has no "cache" key at all --
+        must not break the whole monthly_stats response."""
+        get_cost = MagicMock(return_value=_cost_resp(5.0))
+        get_tokens = MagicMock(return_value=_tok_resp((1000, 300)))  # no cache=...
+        p = patch.multiple("cost_management.views.llmprovider", get_cost=get_cost, get_tokens=get_tokens)
+        p.start()
+        self.addCleanup(p.stop)
+        self.client.force_login(self.user)
+
+        d = self.client.get("/api/cost/monthly_stats/").json()
+
+        self.assertIsNone(d["tokens"]["cache_hit_rate"])
+        self.assertEqual(d["tokens"]["cache_creation"], 0)
+        self.assertEqual(d["tokens"]["cache_read"], 0)
+
+
 class ModelRatesAdapterTests(TestCase):
     """Unit tests for AnthropicAdapter.get_model_rates - the $/token rate it
     derives must equal Anthropic's own billed amount divided by Anthropic's
@@ -1303,6 +1494,338 @@ class WorkspaceScopingTests(TestCase):
         self.assertEqual(result["workspace_id"], "wrkspc_target")
         usage_call_params = mock_get.call_args_list[1].kwargs["params"]
         self.assertEqual(usage_call_params["workspace_ids[]"], "wrkspc_target")
+
+
+class CacheTokenAdapterTests(TestCase):
+    """ENG-148: get_tokens/get_model_rates previously only ever read
+    uncached_input_tokens, silently excluding cache_creation/cache_read
+    tokens from both the dashboard's "Tokens" KPI and the per-model rates
+    used to estimate per-chat cost -- even though those are real, billed
+    tokens Anthropic reports on every response. Shapes here are the real
+    usage_report/messages and cost_report response shapes, confirmed
+    directly against the live API 2026-09-16 (cache_creation is a nested
+    object with per-TTL sub-fields; cache_read_input_tokens is flat;
+    cost_report's matching token_type strings are
+    "cache_creation.ephemeral_5m_input_tokens" /
+    "cache_creation.ephemeral_1h_input_tokens" / "cache_read_input_tokens")."""
+
+    def _usage_report(self, *rows):
+        """rows: (uncached_in, cache_5m, cache_1h, cache_read, output)"""
+        return {"data": [{"starting_at": "2026-09-01T00:00:00Z", "results": [
+            {
+                "model": "claude-haiku-4-5",
+                "uncached_input_tokens": u,
+                "cache_creation": {"ephemeral_5m_input_tokens": c5, "ephemeral_1h_input_tokens": c1},
+                "cache_read_input_tokens": r,
+                "output_tokens": o,
+            }
+            for u, c5, c1, r, o in rows
+        ]}]}
+
+    def test_get_tokens_input_total_includes_cache_creation_and_read(self):
+        # true total input = 1000 (uncached) + 200 (5m write) + 100 (1h write) + 3000 (read) = 4300
+        usage_resp = MagicMock(status_code=200, json=lambda: self._usage_report(
+            (1000, 200, 100, 3000, 50),
+        ))
+        from .llm_provider_adapter_implementations import AnthropicAdapter
+        with patch("cost_management.llm_provider_adapter_implementations.requests.get", return_value=usage_resp):
+            result = AnthropicAdapter().get_tokens(year=2026, month=9)
+
+        self.assertEqual(result["tokens"][0]["input_tokens"], 4300)
+        self.assertEqual(result["tokens"][0]["output_tokens"], 50)
+
+    def test_get_tokens_reports_cache_breakdown_and_hit_rate(self):
+        usage_resp = MagicMock(status_code=200, json=lambda: self._usage_report(
+            (1000, 200, 100, 3000, 50),
+        ))
+        from .llm_provider_adapter_implementations import AnthropicAdapter
+        with patch("cost_management.llm_provider_adapter_implementations.requests.get", return_value=usage_resp):
+            result = AnthropicAdapter().get_tokens(year=2026, month=9)
+
+        self.assertEqual(result["cache"]["creation_tokens"], 300)
+        self.assertEqual(result["cache"]["read_tokens"], 3000)
+        # hit rate = cache_read / true_total_input = 3000 / 4300
+        self.assertAlmostEqual(result["cache"]["hit_rate"], 3000 / 4300, places=6)
+
+    def test_get_tokens_cache_hit_rate_is_none_with_zero_input(self):
+        usage_resp = MagicMock(status_code=200, json=lambda: {"data": []})
+        from .llm_provider_adapter_implementations import AnthropicAdapter
+        with patch("cost_management.llm_provider_adapter_implementations.requests.get", return_value=usage_resp):
+            result = AnthropicAdapter().get_tokens(year=2026, month=9)
+
+        self.assertIsNone(result["cache"]["hit_rate"])
+        self.assertEqual(result["cache"]["creation_tokens"], 0)
+        self.assertEqual(result["cache"]["read_tokens"], 0)
+
+    def test_get_model_rates_derives_cache_creation_and_read_rates(self):
+        cost_resp = MagicMock(status_code=200, json=lambda: {"data": [{"results": [
+            {"model": "claude-haiku-4-5", "cost_type": "tokens",
+             "token_type": "cache_creation.ephemeral_5m_input_tokens", "amount": "125.0"},  # $1.25
+            {"model": "claude-haiku-4-5", "cost_type": "tokens",
+             "token_type": "cache_read_input_tokens", "amount": "10.0"},  # $0.10
+        ]}]})
+        usage_resp = MagicMock(status_code=200, json=lambda: self._usage_report(
+            (0, 1_000_000, 0, 1_000_000, 0),
+        ))
+        from .llm_provider_adapter_implementations import AnthropicAdapter
+        with patch(
+            "cost_management.llm_provider_adapter_implementations.requests.get",
+            side_effect=[cost_resp, usage_resp],
+        ):
+            result = AnthropicAdapter().get_model_rates(year=2026, month=9)
+
+        rates = result["rates"]["claude-haiku-4-5"]
+        self.assertAlmostEqual(rates["cache_creation"], 1.25 / 1_000_000, places=10)
+        self.assertAlmostEqual(rates["cache_read"], 0.10 / 1_000_000, places=10)
+
+    def test_get_model_rates_sums_both_cache_creation_ttls_into_one_rate(self):
+        cost_resp = MagicMock(status_code=200, json=lambda: {"data": [{"results": [
+            {"model": "claude-haiku-4-5", "cost_type": "tokens",
+             "token_type": "cache_creation.ephemeral_5m_input_tokens", "amount": "100.0"},
+            {"model": "claude-haiku-4-5", "cost_type": "tokens",
+             "token_type": "cache_creation.ephemeral_1h_input_tokens", "amount": "200.0"},
+        ]}]})
+        usage_resp = MagicMock(status_code=200, json=lambda: self._usage_report(
+            (0, 500_000, 500_000, 0, 0),
+        ))
+        from .llm_provider_adapter_implementations import AnthropicAdapter
+        with patch(
+            "cost_management.llm_provider_adapter_implementations.requests.get",
+            side_effect=[cost_resp, usage_resp],
+        ):
+            result = AnthropicAdapter().get_model_rates(year=2026, month=9)
+
+        # (100+200) cents over (500k+500k) tokens = $3.00 / 1M tokens
+        self.assertEqual(result["rates"]["claude-haiku-4-5"]["cache_creation"], 3.0 / 1_000_000)
+
+
+class UsageByKeyAdapterTests(TestCase):
+    """Unit tests for AnthropicAdapter.get_usage_by_key. Anthropic's
+    cost_report can't group by individual API key at all (confirmed against
+    the real API 2026-09-16 -- only description/workspace_id are valid
+    group_by values), so per-key attribution can only ever come from
+    usage_report/messages (token counts), grouped by api_key_id + model."""
+
+    def _usage_report(self, *rows):
+        """rows: (api_key_id, model, input_tokens, output_tokens)"""
+        return {"data": [{"results": [
+            {"api_key_id": kid, "model": model, "uncached_input_tokens": tin, "output_tokens": tout}
+            for kid, model, tin, tout in rows
+        ]}]}
+
+    def _keys_list(self, *pairs):
+        """pairs: (id, name)"""
+        return {"data": [{"id": kid, "name": name} for kid, name in pairs]}
+
+    def test_aggregates_tokens_per_key_across_models(self):
+        usage_resp = MagicMock(status_code=200, json=lambda: self._usage_report(
+            ("apikey_chat", "claude-haiku-4-5", 1000, 200),
+            ("apikey_chat", "claude-sonnet-5", 500, 100),
+            ("apikey_search", "claude-haiku-4-5", 300, 50),
+        ))
+        keys_resp = MagicMock(status_code=200, json=lambda: self._keys_list(
+            ("apikey_chat", "prod-shopify-chatbot"),
+            ("apikey_search", "prod-shopify-search"),
+        ))
+        from .llm_provider_adapter_implementations import AnthropicAdapter
+        with patch(
+            "cost_management.llm_provider_adapter_implementations.requests.get",
+            side_effect=[usage_resp, keys_resp],
+        ):
+            result = AnthropicAdapter().get_usage_by_key(year=2026, month=9)
+
+        by_id = {k["api_key_id"]: k for k in result["keys"]}
+        self.assertEqual(by_id["apikey_chat"]["name"], "prod-shopify-chatbot")
+        self.assertEqual(by_id["apikey_chat"]["input_tokens"], 1500)
+        self.assertEqual(by_id["apikey_chat"]["output_tokens"], 300)
+        self.assertEqual(by_id["apikey_chat"]["by_model"]["claude-sonnet-5"]["input_tokens"], 500)
+        self.assertEqual(by_id["apikey_search"]["name"], "prod-shopify-search")
+        self.assertEqual(by_id["apikey_search"]["input_tokens"], 300)
+
+    def test_unknown_key_id_falls_back_to_the_raw_id_as_name(self):
+        usage_resp = MagicMock(status_code=200, json=lambda: self._usage_report(
+            ("apikey_mystery", "claude-haiku-4-5", 10, 5),
+        ))
+        keys_resp = MagicMock(status_code=200, json=lambda: self._keys_list())
+        from .llm_provider_adapter_implementations import AnthropicAdapter
+        with patch(
+            "cost_management.llm_provider_adapter_implementations.requests.get",
+            side_effect=[usage_resp, keys_resp],
+        ):
+            result = AnthropicAdapter().get_usage_by_key(year=2026, month=9)
+
+        self.assertEqual(result["keys"][0]["name"], "apikey_mystery")
+
+    def test_results_with_no_api_key_id_are_skipped(self):
+        usage_resp = MagicMock(status_code=200, json=lambda: {"data": [{"results": [
+            {"api_key_id": None, "model": "claude-haiku-4-5", "uncached_input_tokens": 999, "output_tokens": 999},
+        ]}]})
+        keys_resp = MagicMock(status_code=200, json=lambda: self._keys_list())
+        from .llm_provider_adapter_implementations import AnthropicAdapter
+        with patch(
+            "cost_management.llm_provider_adapter_implementations.requests.get",
+            side_effect=[usage_resp, keys_resp],
+        ):
+            result = AnthropicAdapter().get_usage_by_key(year=2026, month=9)
+
+        self.assertEqual(result["keys"], [])
+
+    def test_sorted_by_total_tokens_descending(self):
+        usage_resp = MagicMock(status_code=200, json=lambda: self._usage_report(
+            ("apikey_small", "claude-haiku-4-5", 10, 10),
+            ("apikey_big", "claude-haiku-4-5", 1000, 1000),
+        ))
+        keys_resp = MagicMock(status_code=200, json=lambda: self._keys_list())
+        from .llm_provider_adapter_implementations import AnthropicAdapter
+        with patch(
+            "cost_management.llm_provider_adapter_implementations.requests.get",
+            side_effect=[usage_resp, keys_resp],
+        ):
+            result = AnthropicAdapter().get_usage_by_key(year=2026, month=9)
+
+        self.assertEqual([k["api_key_id"] for k in result["keys"]], ["apikey_big", "apikey_small"])
+
+    def test_usage_report_failure_returns_error(self):
+        usage_resp = MagicMock(status_code=500, text="boom")
+        from .llm_provider_adapter_implementations import AnthropicAdapter
+        with patch(
+            "cost_management.llm_provider_adapter_implementations.requests.get",
+            side_effect=[usage_resp],
+        ):
+            result = AnthropicAdapter().get_usage_by_key(year=2026, month=9)
+
+        self.assertEqual(result["error"], "boom")
+
+    def test_key_names_lookup_failure_falls_back_to_raw_ids(self):
+        """A broken /api_keys call shouldn't sink usage data that already
+        succeeded -- degrade to raw ids as names, don't error the whole call."""
+        usage_resp = MagicMock(status_code=200, json=lambda: self._usage_report(
+            ("apikey_chat", "claude-haiku-4-5", 10, 5),
+        ))
+        keys_resp = MagicMock(status_code=500, text="boom")
+        from .llm_provider_adapter_implementations import AnthropicAdapter
+        with patch(
+            "cost_management.llm_provider_adapter_implementations.requests.get",
+            side_effect=[usage_resp, keys_resp],
+        ):
+            result = AnthropicAdapter().get_usage_by_key(year=2026, month=9)
+
+        self.assertEqual(result["keys"][0]["name"], "apikey_chat")
+
+    def test_scopes_to_workspace_when_configured(self):
+        usage_resp = MagicMock(status_code=200, json=lambda: self._usage_report())
+        keys_resp = MagicMock(status_code=200, json=lambda: self._keys_list())
+        from .llm_provider_adapter_implementations import AnthropicAdapter
+        with patch.dict('os.environ', {'ANTHROPIC_WORKSPACE_ID': 'wrkspc_target'}), \
+             patch("cost_management.llm_provider_adapter_implementations.requests.get",
+                   side_effect=[usage_resp, keys_resp]) as mock_get:
+            result = AnthropicAdapter().get_usage_by_key(year=2026, month=9)
+
+        usage_call_params = mock_get.call_args_list[0].kwargs["params"]
+        self.assertEqual(usage_call_params["workspace_ids[]"], "wrkspc_target")
+        self.assertEqual(result["workspace_id"], "wrkspc_target")
+
+
+class UsageByKeyEndpointTests(TestCase):
+    """Combines get_usage_by_key (tokens) with get_model_rates (effective
+    $/token) to produce an estimated cost per key -- necessarily an estimate,
+    since Anthropic's cost_report has no per-key breakdown to derive a real
+    billed figure from (see UsageByKeyAdapterTests' docstring)."""
+
+    def setUp(self):
+        cache.clear()
+        self.user = User.objects.create_user(username="owner", password="pw")
+
+    def tearDown(self):
+        cache.clear()
+
+    def _patch_adapter(self, usage_return=None, rates_return=None):
+        get_usage_by_key = MagicMock(return_value=usage_return or {"keys": [], "workspace_id": None})
+        get_model_rates = MagicMock(return_value=rates_return or {"rates": {}})
+        p = patch.multiple(
+            "cost_management.views.llmprovider",
+            get_usage_by_key=get_usage_by_key,
+            get_model_rates=get_model_rates,
+        )
+        p.start()
+        self.addCleanup(p.stop)
+        return get_usage_by_key, get_model_rates
+
+    def test_requires_login(self):
+        self.assertEqual(self.client.get("/api/cost/get_usage_by_key/").status_code, 302)
+
+    def test_combines_tokens_and_rates_into_estimated_cost(self):
+        self._patch_adapter(
+            usage_return={"keys": [{
+                "api_key_id": "apikey_chat", "name": "prod-shopify-chatbot",
+                "input_tokens": 1_000_000, "output_tokens": 500_000,
+                "by_model": {"claude-haiku-4-5": {"input_tokens": 1_000_000, "output_tokens": 500_000}},
+            }], "workspace_id": "wrkspc_target"},
+            rates_return={"rates": {"claude-haiku-4-5": {"input": 0.000001, "output": 0.000005}}},
+        )
+        self.client.force_login(self.user)
+
+        d = self.client.get("/api/cost/get_usage_by_key/").json()
+
+        self.assertEqual(d["keys"][0]["estimated_cost"], 1.0 + 2.5)
+        self.assertTrue(d["estimated"])
+
+    def test_missing_rate_for_a_model_contributes_zero_not_an_error(self):
+        self._patch_adapter(
+            usage_return={"keys": [{
+                "api_key_id": "apikey_x", "name": "x",
+                "input_tokens": 100, "output_tokens": 100,
+                "by_model": {"some-unpriced-model": {"input_tokens": 100, "output_tokens": 100}},
+            }], "workspace_id": None},
+            rates_return={"rates": {}},
+        )
+        self.client.force_login(self.user)
+
+        d = self.client.get("/api/cost/get_usage_by_key/").json()
+
+        self.assertEqual(d["keys"][0]["estimated_cost"], 0.0)
+
+    def test_usage_source_error_returns_empty_keys_with_error(self):
+        self._patch_adapter(usage_return={"error": "boom"})
+        self.client.force_login(self.user)
+
+        d = self.client.get("/api/cost/get_usage_by_key/").json()
+
+        self.assertEqual(d["keys"], [])
+        self.assertEqual(d["error"], "boom")
+
+    def test_caches_and_refresh_bypasses(self):
+        get_usage_by_key, _ = self._patch_adapter()
+        self.client.force_login(self.user)
+
+        self.client.get("/api/cost/get_usage_by_key/")
+        calls_after_first = get_usage_by_key.call_count
+        cached = self.client.get("/api/cost/get_usage_by_key/").json()
+        self.assertTrue(cached["cached"])
+        self.assertEqual(get_usage_by_key.call_count, calls_after_first)
+
+        self.client.get("/api/cost/get_usage_by_key/?refresh=1")
+        self.assertGreater(get_usage_by_key.call_count, calls_after_first)
+
+    def test_invalid_month_is_400(self):
+        self.client.force_login(self.user)
+        self.assertEqual(self.client.get("/api/cost/get_usage_by_key/?month=nope").status_code, 400)
+
+    def test_keys_sorted_by_estimated_cost_descending(self):
+        self._patch_adapter(
+            usage_return={"keys": [
+                {"api_key_id": "small", "name": "small", "input_tokens": 10, "output_tokens": 0,
+                 "by_model": {"m": {"input_tokens": 10, "output_tokens": 0}}},
+                {"api_key_id": "big", "name": "big", "input_tokens": 1000, "output_tokens": 0,
+                 "by_model": {"m": {"input_tokens": 1000, "output_tokens": 0}}},
+            ], "workspace_id": None},
+            rates_return={"rates": {"m": {"input": 0.01, "output": 0.0}}},
+        )
+        self.client.force_login(self.user)
+
+        d = self.client.get("/api/cost/get_usage_by_key/").json()
+
+        self.assertEqual([k["api_key_id"] for k in d["keys"]], ["big", "small"])
 
 
 class ModelRatesEndpointTests(TestCase):

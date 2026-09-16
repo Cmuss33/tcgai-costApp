@@ -18,6 +18,12 @@
   line-height: 1.4;
 }
 
+.cache-note {
+  font-size: 11px;
+  color: #999;
+  margin-top: 2px;
+}
+
 .chat-summary-table {
   width: 100%;
   border-collapse: collapse;

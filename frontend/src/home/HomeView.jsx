@@ -23,6 +23,7 @@ const fmtCompact = (n) => {
   if (n >= 1e4) return `${Math.round(n / 1e3)}K`;
   return nf.format(n);
 };
+const fmtPct = (n) => (n == null ? "—" : `${Math.round(n * 100)}%`);
 
 /* ---------- tiny charts ---------- */
 function AreaSpark({ values, color, w = 200, h = 36 }) {
@@ -220,13 +221,22 @@ function StatsBand({ stats }) {
           accent="--a-tok"
           label="Tokens"
           value={fmtCompact(tk.input)}
-          sub={`in · ${fmtCompact(tk.output)} out · ${Math.round(pc.tokens_in || 0)}/chat`}
+          sub={`in (incl. cache) · ${fmtCompact(tk.output)} out · ${fmtPct(tk.cache_hit_rate)} cache hit`}
           deltaPct={tk.input_delta_pct}
           betterWhen="neutral"
           spark={tokSeries}
           sparkColor="#ff6ba0"
         />
       </div>
+
+      {tk.cache_hit_rate != null && (
+        <p className="cr__note" style={{ margin: "-4px 0 18px" }}>
+          Cache hit rate: {fmtPct(tk.cache_hit_rate)} of input tokens this month were served from
+          Anthropic&rsquo;s prompt cache ({fmtCompact(tk.cache_read)} read / {fmtCompact(tk.cache_creation)} written).
+          Caching reduces cost &mdash; cache reads bill at a discount, cache writes at a premium &mdash; it
+          doesn&rsquo;t make a call free.
+        </p>
+      )}
 
       {convDaily.length > 0 && (
         <div className="cr__panel" style={{ "--accent": "var(--a-convo)" }}>
@@ -239,6 +249,34 @@ function StatsBand({ stats }) {
         </div>
       )}
     </>
+  );
+}
+
+/* ---------- per-key usage ---------- */
+function UsageByKeyPanel({ data }) {
+  const keys = data?.keys || [];
+  if (!data || keys.length === 0) return null;
+  return (
+    <div className="cr__panel" style={{ "--accent": "var(--a-tok)" }}>
+      <h2>Usage by API key</h2>
+      <div className="cr__note">
+        Token usage per Anthropic API key this month, from Anthropic&rsquo;s own usage
+        report. Cost is an estimate (tokens &times; this month&rsquo;s blended rate per
+        model) &mdash; Anthropic&rsquo;s cost report can&rsquo;t break down by individual
+        key, only by workspace.
+      </div>
+      <table className="cr__want">
+        <tbody>
+          {keys.map((k) => (
+            <tr key={k.api_key_id}>
+              <td className="cr__p">{k.name}</td>
+              <td className="cr__x">{fmtCompact(k.input_tokens)} in / {fmtCompact(k.output_tokens)} out</td>
+              <td className="cr__st">~{fmtUsd(k.estimated_cost, true)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
@@ -349,6 +387,7 @@ function HomeView() {
   const navigate = useNavigate();
   const [stats, setStats] = useState(null);
   const [statsError, setStatsError] = useState(false);
+  const [usageByKey, setUsageByKey] = useState(null);
   const [insights, setInsights] = useState(null);
   const [firstLoad, setFirstLoad] = useState(true);
   const [netError, setNetError] = useState(false);
@@ -371,6 +410,25 @@ function HomeView() {
         setStatsError(false);
       } catch {
         setStatsError(true);
+      }
+    },
+    [navigate]
+  );
+
+  const loadUsageByKey = useCallback(
+    async (month, refresh) => {
+      try {
+        const params = new URLSearchParams();
+        if (month) params.set("month", month);
+        if (refresh) params.set("refresh", "1");
+        const qs = params.toString();
+        const res = await fetch(`${API_URL}/api/cost/get_usage_by_key/${qs ? `?${qs}` : ""}`, {
+          credentials: "include",
+        });
+        if (res.status === 401 || res.status === 403) return navigate("/");
+        setUsageByKey(await res.json());
+      } catch {
+        // Non-critical panel -- the rest of the dashboard still works without it.
       }
     },
     [navigate]
@@ -417,13 +475,14 @@ function HomeView() {
         if (!data.authenticated) return navigate("/");
         loadStats();
         loadInsights();
+        loadUsageByKey();
       })
       .catch(() => {
         setNetError(true);
         setFirstLoad(false);
       });
     return () => clearTimeout(pollRef.current);
-  }, [navigate, loadStats, loadInsights]);
+  }, [navigate, loadStats, loadInsights, loadUsageByKey]);
 
   const months = insights?.available_months ?? [];
   const curIdx = Math.max(
@@ -438,11 +497,13 @@ function HomeView() {
     const arg = m.is_current ? undefined : m.value;
     loadStats(arg);
     loadInsights({ month: arg });
+    loadUsageByKey(arg);
   };
   const refreshCurrent = () => {
     const arg = shown?.is_current ? undefined : shown?.value;
     loadStats(arg, true);
     loadInsights({ month: arg, refresh: true });
+    loadUsageByKey(arg, true);
   };
 
   if (firstLoad) {
@@ -514,6 +575,7 @@ function HomeView() {
           <p className="cr__notice">Couldn&rsquo;t load spend &amp; usage. Try Refresh.</p>
         )}
         <StatsBand stats={stats} />
+        <UsageByKeyPanel data={usageByKey} />
 
         {insights?.regenerating && (
           <p className="cr__notice">Refreshing this month&rsquo;s insights in the background…</p>

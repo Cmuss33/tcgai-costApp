@@ -70,6 +70,13 @@ class Message(models.Model):
     llm_formatted_returned_message = models.TextField()
     tokens_in = models.IntegerField()
     tokens_out = models.IntegerField()
+    # Real, billed prompt-cache token counts from Anthropic's own usage
+    # object -- previously not sent by the chatbot at all (ENG-148), so
+    # tokens_in/cost here silently excluded every cache-hit turn's true
+    # token usage. Default 0 so historical rows (and any sender that hasn't
+    # deployed the fix yet) don't need a backfill to remain valid.
+    cache_creation_tokens = models.IntegerField(default=0)
+    cache_read_tokens = models.IntegerField(default=0)
     model = models.TextField()
     products_shown = models.JSONField(null=True, blank=True)
     timestamp = models.DateTimeField(auto_now_add=True)
