@@ -1132,3 +1132,111 @@ class MonthlyStatsTests(TestCase):
         self.assertEqual(d["conversations"]["total"], 0)
         self.assertIsNone(d["per_conversation"]["cost"])
         self.assertEqual(d["model_mix"], [])
+
+
+class ModelRatesAdapterTests(TestCase):
+    """Unit tests for AnthropicAdapter.get_model_rates - the $/token rate it
+    derives must equal Anthropic's own billed amount divided by Anthropic's
+    own reported token counts, not a guessed constant."""
+
+    def _cost_report(self, *rows):
+        return {"data": [{"results": [
+            {"model": model, "cost_type": "tokens", "token_type": token_type, "amount": amount}
+            for model, token_type, amount in rows
+        ]}]}
+
+    def _usage_report(self, *rows):
+        return {"data": [{"results": [
+            {"model": model, "uncached_input_tokens": tin, "output_tokens": tout}
+            for model, tin, tout in rows
+        ]}]}
+
+    def test_derives_real_rate_from_cost_and_usage_reports(self):
+        cost_resp = MagicMock(status_code=200, json=lambda: self._cost_report(
+            ("claude-haiku-4-5", "uncached_input_tokens", "100.0"),   # $1.00
+            ("claude-haiku-4-5", "output_tokens", "250.0"),           # $2.50
+        ))
+        usage_resp = MagicMock(status_code=200, json=lambda: self._usage_report(
+            ("claude-haiku-4-5", 1_000_000, 500_000),
+        ))
+        from .llm_provider_adapter_implementations import AnthropicAdapter
+        with patch(
+            "cost_management.llm_provider_adapter_implementations.requests.get",
+            side_effect=[cost_resp, usage_resp],
+        ):
+            result = AnthropicAdapter().get_model_rates(year=2026, month=8)
+
+        self.assertEqual(result["rates"]["claude-haiku-4-5"]["input"], 1.0 / 1_000_000)
+        self.assertEqual(result["rates"]["claude-haiku-4-5"]["output"], 2.5 / 500_000)
+
+    def test_model_with_no_usage_data_is_omitted(self):
+        cost_resp = MagicMock(status_code=200, json=lambda: self._cost_report(
+            ("claude-opus-5", "uncached_input_tokens", "50.0"),
+        ))
+        usage_resp = MagicMock(status_code=200, json=lambda: self._usage_report())
+        with patch(
+            "cost_management.llm_provider_adapter_implementations.requests.get",
+            side_effect=[cost_resp, usage_resp],
+        ):
+            from .llm_provider_adapter_implementations import AnthropicAdapter
+            result = AnthropicAdapter().get_model_rates(year=2026, month=8)
+
+        self.assertEqual(result["rates"], {})
+
+    def test_cost_report_failure_returns_error(self):
+        cost_resp = MagicMock(status_code=500, text="boom")
+        with patch(
+            "cost_management.llm_provider_adapter_implementations.requests.get",
+            side_effect=[cost_resp],
+        ):
+            from .llm_provider_adapter_implementations import AnthropicAdapter
+            result = AnthropicAdapter().get_model_rates(year=2026, month=8)
+
+        self.assertEqual(result["error"], "boom")
+
+
+class ModelRatesEndpointTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.user = User.objects.create_user(username="owner", password="pw")
+        self.this_month = _now().replace(day=1)
+
+    def tearDown(self):
+        cache.clear()
+
+    def _patch_adapter(self, return_value=None):
+        get_model_rates = MagicMock(
+            return_value=return_value or {"rates": {"claude-haiku-4-5": {"input": 1e-6, "output": 5e-6}}}
+        )
+        p = patch.multiple("cost_management.views.llmprovider", get_model_rates=get_model_rates)
+        p.start()
+        self.addCleanup(p.stop)
+        return get_model_rates
+
+    def test_requires_login(self):
+        self.assertEqual(self.client.get("/api/cost/get_model_rates/").status_code, 302)
+
+    def test_returns_rates_from_adapter(self):
+        self._patch_adapter()
+        self.client.force_login(self.user)
+
+        d = self.client.get("/api/cost/get_model_rates/").json()
+
+        self.assertEqual(d["rates"]["claude-haiku-4-5"]["input"], 1e-6)
+
+    def test_caches_and_refresh_bypasses(self):
+        get_model_rates = self._patch_adapter()
+        self.client.force_login(self.user)
+
+        self.client.get("/api/cost/get_model_rates/")
+        calls_after_first = get_model_rates.call_count
+        cached = self.client.get("/api/cost/get_model_rates/").json()
+        self.assertTrue(cached["cached"])
+        self.assertEqual(get_model_rates.call_count, calls_after_first)
+
+        self.client.get("/api/cost/get_model_rates/?refresh=1")
+        self.assertGreater(get_model_rates.call_count, calls_after_first)
+
+    def test_invalid_month_is_400(self):
+        self.client.force_login(self.user)
+        self.assertEqual(self.client.get("/api/cost/get_model_rates/?month=nope").status_code, 400)
