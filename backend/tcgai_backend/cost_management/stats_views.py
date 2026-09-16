@@ -1,5 +1,6 @@
 """Month-scoped cost / token / engagement stats for the home dashboard."""
 import calendar
+import os
 
 from django.contrib.auth.decorators import login_required
 from django.core.cache import cache
@@ -136,6 +137,7 @@ def _build_stats(month_start):
         "is_current": is_current,
         "generated_at": timezone.now().isoformat(),
         "currency": "USD",
+        "workspace_id": os.environ.get('ANTHROPIC_WORKSPACE_ID') or None,
         "cost_source_error": cost_err or tok_err,
         "spend": {
             "total": spend,
