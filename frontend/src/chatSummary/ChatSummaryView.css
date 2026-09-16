@@ -8,6 +8,16 @@
   font-family: system-ui, sans-serif;
 }
 
+.cost-accuracy-note {
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border-left: 3px solid rgba(136, 132, 216, 0.8);
+  background-color: rgba(136, 132, 216, 0.08);
+  color: #b8b8b8;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
 .chat-summary-table {
   width: 100%;
   border-collapse: collapse;

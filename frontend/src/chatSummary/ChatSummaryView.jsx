@@ -330,6 +330,12 @@ function ChatSummaryView() {
 
   return (
     <div className="chat-summary-container">
+      <p className="cost-accuracy-note">
+        "Est. Cost ($)" now reflects Anthropic's actual billed rate per
+        model this month. It previously used a flat estimate that could be
+        inaccurate for chats on non-Haiku models.
+      </p>
+
       <table className="chat-summary-table">
         <thead>
           <tr>
