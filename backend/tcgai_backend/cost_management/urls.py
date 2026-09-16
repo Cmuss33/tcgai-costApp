@@ -22,4 +22,5 @@ urlpatterns = [
     path('insights_summary/', insights_views.insights_summary, name='insights_summary'),
     path('monthly_stats/', stats_views.monthly_stats, name='monthly_stats'),
     path('get_model_rates/', stats_views.model_rates, name='get_model_rates'),
+    path('get_usage_by_key/', stats_views.usage_by_key, name='get_usage_by_key'),
 ]

@@ -176,3 +176,93 @@ class AnthropicAdapter(LLMAdapter):
                 rates[model] = entry
 
         return {"rates": rates, "workspace_id": workspace_id}
+
+    def get_usage_by_key(self, year=None, month=None):
+        """Per-API-key token usage this month, with names resolved from
+        Anthropic's key registry.
+
+        Provider-specific, not part of LLMAdapter -- "API key" isn't a
+        concept every provider necessarily has, and this can't derive a real
+        per-key dollar cost the way get_model_rates derives a per-model one:
+        confirmed 2026-09-16 against the real API that cost_report's
+        group_by only accepts "description" and "workspace_id", never
+        api_key_id, so there is no per-key billed-dollar source to divide by
+        real tokens the way get_model_rates does per model. Callers that
+        want an estimated cost per key should combine these token counts
+        with get_model_rates' per-model rates themselves (see
+        stats_views.usage_by_key) -- it's necessarily an estimate (this
+        month's blended rate x tokens), not Anthropic's own billed figure.
+        """
+        today = datetime.today()
+        year = int(year) if year else today.year
+        month = int(month) if month else today.month
+
+        starting_at = f"{year}-{month:02d}-01T00:00:00Z"
+        workspace_id = os.environ.get('ANTHROPIC_WORKSPACE_ID') or None
+
+        headers = {
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+            "x-api-key": os.environ.get('ANTHROPIC_ADMIN_KEY')
+        }
+
+        usage_params = {
+            "starting_at": starting_at,
+            "group_by[]": ["api_key_id", "model"],
+            "limit": 31,
+        }
+        if workspace_id:
+            usage_params["workspace_ids[]"] = workspace_id
+
+        usage_response = requests.get(
+            "https://api.anthropic.com/v1/organizations/usage_report/messages",
+            params=usage_params,
+            headers=headers,
+        )
+        if usage_response.status_code != 200:
+            return {"error": usage_response.text}
+
+        totals = {}  # api_key_id -> {model: {input_tokens, output_tokens}}
+        for day_data in usage_response.json().get('data', []):
+            for result in day_data.get('results', []):
+                kid = result.get('api_key_id')
+                if not kid:
+                    continue
+                model = result.get('model') or 'unknown'
+                by_model = totals.setdefault(kid, {})
+                entry = by_model.setdefault(model, {'input_tokens': 0, 'output_tokens': 0})
+                entry['input_tokens'] += result.get('uncached_input_tokens', 0)
+                entry['output_tokens'] += result.get('output_tokens', 0)
+
+        # Best-effort name resolution -- a broken/unreachable /api_keys call
+        # shouldn't sink usage data that already succeeded, so degrade to
+        # raw ids as names rather than erroring the whole response.
+        names = {}
+        try:
+            names_response = requests.get(
+                "https://api.anthropic.com/v1/organizations/api_keys",
+                params={"limit": 100},
+                headers=headers,
+            )
+            if names_response.status_code == 200:
+                for k in names_response.json().get('data', []):
+                    names[k['id']] = k.get('name') or k['id']
+        except requests.RequestException:
+            pass
+
+        keys = []
+        for kid, by_model in totals.items():
+            input_tokens = sum(m['input_tokens'] for m in by_model.values())
+            output_tokens = sum(m['output_tokens'] for m in by_model.values())
+            keys.append({
+                "api_key_id": kid,
+                "name": names.get(kid, kid),
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "by_model": by_model,
+            })
+        keys.sort(key=lambda k: k['input_tokens'] + k['output_tokens'], reverse=True)
+
+        return {"keys": keys, "workspace_id": workspace_id}
+
+        return {"rates": rates, "workspace_id": workspace_id}

@@ -1305,6 +1305,235 @@ class WorkspaceScopingTests(TestCase):
         self.assertEqual(usage_call_params["workspace_ids[]"], "wrkspc_target")
 
 
+class UsageByKeyAdapterTests(TestCase):
+    """Unit tests for AnthropicAdapter.get_usage_by_key. Anthropic's
+    cost_report can't group by individual API key at all (confirmed against
+    the real API 2026-09-16 -- only description/workspace_id are valid
+    group_by values), so per-key attribution can only ever come from
+    usage_report/messages (token counts), grouped by api_key_id + model."""
+
+    def _usage_report(self, *rows):
+        """rows: (api_key_id, model, input_tokens, output_tokens)"""
+        return {"data": [{"results": [
+            {"api_key_id": kid, "model": model, "uncached_input_tokens": tin, "output_tokens": tout}
+            for kid, model, tin, tout in rows
+        ]}]}
+
+    def _keys_list(self, *pairs):
+        """pairs: (id, name)"""
+        return {"data": [{"id": kid, "name": name} for kid, name in pairs]}
+
+    def test_aggregates_tokens_per_key_across_models(self):
+        usage_resp = MagicMock(status_code=200, json=lambda: self._usage_report(
+            ("apikey_chat", "claude-haiku-4-5", 1000, 200),
+            ("apikey_chat", "claude-sonnet-5", 500, 100),
+            ("apikey_search", "claude-haiku-4-5", 300, 50),
+        ))
+        keys_resp = MagicMock(status_code=200, json=lambda: self._keys_list(
+            ("apikey_chat", "prod-shopify-chatbot"),
+            ("apikey_search", "prod-shopify-search"),
+        ))
+        from .llm_provider_adapter_implementations import AnthropicAdapter
+        with patch(
+            "cost_management.llm_provider_adapter_implementations.requests.get",
+            side_effect=[usage_resp, keys_resp],
+        ):
+            result = AnthropicAdapter().get_usage_by_key(year=2026, month=9)
+
+        by_id = {k["api_key_id"]: k for k in result["keys"]}
+        self.assertEqual(by_id["apikey_chat"]["name"], "prod-shopify-chatbot")
+        self.assertEqual(by_id["apikey_chat"]["input_tokens"], 1500)
+        self.assertEqual(by_id["apikey_chat"]["output_tokens"], 300)
+        self.assertEqual(by_id["apikey_chat"]["by_model"]["claude-sonnet-5"]["input_tokens"], 500)
+        self.assertEqual(by_id["apikey_search"]["name"], "prod-shopify-search")
+        self.assertEqual(by_id["apikey_search"]["input_tokens"], 300)
+
+    def test_unknown_key_id_falls_back_to_the_raw_id_as_name(self):
+        usage_resp = MagicMock(status_code=200, json=lambda: self._usage_report(
+            ("apikey_mystery", "claude-haiku-4-5", 10, 5),
+        ))
+        keys_resp = MagicMock(status_code=200, json=lambda: self._keys_list())
+        from .llm_provider_adapter_implementations import AnthropicAdapter
+        with patch(
+            "cost_management.llm_provider_adapter_implementations.requests.get",
+            side_effect=[usage_resp, keys_resp],
+        ):
+            result = AnthropicAdapter().get_usage_by_key(year=2026, month=9)
+
+        self.assertEqual(result["keys"][0]["name"], "apikey_mystery")
+
+    def test_results_with_no_api_key_id_are_skipped(self):
+        usage_resp = MagicMock(status_code=200, json=lambda: {"data": [{"results": [
+            {"api_key_id": None, "model": "claude-haiku-4-5", "uncached_input_tokens": 999, "output_tokens": 999},
+        ]}]})
+        keys_resp = MagicMock(status_code=200, json=lambda: self._keys_list())
+        from .llm_provider_adapter_implementations import AnthropicAdapter
+        with patch(
+            "cost_management.llm_provider_adapter_implementations.requests.get",
+            side_effect=[usage_resp, keys_resp],
+        ):
+            result = AnthropicAdapter().get_usage_by_key(year=2026, month=9)
+
+        self.assertEqual(result["keys"], [])
+
+    def test_sorted_by_total_tokens_descending(self):
+        usage_resp = MagicMock(status_code=200, json=lambda: self._usage_report(
+            ("apikey_small", "claude-haiku-4-5", 10, 10),
+            ("apikey_big", "claude-haiku-4-5", 1000, 1000),
+        ))
+        keys_resp = MagicMock(status_code=200, json=lambda: self._keys_list())
+        from .llm_provider_adapter_implementations import AnthropicAdapter
+        with patch(
+            "cost_management.llm_provider_adapter_implementations.requests.get",
+            side_effect=[usage_resp, keys_resp],
+        ):
+            result = AnthropicAdapter().get_usage_by_key(year=2026, month=9)
+
+        self.assertEqual([k["api_key_id"] for k in result["keys"]], ["apikey_big", "apikey_small"])
+
+    def test_usage_report_failure_returns_error(self):
+        usage_resp = MagicMock(status_code=500, text="boom")
+        from .llm_provider_adapter_implementations import AnthropicAdapter
+        with patch(
+            "cost_management.llm_provider_adapter_implementations.requests.get",
+            side_effect=[usage_resp],
+        ):
+            result = AnthropicAdapter().get_usage_by_key(year=2026, month=9)
+
+        self.assertEqual(result["error"], "boom")
+
+    def test_key_names_lookup_failure_falls_back_to_raw_ids(self):
+        """A broken /api_keys call shouldn't sink usage data that already
+        succeeded -- degrade to raw ids as names, don't error the whole call."""
+        usage_resp = MagicMock(status_code=200, json=lambda: self._usage_report(
+            ("apikey_chat", "claude-haiku-4-5", 10, 5),
+        ))
+        keys_resp = MagicMock(status_code=500, text="boom")
+        from .llm_provider_adapter_implementations import AnthropicAdapter
+        with patch(
+            "cost_management.llm_provider_adapter_implementations.requests.get",
+            side_effect=[usage_resp, keys_resp],
+        ):
+            result = AnthropicAdapter().get_usage_by_key(year=2026, month=9)
+
+        self.assertEqual(result["keys"][0]["name"], "apikey_chat")
+
+    def test_scopes_to_workspace_when_configured(self):
+        usage_resp = MagicMock(status_code=200, json=lambda: self._usage_report())
+        keys_resp = MagicMock(status_code=200, json=lambda: self._keys_list())
+        from .llm_provider_adapter_implementations import AnthropicAdapter
+        with patch.dict('os.environ', {'ANTHROPIC_WORKSPACE_ID': 'wrkspc_target'}), \
+             patch("cost_management.llm_provider_adapter_implementations.requests.get",
+                   side_effect=[usage_resp, keys_resp]) as mock_get:
+            result = AnthropicAdapter().get_usage_by_key(year=2026, month=9)
+
+        usage_call_params = mock_get.call_args_list[0].kwargs["params"]
+        self.assertEqual(usage_call_params["workspace_ids[]"], "wrkspc_target")
+        self.assertEqual(result["workspace_id"], "wrkspc_target")
+
+
+class UsageByKeyEndpointTests(TestCase):
+    """Combines get_usage_by_key (tokens) with get_model_rates (effective
+    $/token) to produce an estimated cost per key -- necessarily an estimate,
+    since Anthropic's cost_report has no per-key breakdown to derive a real
+    billed figure from (see UsageByKeyAdapterTests' docstring)."""
+
+    def setUp(self):
+        cache.clear()
+        self.user = User.objects.create_user(username="owner", password="pw")
+
+    def tearDown(self):
+        cache.clear()
+
+    def _patch_adapter(self, usage_return=None, rates_return=None):
+        get_usage_by_key = MagicMock(return_value=usage_return or {"keys": [], "workspace_id": None})
+        get_model_rates = MagicMock(return_value=rates_return or {"rates": {}})
+        p = patch.multiple(
+            "cost_management.views.llmprovider",
+            get_usage_by_key=get_usage_by_key,
+            get_model_rates=get_model_rates,
+        )
+        p.start()
+        self.addCleanup(p.stop)
+        return get_usage_by_key, get_model_rates
+
+    def test_requires_login(self):
+        self.assertEqual(self.client.get("/api/cost/get_usage_by_key/").status_code, 302)
+
+    def test_combines_tokens_and_rates_into_estimated_cost(self):
+        self._patch_adapter(
+            usage_return={"keys": [{
+                "api_key_id": "apikey_chat", "name": "prod-shopify-chatbot",
+                "input_tokens": 1_000_000, "output_tokens": 500_000,
+                "by_model": {"claude-haiku-4-5": {"input_tokens": 1_000_000, "output_tokens": 500_000}},
+            }], "workspace_id": "wrkspc_target"},
+            rates_return={"rates": {"claude-haiku-4-5": {"input": 0.000001, "output": 0.000005}}},
+        )
+        self.client.force_login(self.user)
+
+        d = self.client.get("/api/cost/get_usage_by_key/").json()
+
+        self.assertEqual(d["keys"][0]["estimated_cost"], 1.0 + 2.5)
+        self.assertTrue(d["estimated"])
+
+    def test_missing_rate_for_a_model_contributes_zero_not_an_error(self):
+        self._patch_adapter(
+            usage_return={"keys": [{
+                "api_key_id": "apikey_x", "name": "x",
+                "input_tokens": 100, "output_tokens": 100,
+                "by_model": {"some-unpriced-model": {"input_tokens": 100, "output_tokens": 100}},
+            }], "workspace_id": None},
+            rates_return={"rates": {}},
+        )
+        self.client.force_login(self.user)
+
+        d = self.client.get("/api/cost/get_usage_by_key/").json()
+
+        self.assertEqual(d["keys"][0]["estimated_cost"], 0.0)
+
+    def test_usage_source_error_returns_empty_keys_with_error(self):
+        self._patch_adapter(usage_return={"error": "boom"})
+        self.client.force_login(self.user)
+
+        d = self.client.get("/api/cost/get_usage_by_key/").json()
+
+        self.assertEqual(d["keys"], [])
+        self.assertEqual(d["error"], "boom")
+
+    def test_caches_and_refresh_bypasses(self):
+        get_usage_by_key, _ = self._patch_adapter()
+        self.client.force_login(self.user)
+
+        self.client.get("/api/cost/get_usage_by_key/")
+        calls_after_first = get_usage_by_key.call_count
+        cached = self.client.get("/api/cost/get_usage_by_key/").json()
+        self.assertTrue(cached["cached"])
+        self.assertEqual(get_usage_by_key.call_count, calls_after_first)
+
+        self.client.get("/api/cost/get_usage_by_key/?refresh=1")
+        self.assertGreater(get_usage_by_key.call_count, calls_after_first)
+
+    def test_invalid_month_is_400(self):
+        self.client.force_login(self.user)
+        self.assertEqual(self.client.get("/api/cost/get_usage_by_key/?month=nope").status_code, 400)
+
+    def test_keys_sorted_by_estimated_cost_descending(self):
+        self._patch_adapter(
+            usage_return={"keys": [
+                {"api_key_id": "small", "name": "small", "input_tokens": 10, "output_tokens": 0,
+                 "by_model": {"m": {"input_tokens": 10, "output_tokens": 0}}},
+                {"api_key_id": "big", "name": "big", "input_tokens": 1000, "output_tokens": 0,
+                 "by_model": {"m": {"input_tokens": 1000, "output_tokens": 0}}},
+            ], "workspace_id": None},
+            rates_return={"rates": {"m": {"input": 0.01, "output": 0.0}}},
+        )
+        self.client.force_login(self.user)
+
+        d = self.client.get("/api/cost/get_usage_by_key/").json()
+
+        self.assertEqual([k["api_key_id"] for k in d["keys"]], ["big", "small"])
+
+
 class ModelRatesEndpointTests(TestCase):
     def setUp(self):
         cache.clear()
