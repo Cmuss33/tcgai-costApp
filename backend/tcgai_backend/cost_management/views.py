@@ -7,8 +7,9 @@ import json
 from django.contrib.auth import authenticate, login
 import anthropic
 import os
-from django.db.models import Avg, Count, Sum
-from django.db.models.functions import TruncDate
+from django.db import transaction
+from django.db.models import Avg, Count, IntegerField, Sum, Value
+from django.db.models.functions import Coalesce, TruncDate
 from django.utils.timezone import now
 from datetime import timedelta
 from django.contrib.auth.decorators import login_required
@@ -84,58 +85,73 @@ def log_message(request):
         llm_formatted_returned_message = data.get('llm_formatted_returned_message')
         tokens_in = data.get('tokens_in')
         tokens_out = data.get('tokens_out')
+        # ENG-148: real, billed prompt-cache token counts. Default to 0 (not
+        # None) so a sender that hasn't deployed the cache-reporting fix yet
+        # keeps working exactly as before -- these fields are additive.
+        cache_creation_tokens = data.get('cache_creation_tokens') or 0
+        cache_read_tokens = data.get('cache_read_tokens') or 0
         model = data.get('model')
 
         if content == 'hi this is the probe':
             return JsonResponse({'status': 'error', 'message': 'this was a probe message'}, status=400)
 
-        chat, created = Chat.objects.get_or_create(chat_id=chat_id, defaults={"model": model})
-
         products_shown = None
         if isinstance(llm_formatted_message, dict):
             products_shown = llm_formatted_message.get('products_shown')
 
-        message = Message.objects.create(
-            chat=chat,
-            content=content,
-            llm_formatted_message=llm_formatted_message,
-            returned_content=returned_content,
-            llm_formatted_returned_message=llm_formatted_returned_message,
-            tokens_in=tokens_in,
-            tokens_out=tokens_out,
-            model=model,
-            products_shown=products_shown,
-        )
+        # select_for_update() + get_or_create() locks the Chat row for the
+        # duration of this transaction, so concurrent log_message calls for
+        # the same chat_id (the chatbot logs each LLM call in a multi-step
+        # tool-use turn separately, sometimes within the same second) can't
+        # race on the tokens_in/tokens_out increment below and silently drop
+        # one side's update.
+        with transaction.atomic():
+            chat, created = Chat.objects.select_for_update().get_or_create(
+                chat_id=chat_id, defaults={"model": model}
+            )
 
-        chat.tokens_in += tokens_in
-        chat.tokens_out += tokens_out
+            Message.objects.create(
+                chat=chat,
+                content=content,
+                llm_formatted_message=llm_formatted_message,
+                returned_content=returned_content,
+                llm_formatted_returned_message=llm_formatted_returned_message,
+                tokens_in=tokens_in,
+                tokens_out=tokens_out,
+                cache_creation_tokens=cache_creation_tokens,
+                cache_read_tokens=cache_read_tokens,
+                model=model,
+                products_shown=products_shown,
+            )
 
-        # Only update intent if it is currently "NOT FOUND"
-        # NOTE: inert since the sender stopped including `content` on message
-        # entries (GDPR change, ~Feb 2026) — messages are now role-only, so
-        # content_list below is always [] and this never sets chat.intent.
-        if chat.intent == "NOT FOUND" and llm_formatted_message:
-            try:
-                parsed_msg = llm_formatted_message
+            chat.tokens_in += tokens_in
+            chat.tokens_out += tokens_out
 
-                messages = parsed_msg.get("messages", [])
-                for msg in messages:
-                    if msg.get("role") == "assistant":
-                        content_list = msg.get("content", [])
-                        for content_item in content_list:
-                            if content_item.get("type") == "tool_use":
-                                context = content_item.get("input", {}).get("context")
-                                if context:
-                                    chat.intent = context
-                                    break  # stop after first found context
-                        if chat.intent != "NOT FOUND":
-                            break  # stop outer loop if intent was set
-            except Exception as e:
-                print("Error parsing llm_formatted_message for intent:", e)
+            # Only update intent if it is currently "NOT FOUND"
+            # NOTE: inert since the sender stopped including `content` on message
+            # entries (GDPR change, ~Feb 2026) — messages are now role-only, so
+            # content_list below is always [] and this never sets chat.intent.
+            if chat.intent == "NOT FOUND" and llm_formatted_message:
+                try:
+                    parsed_msg = llm_formatted_message
 
+                    messages = parsed_msg.get("messages", [])
+                    for msg in messages:
+                        if msg.get("role") == "assistant":
+                            content_list = msg.get("content", [])
+                            for content_item in content_list:
+                                if content_item.get("type") == "tool_use":
+                                    context = content_item.get("input", {}).get("context")
+                                    if context:
+                                        chat.intent = context
+                                        break  # stop after first found context
+                            if chat.intent != "NOT FOUND":
+                                break  # stop outer loop if intent was set
+                except Exception as e:
+                    print("Error parsing llm_formatted_message for intent:", e)
 
-        chat.save(update_fields=['tokens_in', 'tokens_out', 'intent'])
-        
+            chat.save(update_fields=['tokens_in', 'tokens_out', 'intent'])
+
         return JsonResponse({'status': 'success'})
     except Exception as e:
         return JsonResponse({'status': 'error', 'message': str(e)}, status=400)
@@ -176,8 +192,25 @@ def get_chat_ids(request):
                 products_shown.get('primary', [])
             ) + len(products_shown.get('complementary', []))
 
+        # ENG-148: cache tokens are derived live from Message rows, not a
+        # cached Chat field like tokens_in/tokens_out -- avoids adding a
+        # second field to the same incrementally-cached-total pattern that
+        # needed a concurrency fix (see the log_message transaction above).
+        cache_totals = {
+            row["chat_id"]: row
+            for row in Message.objects.filter(chat_id__in=products_shown_counts.keys())
+            .values("chat_id")
+            .annotate(
+                cache_creation_total=Coalesce(Sum("cache_creation_tokens"), Value(0, output_field=IntegerField())),
+                cache_read_total=Coalesce(Sum("cache_read_tokens"), Value(0, output_field=IntegerField())),
+            )
+        }
+
         for chat in results:
             chat["products_shown_count"] = products_shown_counts[chat["chat_id"]]
+            totals = cache_totals.get(chat["chat_id"], {"cache_creation_total": 0, "cache_read_total": 0})
+            chat["cache_creation_tokens"] = totals["cache_creation_total"]
+            chat["cache_read_tokens"] = totals["cache_read_total"]
 
         return JsonResponse({
             "results": results,

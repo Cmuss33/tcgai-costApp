@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import "./ChatSummaryView.css";
 import FlagChatModal from "./FlagChatModal";
-import { estimateCost, estimateTokenCost, formatCost, getModelRate } from "./pricing";
+import { estimateCost, estimateInputCost, estimateTokenCost, formatCost, getModelRate } from "./pricing";
 
 function ProductCard({ product }) {
   return (
@@ -273,6 +273,15 @@ function ChatSummaryView() {
   };
 
   // GROUP SAME USER MESSAGES
+  //
+  // A multi-tool-use turn logs one Message per LLM round-trip, all sharing
+  // the same user `content` -- each round-trip has its OWN tokens_in (the
+  // conversation history keeps growing across the turn), not just the
+  // first. Previously only the first message's tokens_in was kept per
+  // group and every later round-trip's input tokens were silently dropped
+  // from both the display and the cost estimate -- undercounting any
+  // multi-tool turn on top of the separate cache-token gap (ENG-148).
+  // cache_creation_tokens/cache_read_tokens are summed the same way.
   const groupMessages = (messages) => {
     const grouped = [];
 
@@ -285,10 +294,15 @@ function ChatSummaryView() {
         lastGroup.userMessage === msg.content
       ) {
         lastGroup.responses.push(msg);
+        lastGroup.tokensIn += msg.tokens_in;
+        lastGroup.cacheCreationTokens += msg.cache_creation_tokens || 0;
+        lastGroup.cacheReadTokens += msg.cache_read_tokens || 0;
       } else {
         grouped.push({
           userMessage: msg.content,
           tokensIn: msg.tokens_in,
+          cacheCreationTokens: msg.cache_creation_tokens || 0,
+          cacheReadTokens: msg.cache_read_tokens || 0,
           model: msg.model,
           timestamp: msg.timestamp,
           formattedMessage:
@@ -331,9 +345,12 @@ function ChatSummaryView() {
   return (
     <div className="chat-summary-container">
       <p className="cost-accuracy-note">
-        "Est. Cost ($)" now reflects Anthropic's actual billed rate per
-        model this month. It previously used a flat estimate that could be
-        inaccurate for chats on non-Haiku models.
+        "Est. Cost ($)" reflects Anthropic's actual billed rate per model
+        this month, and now includes prompt-cache tokens (cache writes and
+        reads) alongside base input/output -- previously excluded entirely,
+        which understated the true cost of any turn that hit the cache.
+        Multi-step turns (the bot calling several tools in one reply) now
+        count every round-trip's input tokens too, not just the first.
       </p>
 
       <table className="chat-summary-table">
@@ -403,7 +420,14 @@ function ChatSummaryView() {
                 )}
               </td>
 
-              <td>{chat.tokens_in}</td>
+              <td>
+                {chat.tokens_in}
+                {(chat.cache_creation_tokens > 0 || chat.cache_read_tokens > 0) && (
+                  <div className="cache-note">
+                    +{chat.cache_creation_tokens} write / +{chat.cache_read_tokens} read (cache)
+                  </div>
+                )}
+              </td>
 
               <td>{chat.tokens_out}</td>
 
@@ -412,7 +436,9 @@ function ChatSummaryView() {
                   estimateCost(
                     getModelRate(modelRates, chat.model),
                     chat.tokens_in,
-                    chat.tokens_out
+                    chat.tokens_out,
+                    chat.cache_creation_tokens,
+                    chat.cache_read_tokens
                   )
                 )}
               </td>
@@ -489,14 +515,18 @@ function ChatSummaryView() {
                         <div className="timestamp">
                           Tokens In:{" "}
                           {group.tokensIn}
+                          {(group.cacheCreationTokens > 0 || group.cacheReadTokens > 0) && (
+                            <> (incl. {group.cacheCreationTokens} cache write, {group.cacheReadTokens} cache read)</>
+                          )}
                         </div>
 
                         <div className="timestamp">
                           {formatCost(
-                            estimateTokenCost(
+                            estimateInputCost(
                               getModelRate(modelRates, group.model),
                               group.tokensIn,
-                              "input"
+                              group.cacheCreationTokens,
+                              group.cacheReadTokens
                             )
                           )}
                         </div>

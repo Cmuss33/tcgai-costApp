@@ -23,6 +23,7 @@ const fmtCompact = (n) => {
   if (n >= 1e4) return `${Math.round(n / 1e3)}K`;
   return nf.format(n);
 };
+const fmtPct = (n) => (n == null ? "—" : `${Math.round(n * 100)}%`);
 
 /* ---------- tiny charts ---------- */
 function AreaSpark({ values, color, w = 200, h = 36 }) {
@@ -220,13 +221,22 @@ function StatsBand({ stats }) {
           accent="--a-tok"
           label="Tokens"
           value={fmtCompact(tk.input)}
-          sub={`in · ${fmtCompact(tk.output)} out · ${Math.round(pc.tokens_in || 0)}/chat`}
+          sub={`in (incl. cache) · ${fmtCompact(tk.output)} out · ${fmtPct(tk.cache_hit_rate)} cache hit`}
           deltaPct={tk.input_delta_pct}
           betterWhen="neutral"
           spark={tokSeries}
           sparkColor="#ff6ba0"
         />
       </div>
+
+      {tk.cache_hit_rate != null && (
+        <p className="cr__note" style={{ margin: "-4px 0 18px" }}>
+          Cache hit rate: {fmtPct(tk.cache_hit_rate)} of input tokens this month were served from
+          Anthropic&rsquo;s prompt cache ({fmtCompact(tk.cache_read)} read / {fmtCompact(tk.cache_creation)} written).
+          Caching reduces cost &mdash; cache reads bill at a discount, cache writes at a premium &mdash; it
+          doesn&rsquo;t make a call free.
+        </p>
+      )}
 
       {convDaily.length > 0 && (
         <div className="cr__panel" style={{ "--accent": "var(--a-convo)" }}>

@@ -39,11 +39,17 @@ def _spend_for(month_start):
 
 
 def _tokens_for(month_start):
-    """(input, output, [{day, input, output}], error) from the Anthropic usage report."""
+    """(input, output, [{day, input, output}], cache_info, error) from the
+    Anthropic usage report. `input` is the TRUE total (uncached + cache
+    creation + cache read, per AnthropicAdapter.get_tokens -- ENG-148),
+    not just uncached input as before. cache_info is {creation_tokens,
+    read_tokens, hit_rate} -- defaults to all-zero/None if the adapter
+    response doesn't carry a "cache" key at all (an older/unpatched adapter,
+    or an error response), so callers never need a None-check of their own."""
     resp = base_views.llmprovider.get_tokens(year=month_start.year, month=month_start.month)
     if not isinstance(resp, dict) or resp.get("error"):
         err = resp.get("error") if isinstance(resp, dict) else "usage source unavailable"
-        return None, None, [], err
+        return None, None, [], {"creation_tokens": 0, "read_tokens": 0, "hit_rate": None}, err
     rows = resp.get("tokens") or []
     total_in = sum(int(r.get("input_tokens") or 0) for r in rows)
     total_out = sum(int(r.get("output_tokens") or 0) for r in rows)
@@ -52,7 +58,13 @@ def _tokens_for(month_start):
          "output": int(r.get("output_tokens") or 0)}
         for r in rows
     ]
-    return total_in, total_out, daily, None
+    cache_info = resp.get("cache") or {}
+    cache_info = {
+        "creation_tokens": cache_info.get("creation_tokens", 0),
+        "read_tokens": cache_info.get("read_tokens", 0),
+        "hit_rate": cache_info.get("hit_rate"),
+    }
+    return total_in, total_out, daily, cache_info, None
 
 
 def _chat_qs(month_start):
@@ -95,8 +107,8 @@ def _build_stats(month_start):
 
     spend, spend_daily, cost_err = _spend_for(month_start)
     prev_spend, _, _ = _spend_for(previous)
-    tok_in, tok_out, tok_daily, tok_err = _tokens_for(month_start)
-    prev_in, prev_out, _, _ = _tokens_for(previous)
+    tok_in, tok_out, tok_daily, cache_info, tok_err = _tokens_for(month_start)
+    prev_in, prev_out, _, _, _ = _tokens_for(previous)
 
     convs = _chat_qs(month_start).count()
     prev_convs = _chat_qs(previous).count()
@@ -154,6 +166,15 @@ def _build_stats(month_start):
             "input_delta_pct": _pct_delta(tok_in, prev_in),
             "output_delta_pct": _pct_delta(tok_out, prev_out),
             "daily": tok_daily,
+            # ENG-148: "input" above already includes cache tokens (see
+            # _tokens_for) -- these are the breakdown + the actual "how well
+            # is caching doing" metric the store owner asked to see. A high
+            # hit_rate means most input tokens are billed at Anthropic's
+            # cache-read discount rather than full price -- caching reduces
+            # cost, it does not make those calls free.
+            "cache_creation": cache_info["creation_tokens"],
+            "cache_read": cache_info["read_tokens"],
+            "cache_hit_rate": cache_info["hit_rate"],
         },
         "conversations": {
             "total": convs,
