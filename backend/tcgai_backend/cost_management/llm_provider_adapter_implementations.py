@@ -92,3 +92,70 @@ class AnthropicAdapter(LLMAdapter):
             return {"tokens": daily_tokens, "test_tokens": usage_data}
         else:
             return {"error": response.text}
+
+    def get_model_rates(self, year=None, month=None):
+        """Effective $/token rate per model for the month, derived from Anthropic's
+        own cost_report (billed amounts) and usage_report/messages (real token
+        counts) - i.e. what Anthropic actually charged, not a hardcoded price list."""
+        today = datetime.today()
+        year = int(year) if year else today.year
+        month = int(month) if month else today.month
+
+        starting_at = f"{year}-{month:02d}-01T00:00:00Z"
+        headers = {
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+            "x-api-key": os.environ.get('ANTHROPIC_ADMIN_KEY')
+        }
+
+        cost_response = requests.get(
+            "https://api.anthropic.com/v1/organizations/cost_report",
+            params={"starting_at": starting_at, "group_by[]": "description", "limit": 31},
+            headers=headers,
+        )
+        if cost_response.status_code != 200:
+            return {"error": cost_response.text}
+
+        usage_response = requests.get(
+            "https://api.anthropic.com/v1/organizations/usage_report/messages",
+            params={"starting_at": starting_at, "group_by[]": "model", "limit": 31},
+            headers=headers,
+        )
+        if usage_response.status_code != 200:
+            return {"error": usage_response.text}
+
+        input_cents = {}
+        output_cents = {}
+        for day_data in cost_response.json().get('data', []):
+            for result in day_data.get('results', []):
+                model = result.get('model')
+                if not model or result.get('cost_type') != 'tokens':
+                    continue
+                amount = float(result.get('amount') or 0)
+                token_type = result.get('token_type')
+                if token_type == 'uncached_input_tokens':
+                    input_cents[model] = input_cents.get(model, 0) + amount
+                elif token_type == 'output_tokens':
+                    output_cents[model] = output_cents.get(model, 0) + amount
+
+        input_tokens = {}
+        output_tokens = {}
+        for day_data in usage_response.json().get('data', []):
+            for result in day_data.get('results', []):
+                model = result.get('model')
+                if not model:
+                    continue
+                input_tokens[model] = input_tokens.get(model, 0) + result.get('uncached_input_tokens', 0)
+                output_tokens[model] = output_tokens.get(model, 0) + result.get('output_tokens', 0)
+
+        rates = {}
+        for model in set(input_cents) | set(output_cents):
+            entry = {}
+            if input_tokens.get(model):
+                entry['input'] = round((input_cents.get(model, 0) / 100) / input_tokens[model], 8)
+            if output_tokens.get(model):
+                entry['output'] = round((output_cents.get(model, 0) / 100) / output_tokens[model], 8)
+            if entry:
+                rates[model] = entry
+
+        return {"rates": rates}

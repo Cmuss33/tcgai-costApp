@@ -21,4 +21,5 @@ urlpatterns = [
     path('flag_chat/', investigation_views.flag_chat, name='flag_chat'),
     path('insights_summary/', insights_views.insights_summary, name='insights_summary'),
     path('monthly_stats/', stats_views.monthly_stats, name='monthly_stats'),
+    path('get_model_rates/', stats_views.model_rates, name='get_model_rates'),
 ]

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import "./ChatSummaryView.css";
 import FlagChatModal from "./FlagChatModal";
+import { estimateCost, estimateTokenCost, formatCost, getModelRate } from "./pricing";
 
 function ProductCard({ product }) {
   return (
@@ -54,8 +55,20 @@ function ChatSummaryView() {
   const limit = 10;
   const [hasNext, setHasNext] = useState(false);
 
-  const costPerInput = 1 / 1000000;
-  const costPerOutput = 5 / 1000000;
+  const [modelRates, setModelRates] = useState({});
+
+  // Real $/token rates derived from Anthropic's own billing data for this
+  // month (see pricing.js) - fetched once, not recomputed per chat.
+  useEffect(() => {
+    fetch(`${API_URL}/api/cost/get_model_rates/`, {
+      credentials: "include",
+    })
+      .then((res) => res.json())
+      .then((data) => setModelRates(data.rates || {}))
+      .catch((err) =>
+        console.error("Error fetching model rates:", err)
+      );
+  }, [API_URL]);
 
   // Auth check
   useEffect(() => {
@@ -276,6 +289,7 @@ function ChatSummaryView() {
         grouped.push({
           userMessage: msg.content,
           tokensIn: msg.tokens_in,
+          model: msg.model,
           timestamp: msg.timestamp,
           formattedMessage:
             msg.llm_formatted_message,
@@ -388,13 +402,13 @@ function ChatSummaryView() {
               <td>{chat.tokens_out}</td>
 
               <td>
-                $
-                {(
-                  chat.tokens_in *
-                    costPerInput +
-                  chat.tokens_out *
-                    costPerOutput
-                ).toPrecision(2)}
+                {formatCost(
+                  estimateCost(
+                    getModelRate(modelRates, chat.model),
+                    chat.tokens_in,
+                    chat.tokens_out
+                  )
+                )}
               </td>
 
               <td>{chat.model}</td>
@@ -472,11 +486,13 @@ function ChatSummaryView() {
                         </div>
 
                         <div className="timestamp">
-                          $
-                          {(
-                            group.tokensIn *
-                            costPerInput
-                          ).toPrecision(2)}
+                          {formatCost(
+                            estimateTokenCost(
+                              getModelRate(modelRates, group.model),
+                              group.tokensIn,
+                              "input"
+                            )
+                          )}
                         </div>
 
                         <div className="timestamp">
@@ -551,11 +567,13 @@ function ChatSummaryView() {
                               </div>
 
                               <div className="timestamp">
-                                $
-                                {(
-                                  msg.tokens_out *
-                                  costPerOutput
-                                ).toPrecision(2)}
+                                {formatCost(
+                                  estimateTokenCost(
+                                    getModelRate(modelRates, msg.model),
+                                    msg.tokens_out,
+                                    "output"
+                                  )
+                                )}
                               </div>
 
                               <div className="timestamp">

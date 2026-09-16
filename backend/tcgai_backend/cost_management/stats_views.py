@@ -206,3 +206,30 @@ def monthly_stats(request):
     payload = _build_stats(month_start)
     cache.set(key, payload, CURRENT_TTL if month_start == current else PAST_TTL)
     return JsonResponse(payload)
+
+
+@login_required
+def model_rates(request):
+    """Effective $/token rate per model this month, straight from Anthropic's
+    own billing data (see AnthropicAdapter.get_model_rates) - not a hardcoded
+    price table, so it stays correct if Anthropic changes prices."""
+    refresh = request.GET.get("refresh", "").lower() in ("1", "true", "yes")
+    month_param = request.GET.get("month")
+    current = current_month_start()
+
+    month_start = current
+    if month_param:
+        parsed = parse_month_param(month_param)
+        if parsed is None:
+            return JsonResponse({"error": "invalid month; expected YYYY-MM"}, status=400)
+        month_start = parsed
+
+    key = f"model_rates:{month_start:%Y-%m}"
+    if not refresh:
+        cached = cache.get(key)
+        if cached is not None:
+            return JsonResponse({**cached, "cached": True})
+
+    payload = base_views.llmprovider.get_model_rates(year=month_start.year, month=month_start.month)
+    cache.set(key, payload, CURRENT_TTL if month_start == current else PAST_TTL)
+    return JsonResponse(payload)
