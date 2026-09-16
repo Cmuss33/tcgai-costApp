@@ -15,13 +15,16 @@ class AnthropicAdapter(LLMAdapter):
         month = int(month) if month else today.month
 
         starting_at = f"{year}-{month:02d}-01T00:00:00Z"
+        workspace_id = os.environ.get('ANTHROPIC_WORKSPACE_ID') or None
 
-        # First, get the cost report
+        # First, get the cost report. cost_report has no server-side filter,
+        # only group_by, so grouping by both workspace_id and description lets
+        # us scope to one workspace ourselves below while still getting the
+        # per-model/token_type breakdown description grouping provides.
         url = "https://api.anthropic.com/v1/organizations/cost_report"
         params = {
             "starting_at": starting_at,  # dynamic starting date
-            "group_by[]": "workspace_id",
-            "group_by[]": "description",
+            "group_by[]": ["workspace_id", "description"],
             "limit": 31
         }
         headers = {
@@ -39,17 +42,20 @@ class AnthropicAdapter(LLMAdapter):
             monthly_cost = 0
             for day_data in cost_data['data']:
                 day = day_data['starting_at'][:10]  # Extract the date
-                total_cost = round(sum(float(result['amount']) for result in day_data['results']) / 100, 2) # TODO: Possibly convert to CAD (currently USD)
+                results = day_data['results']
+                if workspace_id:
+                    results = [r for r in results if r.get('workspace_id') == workspace_id]
+                total_cost = round(sum(float(result['amount']) for result in results) / 100, 2) # TODO: Possibly convert to CAD (currently USD)
                 daily_costs.append({'day': day, 'total_cost': total_cost})
                 num_days += 1
                 monthly_cost += total_cost
-        
+
             if num_days > 0:
                 monthly_average_cost = round(monthly_cost / num_days, 2)
             else:
                 monthly_average_cost = 0
 
-            return {"costs": daily_costs, "monthly_average_cost": monthly_average_cost}
+            return {"costs": daily_costs, "monthly_average_cost": monthly_average_cost, "workspace_id": workspace_id}
         else:
             return {"error": response.text}
         
@@ -60,6 +66,7 @@ class AnthropicAdapter(LLMAdapter):
         month = int(month) if month else today.month
 
         starting_at = f"{year}-{month:02d}-01T00:00:00Z"
+        workspace_id = os.environ.get('ANTHROPIC_WORKSPACE_ID') or None
 
         headers = {
             "anthropic-version": "2023-06-01",
@@ -74,6 +81,10 @@ class AnthropicAdapter(LLMAdapter):
             "group_by[]": "workspace_id",
             "limit": 31
         }
+        # usage_report/messages supports a real server-side workspace filter,
+        # unlike cost_report which only supports group_by.
+        if workspace_id:
+            params["workspace_ids[]"] = workspace_id
 
         response = requests.get(url, params=params, headers=headers)
 
@@ -89,7 +100,7 @@ class AnthropicAdapter(LLMAdapter):
                     output_tokens += result.get('output_tokens', 0)
                 daily_tokens.append({'day': day, 'input_tokens': input_tokens, 'output_tokens': output_tokens})
 
-            return {"tokens": daily_tokens, "test_tokens": usage_data}
+            return {"tokens": daily_tokens, "test_tokens": usage_data, "workspace_id": workspace_id}
         else:
             return {"error": response.text}
 
@@ -102,6 +113,7 @@ class AnthropicAdapter(LLMAdapter):
         month = int(month) if month else today.month
 
         starting_at = f"{year}-{month:02d}-01T00:00:00Z"
+        workspace_id = os.environ.get('ANTHROPIC_WORKSPACE_ID') or None
         headers = {
             "anthropic-version": "2023-06-01",
             "content-type": "application/json",
@@ -110,15 +122,18 @@ class AnthropicAdapter(LLMAdapter):
 
         cost_response = requests.get(
             "https://api.anthropic.com/v1/organizations/cost_report",
-            params={"starting_at": starting_at, "group_by[]": "description", "limit": 31},
+            params={"starting_at": starting_at, "group_by[]": ["workspace_id", "description"], "limit": 31},
             headers=headers,
         )
         if cost_response.status_code != 200:
             return {"error": cost_response.text}
 
+        usage_params = {"starting_at": starting_at, "group_by[]": "model", "limit": 31}
+        if workspace_id:
+            usage_params["workspace_ids[]"] = workspace_id
         usage_response = requests.get(
             "https://api.anthropic.com/v1/organizations/usage_report/messages",
-            params={"starting_at": starting_at, "group_by[]": "model", "limit": 31},
+            params=usage_params,
             headers=headers,
         )
         if usage_response.status_code != 200:
@@ -130,6 +145,8 @@ class AnthropicAdapter(LLMAdapter):
             for result in day_data.get('results', []):
                 model = result.get('model')
                 if not model or result.get('cost_type') != 'tokens':
+                    continue
+                if workspace_id and result.get('workspace_id') != workspace_id:
                     continue
                 amount = float(result.get('amount') or 0)
                 token_type = result.get('token_type')
@@ -158,4 +175,4 @@ class AnthropicAdapter(LLMAdapter):
             if entry:
                 rates[model] = entry
 
-        return {"rates": rates}
+        return {"rates": rates, "workspace_id": workspace_id}

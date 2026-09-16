@@ -1,4 +1,5 @@
 import json
+import os
 from unittest.mock import patch, MagicMock
 
 import requests
@@ -1133,6 +1134,20 @@ class MonthlyStatsTests(TestCase):
         self.assertIsNone(d["per_conversation"]["cost"])
         self.assertEqual(d["model_mix"], [])
 
+    def test_workspace_id_reported_when_configured(self):
+        self._patch_adapter()
+        self.client.force_login(self.user)
+
+        with patch.dict('os.environ', {'ANTHROPIC_WORKSPACE_ID': 'wrkspc_target'}):
+            d = self.client.get("/api/cost/monthly_stats/").json()
+        self.assertEqual(d["workspace_id"], "wrkspc_target")
+
+        cache.clear()
+        with patch.dict('os.environ', {}, clear=False):
+            os.environ.pop('ANTHROPIC_WORKSPACE_ID', None)
+            d = self.client.get("/api/cost/monthly_stats/").json()
+        self.assertIsNone(d["workspace_id"])
+
 
 class ModelRatesAdapterTests(TestCase):
     """Unit tests for AnthropicAdapter.get_model_rates - the $/token rate it
@@ -1193,6 +1208,101 @@ class ModelRatesAdapterTests(TestCase):
             result = AnthropicAdapter().get_model_rates(year=2026, month=8)
 
         self.assertEqual(result["error"], "boom")
+
+
+class WorkspaceScopingTests(TestCase):
+    """ANTHROPIC_WORKSPACE_ID, when set, should scope get_cost/get_tokens/
+    get_model_rates to that workspace; when unset, behavior is unchanged
+    (whole-org totals, as before this feature existed)."""
+
+    def _cost_report(self, *rows):
+        return {"data": [{"starting_at": "2026-08-01T00:00:00Z", "results": [
+            {"workspace_id": ws, "amount": amount, "cost_type": "tokens",
+             "model": "claude-haiku-4-5", "token_type": "uncached_input_tokens"}
+            for ws, amount in rows
+        ]}]}
+
+    def test_get_cost_filters_to_target_workspace(self):
+        resp = MagicMock(status_code=200, json=lambda: self._cost_report(
+            ("wrkspc_target", "100.0"), ("wrkspc_other", "900.0"),
+        ))
+        from .llm_provider_adapter_implementations import AnthropicAdapter
+        with patch.dict('os.environ', {'ANTHROPIC_WORKSPACE_ID': 'wrkspc_target'}), \
+             patch("cost_management.llm_provider_adapter_implementations.requests.get", return_value=resp):
+            result = AnthropicAdapter().get_cost(year=2026, month=8)
+
+        self.assertEqual(result["costs"][0]["total_cost"], 1.0)
+        self.assertEqual(result["workspace_id"], "wrkspc_target")
+
+    def test_get_cost_unscoped_by_default(self):
+        resp = MagicMock(status_code=200, json=lambda: self._cost_report(
+            ("wrkspc_target", "100.0"), ("wrkspc_other", "900.0"),
+        ))
+        from .llm_provider_adapter_implementations import AnthropicAdapter
+        with patch.dict('os.environ', {}, clear=False):
+            os.environ.pop('ANTHROPIC_WORKSPACE_ID', None)
+            with patch("cost_management.llm_provider_adapter_implementations.requests.get", return_value=resp):
+                result = AnthropicAdapter().get_cost(year=2026, month=8)
+
+        self.assertEqual(result["costs"][0]["total_cost"], 10.0)
+        self.assertIsNone(result["workspace_id"])
+
+    def test_get_cost_requests_both_group_by_dimensions(self):
+        resp = MagicMock(status_code=200, json=lambda: self._cost_report())
+        from .llm_provider_adapter_implementations import AnthropicAdapter
+        with patch(
+            "cost_management.llm_provider_adapter_implementations.requests.get", return_value=resp
+        ) as mock_get:
+            AnthropicAdapter().get_cost(year=2026, month=8)
+
+        params = mock_get.call_args.kwargs["params"]
+        self.assertEqual(params["group_by[]"], ["workspace_id", "description"])
+
+    def test_get_tokens_adds_workspace_filter_when_set(self):
+        resp = MagicMock(status_code=200, json=lambda: {"data": []})
+        from .llm_provider_adapter_implementations import AnthropicAdapter
+        with patch.dict('os.environ', {'ANTHROPIC_WORKSPACE_ID': 'wrkspc_target'}), \
+             patch("cost_management.llm_provider_adapter_implementations.requests.get",
+                   return_value=resp) as mock_get:
+            result = AnthropicAdapter().get_tokens(year=2026, month=8)
+
+        params = mock_get.call_args.kwargs["params"]
+        self.assertEqual(params["workspace_ids[]"], "wrkspc_target")
+        self.assertEqual(result["workspace_id"], "wrkspc_target")
+
+    def test_get_tokens_omits_workspace_filter_by_default(self):
+        resp = MagicMock(status_code=200, json=lambda: {"data": []})
+        from .llm_provider_adapter_implementations import AnthropicAdapter
+        with patch.dict('os.environ', {}, clear=False):
+            os.environ.pop('ANTHROPIC_WORKSPACE_ID', None)
+            with patch("cost_management.llm_provider_adapter_implementations.requests.get",
+                       return_value=resp) as mock_get:
+                result = AnthropicAdapter().get_tokens(year=2026, month=8)
+
+        params = mock_get.call_args.kwargs["params"]
+        self.assertNotIn("workspace_ids[]", params)
+        self.assertIsNone(result["workspace_id"])
+
+    def test_get_model_rates_filters_cost_and_usage_by_workspace(self):
+        cost_resp = MagicMock(status_code=200, json=lambda: {"data": [{"results": [
+            {"workspace_id": "wrkspc_target", "model": "claude-haiku-4-5", "cost_type": "tokens",
+             "token_type": "uncached_input_tokens", "amount": "100.0"},
+            {"workspace_id": "wrkspc_other", "model": "claude-haiku-4-5", "cost_type": "tokens",
+             "token_type": "uncached_input_tokens", "amount": "900.0"},
+        ]}]})
+        usage_resp = MagicMock(status_code=200, json=lambda: {"data": [{"results": [
+            {"model": "claude-haiku-4-5", "uncached_input_tokens": 1_000_000, "output_tokens": 0},
+        ]}]})
+        from .llm_provider_adapter_implementations import AnthropicAdapter
+        with patch.dict('os.environ', {'ANTHROPIC_WORKSPACE_ID': 'wrkspc_target'}), \
+             patch("cost_management.llm_provider_adapter_implementations.requests.get",
+                   side_effect=[cost_resp, usage_resp]) as mock_get:
+            result = AnthropicAdapter().get_model_rates(year=2026, month=8)
+
+        self.assertEqual(result["rates"]["claude-haiku-4-5"]["input"], 1.0 / 1_000_000)
+        self.assertEqual(result["workspace_id"], "wrkspc_target")
+        usage_call_params = mock_get.call_args_list[1].kwargs["params"]
+        self.assertEqual(usage_call_params["workspace_ids[]"], "wrkspc_target")
 
 
 class ModelRatesEndpointTests(TestCase):
