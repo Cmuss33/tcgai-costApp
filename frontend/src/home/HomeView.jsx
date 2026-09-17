@@ -345,8 +345,8 @@ function Findings({ view }) {
 
         {gaps.length > 0 && (
           <div className="cr__panel" style={{ marginTop: 0, "--accent": "var(--a-tok)" }}>
-            <h2>Where the bot fell short</h2>
-            <div className="cr__note">Categories it couldn&rsquo;t handle.</div>
+            <h2>Opportunities to improve</h2>
+            <div className="cr__note">Capabilities worth adding next.</div>
             {gaps.map((n) => (
               <div className="cr__gap" data-t={n.gap_type} key={n.gap}>
                 <div className="cr__gh">
@@ -364,8 +364,8 @@ function Findings({ view }) {
 
       {demand.length > 0 && (
         <div className="cr__panel" style={{ "--accent": "var(--a-cost)" }}>
-          <h2>Want list</h2>
-          <div className="cr__note">Products customers wanted that weren&rsquo;t available.</div>
+          <h2>Products customers are demanding</h2>
+          <div className="cr__note">Worth stocking to capture more sales.</div>
           <table className="cr__want">
             <tbody>
               {demand.map((p) => (
@@ -389,8 +389,8 @@ function Findings({ view }) {
 
       {recs.length > 0 && (
         <div className="cr__panel" style={{ "--accent": "var(--a-eval)" }}>
-          <h2>What to fix next</h2>
-          <div className="cr__note">Changes that would close this month&rsquo;s gaps, by impact.</div>
+          <h2>Where to invest next</h2>
+          <div className="cr__note">This month&rsquo;s highest-impact opportunities, ranked by evidence.</div>
           {recs.map((r) => (
             <div className="cr__rec" key={r.title}>
               <div className="cr__rh">
@@ -615,7 +615,7 @@ function HomeView() {
 
         {pollTimedOut && (
           <p className="cr__notice">
-            Still working on it — this is taking longer than usual. Use Refresh in a moment.
+            Still working on it — this is taking longer than usual. Check back in a moment.
           </p>
         )}
 

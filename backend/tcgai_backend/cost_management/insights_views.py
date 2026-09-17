@@ -34,7 +34,7 @@ _IMPACT_ORDER = {"high": 0, "medium": 1, "low": 2}
 
 REPORT_INSIGHTS_TOOL = {
     "name": "report_insights",
-    "description": "Report what customers asked for and where the bot fell short.",
+    "description": "Report what customers asked for and where the bot has room to improve.",
     "input_schema": {
         "type": "object",
         "properties": {
