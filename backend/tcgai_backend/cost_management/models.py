@@ -24,6 +24,17 @@ class Chat(models.Model):
     timestamp = models.DateTimeField(auto_now_add=True)
     evaluation_score = models.IntegerField(null=True, blank=True)
 
+    # ENG-149/150: a scripted caller pinging the live chat endpoint with the
+    # same message on a schedule (a fresh chat_id each time) is not a real
+    # conversation. Set by the `flag_automated_chats` management command,
+    # which flags chats whose opening message matches an hourly spike of
+    # identical text across many different chat_ids -- exactly this bot's
+    # signature, not something a genuine batch of shoppers produces. Excluded
+    # from conversation counts and AI-generated insights (see month_utils.py's
+    # real_chats()) so a bot can no longer skew either. Manually editable in
+    # the admin for the rare misclassification.
+    likely_automated = models.BooleanField(default=False, db_index=True)
+
     investigation_status = models.CharField(
         max_length=20,
         choices=INVESTIGATION_STATUS_CHOICES,

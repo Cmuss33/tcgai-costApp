@@ -11,7 +11,7 @@ from django.utils import timezone
 
 from . import views as base_views
 from .models import Chat
-from .month_utils import current_month_start, month_range, parse_month_param, prev_month
+from .month_utils import current_month_start, month_range, parse_month_param, prev_month, real_chats
 
 CURRENT_TTL = 900       # 15 min — the current month's cost figures still move
 PAST_TTL = 86400        # a day — past months are effectively fixed
@@ -69,7 +69,7 @@ def _tokens_for(month_start):
 
 def _chat_qs(month_start):
     start_dt, end_dt = month_range(month_start)
-    return Chat.objects.filter(timestamp__gte=start_dt, timestamp__lt=end_dt)
+    return real_chats(Chat.objects.filter(timestamp__gte=start_dt, timestamp__lt=end_dt))
 
 
 def _daily_counts(month_start):

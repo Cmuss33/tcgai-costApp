@@ -44,6 +44,17 @@ def month_iter(first, last):
         month = next_month(month)
 
 
+def real_chats(qs):
+    """Excludes automated/bot traffic (ENG-149/150) from a Chat queryset. A
+    scripted caller pinging the live chat endpoint with the same message on a
+    schedule (a fresh chat_id each time) is not a real conversation -- letting
+    it through corrupts both the conversation count and the AI-generated
+    monthly insights, which sample the most-recent chats and can get crowded
+    out entirely by a high-frequency bot. See models.py's Chat.likely_automated
+    and the flag_automated_chats management command that sets it."""
+    return qs.filter(likely_automated=False)
+
+
 def conversation_count(month_start):
     start_dt, end_dt = month_range(month_start)
-    return Chat.objects.filter(timestamp__gte=start_dt, timestamp__lt=end_dt).count()
+    return real_chats(Chat.objects.filter(timestamp__gte=start_dt, timestamp__lt=end_dt)).count()
