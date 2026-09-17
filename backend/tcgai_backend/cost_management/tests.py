@@ -873,6 +873,21 @@ CANNED_INSIGHTS = {
 }
 
 
+class InsightsPromptGroundingTests(TestCase):
+    """_build_prompt is pure string-building split out of _generate_insights
+    precisely so this grounding instruction can be checked without a real
+    API call -- see _generate_insights' docstring."""
+
+    def test_prompt_states_the_exact_total_and_forbids_recounting_it(self):
+        from .insights_views import _build_prompt
+
+        prompt = _build_prompt(["<conversation id=\"c-1\">hi</conversation>"], "2026-09", 61)
+
+        self.assertIn("exactly 61 conversations", prompt)
+        self.assertIn("never recount or estimate it", prompt)
+        self.assertIn("must be exactly 61", prompt)
+
+
 class InsightsSummaryTests(TestCase):
     def setUp(self):
         cache.clear()
@@ -922,6 +937,22 @@ class InsightsSummaryTests(TestCase):
         first_of_month = _now().date().replace(day=1)
         snap = InsightsSnapshot.objects.get(month=first_of_month)
         self.assertEqual(snap.conversations_analyzed, 6)
+
+    @patch("cost_management.insights_views._generate_insights", return_value=dict(CANNED_INSIGHTS))
+    def test_passes_the_dashboard_conversation_count_as_the_headline_ground_truth(self, mock_gen):
+        """The model must not be left to recount/estimate the month's total
+        conversation volume itself for the headline -- that's how it can land
+        on a different number (e.g. "roughly 45") than the dashboard's own
+        KPI (e.g. 61) for the same month. _build_payload must hand it the
+        authoritative count (len(chats), same value as conversations_analyzed)
+        to anchor that claim to."""
+        self._make_conversations(6, with_customer_text=2)
+        self.client.force_login(self.user)
+
+        self.client.get("/api/cost/insights_summary/")
+
+        total_conversations = mock_gen.call_args.args[2]
+        self.assertEqual(total_conversations, 6)
 
     @patch("cost_management.insights_views._generate_insights", return_value=dict(CANNED_INSIGHTS))
     def test_likely_automated_chats_are_excluded_from_the_sample(self, mock_gen):
