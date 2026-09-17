@@ -60,19 +60,39 @@ function StackedBarSeries({ data, colorReal, colorBot, w = 1000, h = 118 }) {
   const totals = data.map((d) => d.count + (d.bot_count || 0));
   const max = Math.max(...totals, 1);
   const gap = 2;
+  const leftPad = 28; // room for the y-axis scale
   const plotH = h - 20; // room for date labels
-  const bw = (w - gap * (data.length - 1)) / data.length;
+  const plotW = w - leftPad;
+  const bw = (plotW - gap * (data.length - 1)) / data.length;
   const labelEvery = Math.max(1, Math.ceil(data.length / 6));
+  const yTicks = [0, max / 2, max];
   return (
     <svg viewBox={`0 0 ${w} ${h}`} width="100%" height={h}>
-      <line className="cr-grid" x1="0" x2={w} y1={plotH * 0.5} y2={plotH * 0.5} />
+      {yTicks.map((v, i) => {
+        const y = plotH - (v / max) * (plotH - 3);
+        return (
+          <g key={`y-${i}`}>
+            <line className="cr-grid" x1={leftPad} x2={w} y1={y} y2={y} />
+            <text
+              x={leftPad - 6}
+              y={y + 3}
+              textAnchor="end"
+              fontSize="10"
+              fontFamily="var(--font-m)"
+              fill="var(--faint)"
+            >
+              {Math.round(v)}
+            </text>
+          </g>
+        );
+      })}
       {data.map((d, i) => {
         const bot = d.bot_count || 0;
         const total = d.count + bot;
         const totalH = total > 0 ? Math.max(2, (total / max) * (plotH - 3)) : 0;
         const realH = total > 0 ? (d.count / total) * totalH : 0;
         const botH = totalH - realH;
-        const x = i * (bw + gap);
+        const x = leftPad + i * (bw + gap);
         const realY = plotH - realH;
         const botY = realY - botH;
         return (
@@ -86,7 +106,7 @@ function StackedBarSeries({ data, colorReal, colorBot, w = 1000, h = 118 }) {
         i % labelEvery === 0 || i === data.length - 1 ? (
           <text
             key={`lbl-${i}`}
-            x={i * (bw + gap) + bw / 2}
+            x={leftPad + i * (bw + gap) + bw / 2}
             y={h - 5}
             textAnchor="middle"
             fontSize="11"
@@ -248,16 +268,14 @@ function StatsBand({ stats }) {
             {botTotal > 0 ? ` · ${fmtNum(botTotal)} automated/bot excluded from those totals` : ""}
           </div>
           <StackedBarSeries data={convDaily} colorReal="#2fe0a6" colorBot="#6c7488" />
-          {botTotal > 0 && (
-            <div className="cr__legend">
-              <span className="cr__legend-item">
-                <i style={{ background: "#2fe0a6" }} /> real
-              </span>
-              <span className="cr__legend-item">
-                <i style={{ background: "#6c7488" }} /> automated / bot
-              </span>
-            </div>
-          )}
+          <div className="cr__legend">
+            <span className="cr__legend-item">
+              <i style={{ background: "#2fe0a6" }} /> real
+            </span>
+            <span className="cr__legend-item">
+              <i style={{ background: "#6c7488" }} /> automated / bot
+            </span>
+          </div>
         </div>
       )}
     </>
