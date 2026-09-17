@@ -39,9 +39,9 @@ REPORT_INSIGHTS_TOOL = {
     "input_schema": {
         "type": "object",
         "properties": {
-            "headline": {"type": "string"},
             "top_requests": {
                 "type": "array",
+                "minItems": 1,
                 "items": {
                     "type": "object",
                     "properties": {
@@ -55,6 +55,7 @@ REPORT_INSIGHTS_TOOL = {
             },
             "unmet_needs": {
                 "type": "array",
+                "minItems": 1,
                 "items": {
                     "type": "object",
                     "properties": {
@@ -72,6 +73,7 @@ REPORT_INSIGHTS_TOOL = {
             },
             "product_demand": {
                 "type": "array",
+                "minItems": 1,
                 "items": {
                     "type": "object",
                     "properties": {
@@ -88,6 +90,8 @@ REPORT_INSIGHTS_TOOL = {
             },
             "recommendations": {
                 "type": "array",
+                "minItems": 3,
+                "maxItems": 6,
                 "items": {
                     "type": "object",
                     "properties": {
@@ -102,9 +106,19 @@ REPORT_INSIGHTS_TOOL = {
                     "required": ["title", "detail", "impact", "addresses", "evidence_count", "examples"],
                 },
             },
+            # Deliberately declared LAST -- Claude tends to fill a tool call's
+            # fields in declaration order, and a "headline" declared first was
+            # observed live (2026-09-17) getting a full, specific summary while
+            # every list field below it came back empty, e.g. a headline naming
+            # "nearly 20 chats" of a specific stockout with top_requests/
+            # unmet_needs/product_demand/recommendations all `[]`. Declaring
+            # the evidence lists first forces the model to have already
+            # committed to concrete items before it writes the headline, so the
+            # headline can only summarize what already exists as evidence.
+            "headline": {"type": "string"},
         },
         "required": [
-            "headline", "top_requests", "unmet_needs", "product_demand", "recommendations",
+            "top_requests", "unmet_needs", "product_demand", "recommendations", "headline",
         ],
     },
 }
@@ -234,26 +248,34 @@ def _build_prompt(transcripts, month_label, total_conversations):
         f"exact number ({total_conversations}); never recount or estimate it "
         "yourself -- it must match the figure the reader sees on the dashboard "
         "next to this summary.\n\n"
-        "Produce, through the report_insights tool:\n"
-        "- top_requests: the things customers most asked for.\n"
+        "Fill in these fields, through the report_insights tool, IN THIS ORDER -- "
+        "the lists first, then the headline last as a synthesis of what you just "
+        "reported, never the other way around:\n"
+        "- top_requests: the things customers most asked for. Leave this empty "
+        "only if truly nothing recurs across the transcripts -- for a real batch "
+        "of conversations that's rare.\n"
         "- unmet_needs: every capability gap the bot showed, even a small one -- "
         "phrase each summary as a forward-looking opportunity (what to add or fix "
-        "next), not just a description of the shortfall.\n"
-        "- product_demand: specific products customers wanted that were unavailable.\n"
-        "- recommendations: 3-6 concrete changes that would close those gaps or meet "
-        "that demand. Each needs an impact (high/medium/low), a short effort note, "
-        "the gap or demand it addresses, and how many conversations it would help. "
-        "Order by impact, then by evidence.\n"
-        "- headline: the month in at most two plain sentences. Lead with the verdict "
-        "— is the bot earning its keep, weighing cost against volume and quality "
-        "— then name the single highest-impact recommendation. If you cite the "
+        "next), not just a description of the shortfall. Leave this empty only if "
+        "the bot truly handled everything.\n"
+        "- product_demand: specific products customers wanted that were "
+        "unavailable. Leave this empty only if nothing was out of stock or "
+        "missing from the catalog.\n"
+        "- recommendations: exactly 3-6 concrete changes that would close those "
+        "gaps or meet that demand -- this list may never be empty. Each needs an "
+        "impact (high/medium/low), a short effort note, the gap or demand it "
+        "addresses, and how many conversations it would help. Order by impact, "
+        "then by evidence.\n"
+        "- headline: only once the four lists above are filled in, summarize the "
+        "month in at most two plain sentences using ONLY facts that already "
+        "appear in those lists. Lead with the verdict — is the bot earning its "
+        "keep, weighing cost against volume and quality — then name the single "
+        "highest-impact recommendation you already listed. If you cite the "
         f"month's total conversation count, it must be exactly {total_conversations} "
         "(see above) — never your own recount. One concrete number per claim; no "
-        "slang.\n\n"
-        "Every concrete claim in the headline (a named product, gap, or number) "
-        "must also appear as its own item in unmet_needs or product_demand, with "
-        "its own example conversation ids -- never state a finding in the headline "
-        "that isn't also backed by evidence elsewhere in the report.\n\n"
+        "slang. Never introduce a product, gap, or number in the headline that "
+        "isn't already one of the items above, with its own example conversation "
+        "ids -- the headline summarizes your evidence, it never substitutes for it.\n\n"
         "For every list item include 2-3 example conversation ids drawn from the id "
         "attributes. Counts for top_requests/unmet_needs/product_demand are your "
         "best tally across these transcripts -- unlike the total conversation count "
