@@ -1269,6 +1269,56 @@ class InsightsSummaryTests(TestCase):
         self.assertIsNone(data["stale"])
         self.assertFalse(InsightsSnapshot.objects.exists())
 
+    @patch(
+        "cost_management.insights_views._generate_insights",
+        return_value={"headline": "", "top_requests": [], "unmet_needs": [],
+                      "product_demand": [], "recommendations": []},
+    )
+    def test_hollow_report_does_not_overwrite_a_good_stored_snapshot(self, mock_gen):
+        """Observed live (2026-09-17): the model can complete normally (no
+        exception, no malformed shape) and still return a report with no
+        headline and no evidence in any list. That must not overwrite a
+        previously-good stored snapshot -- degrade to the stale result
+        instead, same as a real generation error."""
+        from cost_management.insights_views import INSIGHTS_MAX_ATTEMPTS
+        from cost_management.models import InsightsSnapshot
+
+        month = _now().date().replace(day=1)
+        InsightsSnapshot.objects.create(
+            month=month, payload={**CANNED_INSIGHTS, "month": month.strftime("%Y-%m")},
+            conversations_analyzed=6,
+        )
+        self._make_conversations(6)
+        self.client.force_login(self.user)
+
+        data = self.client.get("/api/cost/insights_summary/?refresh=1").json()
+
+        self.assertIn("empty report", data["error"])
+        self.assertEqual(data["stale"]["headline"], CANNED_INSIGHTS["headline"])
+        snap = InsightsSnapshot.objects.get(month=month)
+        self.assertEqual(snap.payload["headline"], CANNED_INSIGHTS["headline"])
+        self.assertEqual(mock_gen.call_count, INSIGHTS_MAX_ATTEMPTS)
+
+    @patch(
+        "cost_management.insights_views._generate_insights",
+        side_effect=[
+            {"headline": "", "top_requests": [], "unmet_needs": [],
+             "product_demand": [], "recommendations": []},
+            dict(CANNED_INSIGHTS),
+        ],
+    )
+    def test_retries_after_a_hollow_report_and_succeeds(self, mock_gen):
+        """A hollow report on the first attempt shouldn't sink the whole
+        request if a retry produces a real one -- observed live (2026-09-17)
+        that the exact same prompt/transcripts can go either way."""
+        self._make_conversations(6)
+        self.client.force_login(self.user)
+
+        data = self.client.get("/api/cost/insights_summary/").json()
+
+        self.assertEqual(data["headline"], CANNED_INSIGHTS["headline"])
+        self.assertEqual(mock_gen.call_count, 2)
+
     @patch("cost_management.insights_views._generate_insights", return_value=dict(CANNED_INSIGHTS))
     def test_conversation_list_is_capped_and_flagged_sampled(self, mock_gen):
         self._make_conversations(205)

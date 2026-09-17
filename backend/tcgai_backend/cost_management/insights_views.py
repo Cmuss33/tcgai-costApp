@@ -38,6 +38,11 @@ INSIGHTS_MODEL = "claude-sonnet-5"
 # MAX_DEMAND_ITEMS items, each with 2-3 example conversation ids) can
 # legitimately need more than 4096 output tokens.
 INSIGHTS_MAX_TOKENS = 8192
+# Retries for a truncated (max_tokens) or entirely hollow generation --
+# observed live (2026-09-17) that the exact same prompt/transcripts can
+# produce a rich report on one call and a blank one on another, so this is
+# mitigating one-off model flakiness, not working around a deterministic bug.
+INSIGHTS_MAX_ATTEMPTS = 2
 
 MIN_DEMAND_COUNT = 2
 MAX_DEMAND_ITEMS = 10
@@ -362,12 +367,32 @@ def _build_payload(month_start):
         if had_customer_text:
             with_customer_text += 1
 
-    try:
-        core = _trim_findings(_sanitize_report(_generate_insights(transcripts, label, len(chats))))
-    except Exception as exc:  # degrade gracefully — never 500 the page
+    core = None
+    last_exc = None
+    for _attempt in range(INSIGHTS_MAX_ATTEMPTS):
+        try:
+            candidate = _trim_findings(_sanitize_report(_generate_insights(transcripts, label, len(chats))))
+            if not candidate["headline"] and not any(candidate[field] for field in _LIST_FIELDS):
+                # Observed live (2026-09-17): the model can complete normally
+                # (no truncation, no malformed shape -- _sanitize_report's
+                # whitelist passes it through fine) and still return an
+                # entirely hollow report. That's indistinguishable from a
+                # real failure as far as this app is concerned, and letting
+                # it through would silently overwrite a previously-good
+                # stored snapshot with nothing -- worse than leaving the old
+                # data in place. Retry a couple times before giving up --
+                # this looks like one-off model flakiness, not a
+                # deterministic bug (the same prompt/transcripts produced a
+                # rich report on other attempts).
+                raise ValueError("model returned an empty report (no headline, no evidence in any list)")
+            core = candidate
+            break
+        except Exception as exc:  # degrade gracefully — never 500 the page
+            last_exc = exc
+    if core is None:
         snap = InsightsSnapshot.objects.filter(month=month_start).first()
         return {
-            "error": str(exc),
+            "error": str(last_exc),
             "stale": snap.payload if snap else None,
             "month": label,
         }
