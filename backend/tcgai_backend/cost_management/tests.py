@@ -222,6 +222,44 @@ class GetChatIdsProductsShownCountTests(TestCase):
         self.assertEqual(result["products_shown_count"], 0)
 
 
+class GetChatIdsExcludesAutomatedChatsTests(TestCase):
+    """ENG-149/150: the chat summary list (get_chat_ids) is the page a human
+    reviews individual conversations on -- it must not still be dominated by
+    the thousands of flagged bot chats just because monthly_stats/insights
+    already exclude them. Not month-scoped like those, so without this the
+    bot chats would be the overwhelming majority of every page."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="owner", password="pw")
+        self.client.force_login(self.user)
+
+    def test_flagged_chats_are_excluded_from_results_and_total(self):
+        Chat.objects.create(chat_id="real-1", model="claude-haiku-4-5")
+        Chat.objects.create(chat_id="real-2", model="claude-haiku-4-5")
+        for i in range(5):
+            Chat.objects.create(chat_id=f"bot-{i}", model="claude-haiku-4-5", likely_automated=True)
+
+        response = self.client.get("/api/cost/get_chat_ids/?limit=100")
+
+        data = response.json()
+        chat_ids = {c["chat_id"] for c in data["results"]}
+        self.assertEqual(chat_ids, {"real-1", "real-2"})
+        self.assertFalse(data["has_next"])
+
+    def test_pagination_offsets_are_not_thrown_off_by_excluded_bot_chats(self):
+        for i in range(3):
+            Chat.objects.create(chat_id=f"real-{i}", model="claude-haiku-4-5")
+        for i in range(50):
+            Chat.objects.create(chat_id=f"bot-{i}", model="claude-haiku-4-5", likely_automated=True)
+
+        response = self.client.get("/api/cost/get_chat_ids/?limit=2&offset=0")
+
+        data = response.json()
+        self.assertEqual(len(data["results"]), 2)
+        self.assertTrue(all(not c["chat_id"].startswith("bot-") for c in data["results"]))
+        self.assertTrue(data["has_next"])  # one real chat left, not the 50 bot chats
+
+
 class GetChatIdsCacheTokenTotalsTests(TestCase):
     """ENG-148: cache_creation_tokens/cache_read_tokens on each result are
     summed live from Message rows, not a cached Chat field -- deliberately

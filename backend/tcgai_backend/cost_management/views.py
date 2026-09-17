@@ -13,6 +13,7 @@ from django.db.models.functions import Coalesce, TruncDate
 from django.utils.timezone import now
 from datetime import timedelta
 from django.contrib.auth.decorators import login_required
+from .month_utils import real_chats
 
 llmprovider = AnthropicAdapter()
 
@@ -178,9 +179,14 @@ def get_chat_ids(request):
         limit = int(request.GET.get("limit", 10))
         offset = int(request.GET.get("offset", 0))
 
-        total = Chat.objects.count()
+        # ENG-149/150: exclude flagged bot chats -- this list isn't
+        # month-scoped like monthly_stats/insights_summary, so without this
+        # they'd be the overwhelming majority of every page (see
+        # flag_automated_chats and month_utils.real_chats).
+        visible_chats = real_chats(Chat.objects.all())
+        total = visible_chats.count()
 
-        chats = Chat.objects.all().order_by('-timestamp')[offset:offset + limit]
+        chats = visible_chats.order_by('-timestamp')[offset:offset + limit]
         results = list(chats.values())
 
         products_shown_counts = {chat["chat_id"]: 0 for chat in results}
