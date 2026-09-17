@@ -873,6 +873,32 @@ CANNED_INSIGHTS = {
 }
 
 
+class ReportInsightsSchemaTests(TestCase):
+    """See the "Deliberately declared LAST" comment on REPORT_INSIGHTS_TOOL:
+    observed live (2026-09-17) that with "headline" as the tool schema's
+    FIRST property, the model wrote a complete, specific headline while
+    every evidence list (top_requests/unmet_needs/product_demand/
+    recommendations) came back empty. Field order in a tool call is a much
+    more mechanical lever than prose instructions, so headline must stay
+    last and the evidence lists must carry a minItems floor."""
+
+    def test_headline_is_the_last_declared_property(self):
+        from .insights_views import REPORT_INSIGHTS_TOOL
+
+        keys = list(REPORT_INSIGHTS_TOOL["input_schema"]["properties"].keys())
+        self.assertEqual(keys[-1], "headline")
+
+    def test_evidence_lists_have_a_minitems_floor(self):
+        from .insights_views import REPORT_INSIGHTS_TOOL
+
+        props = REPORT_INSIGHTS_TOOL["input_schema"]["properties"]
+        self.assertEqual(props["top_requests"]["minItems"], 1)
+        self.assertEqual(props["unmet_needs"]["minItems"], 1)
+        self.assertEqual(props["product_demand"]["minItems"], 1)
+        self.assertEqual(props["recommendations"]["minItems"], 3)
+        self.assertEqual(props["recommendations"]["maxItems"], 6)
+
+
 class InsightsPromptGroundingTests(TestCase):
     """_build_prompt is pure string-building split out of _generate_insights
     precisely so this grounding instruction can be checked without a real
@@ -896,7 +922,23 @@ class InsightsPromptGroundingTests(TestCase):
 
         prompt = _build_prompt(["<conversation id=\"c-1\">hi</conversation>"], "2026-09", 61)
 
-        self.assertIn("must also appear as its own item in unmet_needs or product_demand", prompt)
+        self.assertIn("isn't already one of the items above", prompt)
+
+    def test_prompt_orders_evidence_lists_before_the_headline(self):
+        """Observed live (2026-09-17): with headline declared/instructed first,
+        the model wrote a full, specific headline while top_requests,
+        unmet_needs, product_demand, and recommendations all came back `[]` --
+        a headline with no evidence behind it at all. The prompt must instruct
+        the lists to be filled in before the headline, matching the tool
+        schema's field order (see REPORT_INSIGHTS_TOOL)."""
+        from .insights_views import _build_prompt
+
+        prompt = _build_prompt(["<conversation id=\"c-1\">hi</conversation>"], "2026-09", 61)
+
+        lists_pos = prompt.index("- top_requests:")
+        headline_pos = prompt.index("- headline:")
+        self.assertLess(lists_pos, headline_pos)
+        self.assertIn("this list may never be empty", prompt)
 
     def test_prompt_asks_for_forward_looking_unmet_needs_wording(self):
         from .insights_views import _build_prompt
@@ -910,6 +952,14 @@ class InsightsSummaryTests(TestCase):
     def setUp(self):
         cache.clear()
         self.user = User.objects.create_user(username="owner", password="pw")
+        # cost_commentary is orthogonal to what these tests exercise (the
+        # transcript-based customer-insights narrative) -- stub it so these
+        # tests stay hermetic instead of hitting the real Anthropic/cost
+        # adapter calls _finalize now also triggers. See
+        # InsightsSummaryCostCommentaryTests for dedicated coverage.
+        p = patch("cost_management.insights_views.cost_commentary_for", return_value=None)
+        p.start()
+        self.addCleanup(p.stop)
 
     def tearDown(self):
         cache.clear()
@@ -1518,6 +1568,205 @@ class MonthlyStatsCacheHitRateTests(TestCase):
         self.assertIsNone(d["tokens"]["cache_hit_rate"])
         self.assertEqual(d["tokens"]["cache_creation"], 0)
         self.assertEqual(d["tokens"]["cache_read"], 0)
+
+
+class CostCommentaryTests(TestCase):
+    """Task D: a standing, grounded "why did cost move" narrative alongside
+    the monthly Insights report -- fed real monthly_stats deltas plus a
+    human-maintained CostMethodologyChange changelog, never free speculation.
+    Mirrors insights_views.report_insights's own grounding discipline
+    (_build_prompt pins the model to known-correct numbers)."""
+
+    def setUp(self):
+        cache.clear()
+        self.this_month = _now().date().replace(day=1)
+        self.prev_month_start = (self.this_month - timedelta(days=2)).replace(day=1)
+        # Migration 0014 seeds real CostMethodologyChange rows (dated around
+        # this same investigation) into every test DB -- clear them so these
+        # tests reason about exactly the fixture data they create, regardless
+        # of what real entries exist now or are added later.
+        from cost_management.models import CostMethodologyChange
+        CostMethodologyChange.objects.all().delete()
+
+    def tearDown(self):
+        cache.clear()
+
+    def _patch_stats(self, stats):
+        p = patch("cost_management.cost_commentary._build_stats", return_value=stats)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def _stats(self, **overrides):
+        base = {
+            "month": self.this_month.strftime("%Y-%m"),
+            "cost_source_error": None,
+            "spend": {"total": 15.0, "prev_total": 10.0, "delta_pct": 50.0},
+            "conversations": {"total": 10, "prev_total": 8, "delta_pct": 25.0},
+            "per_conversation": {"cost": 1.5, "prev_cost": 1.25, "cost_delta_pct": 20.0},
+            "tokens": {"cache_hit_rate": 0.8},
+        }
+        base.update(overrides)
+        return base
+
+    def test_changelog_window_includes_prior_and_current_month_only(self):
+        from cost_management.models import CostMethodologyChange
+        from cost_management.cost_commentary import _changelog_for_window
+
+        in_prev = CostMethodologyChange.objects.create(
+            date=self.prev_month_start, description="in prev month", category="measurement_fix")
+        in_current = CostMethodologyChange.objects.create(
+            date=self.this_month, description="in current month", category="new_feature")
+        two_months_back = (self.prev_month_start - timedelta(days=1)).replace(day=1)
+        CostMethodologyChange.objects.create(
+            date=two_months_back, description="too old", category="incident")
+        next_month = (self.this_month.replace(day=28) + timedelta(days=7)).replace(day=1)
+        CostMethodologyChange.objects.create(
+            date=next_month, description="too new", category="config_change")
+
+        result = _changelog_for_window(self.this_month)
+
+        self.assertEqual({c.pk for c in result}, {in_prev.pk, in_current.pk})
+
+    def test_prompt_pins_the_real_numbers_and_lists_changelog_entries(self):
+        from cost_management.cost_commentary import _build_cost_commentary_prompt
+        from cost_management.models import CostMethodologyChange
+
+        change = CostMethodologyChange(
+            date=self.this_month, description="Fixed a cache-token undercount",
+            category="measurement_fix",
+        )
+        prompt = _build_cost_commentary_prompt(self._stats(), [change], "2026-09")
+
+        self.assertIn("15.0", prompt)
+        self.assertIn("50.0", prompt)
+        self.assertIn("Fixed a cache-token undercount", prompt)
+        self.assertIn("Measurement fix", prompt)
+        self.assertIn("NEVER invent a cause", prompt)
+
+    def test_prompt_notes_when_no_changelog_entries_exist(self):
+        from cost_management.cost_commentary import _build_cost_commentary_prompt
+
+        prompt = _build_cost_commentary_prompt(self._stats(), [], "2026-09")
+
+        self.assertIn("none on record", prompt)
+
+    def test_sanitize_drops_malformed_drivers_and_invalid_assessment(self):
+        from cost_management.cost_commentary import _sanitize_commentary
+
+        cleaned = _sanitize_commentary({
+            "headline": 42,
+            "assessment": "definitely_a_conspiracy",
+            "drivers": "not a list",
+        })
+
+        self.assertEqual(cleaned["headline"], "")
+        self.assertEqual(cleaned["assessment"], "insufficient_data")
+        self.assertEqual(cleaned["drivers"], [])
+
+    def test_sanitize_passes_through_well_formed_input(self):
+        from cost_management.cost_commentary import _sanitize_commentary
+
+        core = {
+            "headline": "Cache accounting was fixed; spend looks flat otherwise.",
+            "assessment": "measurement_artifact",
+            "drivers": [{"type": "measurement_artifact", "description": "cache fix", "changelog_date": "2026-09-16"}],
+        }
+        self.assertEqual(_sanitize_commentary(core), core)
+
+    @patch("cost_management.cost_commentary._generate_cost_commentary")
+    def test_cost_commentary_for_returns_generated_and_sanitized_result(self, mock_gen):
+        mock_gen.return_value = {
+            "headline": "Real increase driven by conversation growth.",
+            "assessment": "real_increase",
+            "drivers": [{"type": "real_usage_change", "description": "more conversations"}],
+        }
+        self._patch_stats(self._stats())
+
+        from cost_management.cost_commentary import cost_commentary_for
+        result = cost_commentary_for(self.this_month)
+
+        self.assertEqual(result["assessment"], "real_increase")
+        self.assertIn("generated_at", result)
+        mock_gen.assert_called_once()
+
+    @patch("cost_management.cost_commentary._generate_cost_commentary")
+    def test_cost_commentary_for_caches_within_ttl(self, mock_gen):
+        mock_gen.return_value = {"headline": "x", "assessment": "no_significant_change", "drivers": []}
+        self._patch_stats(self._stats())
+
+        from cost_management.cost_commentary import cost_commentary_for
+        cost_commentary_for(self.this_month)
+        cost_commentary_for(self.this_month)
+
+        mock_gen.assert_called_once()
+
+    @patch("cost_management.cost_commentary._generate_cost_commentary", side_effect=RuntimeError("rate limited"))
+    def test_cost_commentary_for_degrades_gracefully_on_generation_failure(self, mock_gen):
+        self._patch_stats(self._stats())
+
+        from cost_management.cost_commentary import cost_commentary_for
+        result = cost_commentary_for(self.this_month)
+
+        self.assertEqual(result["error"], "rate limited")
+
+    def test_cost_commentary_for_reports_insufficient_data_on_cost_source_error(self):
+        self._patch_stats(self._stats(cost_source_error="boom"))
+
+        from cost_management.cost_commentary import cost_commentary_for
+        result = cost_commentary_for(self.this_month)
+
+        self.assertTrue(result["insufficient_data"])
+
+    def test_cost_commentary_for_reports_insufficient_data_with_zero_conversations(self):
+        self._patch_stats(self._stats(conversations={"total": 0, "prev_total": 0, "delta_pct": None}))
+
+        from cost_management.cost_commentary import cost_commentary_for
+        result = cost_commentary_for(self.this_month)
+
+        self.assertTrue(result["insufficient_data"])
+
+
+class InsightsSummaryCostCommentaryTests(TestCase):
+    """cost_commentary is surfaced inside the same insights_summary endpoint
+    (not a separate feature) -- see insights_views._finalize."""
+
+    def setUp(self):
+        cache.clear()
+        self.user = User.objects.create_user(username="owner", password="pw")
+
+    def tearDown(self):
+        cache.clear()
+
+    @patch("cost_management.insights_views._generate_insights", return_value=dict(CANNED_INSIGHTS))
+    @patch("cost_management.insights_views.cost_commentary_for")
+    def test_insights_summary_includes_cost_commentary(self, mock_commentary, mock_gen):
+        mock_commentary.return_value = {"headline": "spend is flat", "assessment": "no_significant_change", "drivers": []}
+        chat = Chat.objects.create(chat_id="c1", model="claude-haiku-4-5")
+        Message.objects.create(
+            chat=chat, content="hi", llm_formatted_message="{}", returned_content="hello",
+            llm_formatted_returned_message="{}", tokens_in=10, tokens_out=5, model="claude-haiku-4-5",
+        )
+        self.client.force_login(self.user)
+
+        data = self.client.get("/api/cost/insights_summary/").json()
+
+        self.assertEqual(data["cost_commentary"]["headline"], "spend is flat")
+        mock_commentary.assert_called_once()
+
+    @patch("cost_management.insights_views._generate_insights", return_value=dict(CANNED_INSIGHTS))
+    @patch("cost_management.insights_views.cost_commentary_for")
+    def test_cost_commentary_appears_even_while_narrative_is_still_generating(self, mock_commentary, mock_gen):
+        """cost_commentary must not be gated on the (slower, transcript-heavy)
+        customer-insights narrative being ready -- it has its own, cheaper
+        data source and should show up immediately."""
+        mock_commentary.return_value = {"headline": "flat", "assessment": "no_significant_change", "drivers": []}
+        self.client.force_login(self.user)
+        # No conversations seeded -> current-month path falls through to the
+        # "generating"/no-snapshot-yet placeholder for the transcript narrative.
+
+        data = self.client.get("/api/cost/insights_summary/").json()
+
+        self.assertEqual(data["cost_commentary"]["headline"], "flat")
 
 
 class ModelRatesAdapterTests(TestCase):

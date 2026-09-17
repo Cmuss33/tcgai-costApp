@@ -8,6 +8,7 @@ from django.core.cache import cache
 from django.http import JsonResponse
 from django.utils import timezone
 
+from .cost_commentary import cost_commentary_for
 from .models import Chat, InsightsSnapshot
 from .month_utils import (
     conversation_count as _conversation_count,
@@ -375,8 +376,17 @@ def _kick_generation(month_start, is_current):
     return None
 
 
-def _finalize(payload, cached=False):
-    body = {**payload, "available_months": _available_months()}
+def _finalize(payload, month_start, cached=False):
+    # cost_commentary is independent of the transcript-narrative payload
+    # above -- its own data source (monthly_stats) and its own cache, so it
+    # shows up immediately even while the (slower, transcript-heavy)
+    # customer-insights narrative is still generating or reports
+    # insufficient_data.
+    body = {
+        **payload,
+        "available_months": _available_months(),
+        "cost_commentary": cost_commentary_for(month_start),
+    }
     if cached:
         body["cached"] = True
     return JsonResponse(body)
@@ -401,34 +411,35 @@ def insights_summary(request):
             # generated on demand the first time it is requested.
             snapshot = InsightsSnapshot.objects.filter(month=parsed).first()
             if snapshot is not None and not refresh:
-                return _finalize(dict(snapshot.payload), cached=True)
+                return _finalize(dict(snapshot.payload), parsed, cached=True)
             if _conversation_count(parsed) < MIN_CONVERSATIONS:
                 return _finalize(
                     {
                         "insufficient_data": True,
                         "conversations_analyzed": _conversation_count(parsed),
                         "month": parsed.strftime("%Y-%m"),
-                    }
+                    },
+                    parsed,
                 )
             inline = _kick_generation(parsed, is_current=False)
             if inline is not None:
-                return _finalize(inline)
+                return _finalize(inline, parsed)
             if snapshot is not None:
-                return _finalize({**snapshot.payload, "regenerating": True})
-            return _finalize({"generating": True})
+                return _finalize({**snapshot.payload, "regenerating": True}, parsed)
+            return _finalize({"generating": True}, parsed)
 
     # Current month.
     if not refresh:
         fresh = cache.get(CACHE_KEY)
         if fresh is not None:
-            return _finalize(fresh, cached=True)
+            return _finalize(fresh, current_start, cached=True)
 
     snapshot = InsightsSnapshot.objects.filter(month=current_start).first()
     inline = _kick_generation(current_start, is_current=True)  # payload under tests, else None
 
     if inline is not None:
-        return _finalize(inline)
+        return _finalize(inline, current_start)
     if snapshot is not None:
         # Serve the last saved result now; a refresh is running in the background.
-        return _finalize({**snapshot.payload, "regenerating": True})
-    return _finalize({"generating": True})
+        return _finalize({**snapshot.payload, "regenerating": True}, current_start)
+    return _finalize({"generating": True}, current_start)

@@ -72,6 +72,39 @@ class InsightsSnapshot(models.Model):
         return f"InsightsSnapshot {self.month:%Y-%m}"
 
 
+class CostMethodologyChange(models.Model):
+    """A dated, human-maintained log of anything that can move the
+    cost/conversation numbers WITHOUT a real change in customer-facing
+    behavior -- a pricing/scoping bug fix, a new LLM call site added to a
+    surface, a config change, a traffic incident. Feeds cost_commentary.py's
+    grounded narrative so it can say "this delta lines up with a known
+    change on this date" instead of inventing a cause -- the same discipline
+    insights_views.report_insights already applies to conversation counts
+    (see _build_prompt's grounding instruction).
+
+    Add an entry here whenever you ship something that could move these
+    numbers on its own -- this is a process step, not something automation
+    can infer. See the "Why did cost move?" section of CLAUDE.md."""
+
+    CATEGORY_CHOICES = [
+        ("measurement_fix", "Measurement fix"),
+        ("new_feature", "New feature"),
+        ("config_change", "Config change"),
+        ("incident", "Incident"),
+    ]
+
+    date = models.DateField(db_index=True)
+    description = models.TextField()
+    category = models.CharField(max_length=20, choices=CATEGORY_CHOICES)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-date"]
+
+    def __str__(self):
+        return f"{self.date:%Y-%m-%d} [{self.category}] {self.description[:60]}"
+
+
 #TODO: use a unique message_id gotten from claude instead of djagno's
 class Message(models.Model):
     chat = models.ForeignKey(Chat, on_delete=models.CASCADE, to_field='chat_id')

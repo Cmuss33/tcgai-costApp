@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Chat
+from .models import Chat, CostMethodologyChange
 
 
 @admin.register(Chat)
@@ -19,3 +19,11 @@ class ChatAdmin(admin.ModelAdmin):
     list_filter = ("likely_automated", "investigation_status", "model")
     search_fields = ("chat_id", "flag_reason", "github_issue_url", "linear_issue_url")
     readonly_fields = ("chat_id", "timestamp")
+
+
+@admin.register(CostMethodologyChange)
+class CostMethodologyChangeAdmin(admin.ModelAdmin):
+    list_display = ("date", "category", "description")
+    list_filter = ("category",)
+    search_fields = ("description",)
+    ordering = ("-date",)
