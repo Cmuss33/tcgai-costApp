@@ -119,6 +119,22 @@
 }
 .cr__panel .cr__note { font-family: var(--font-m); font-size: 11.5px; color: var(--faint); margin-bottom: 14px; }
 
+/* cost commentary */
+.cr__cost-commentary .cr__badge {
+  font-family: var(--font-m); font-size: 9.5px; letter-spacing: 0.1em; font-weight: 600;
+  padding: 2px 7px; border-radius: 5px; text-transform: uppercase;
+  background: color-mix(in srgb, var(--a-cost) 22%, transparent);
+  color: color-mix(in srgb, var(--a-cost) 75%, white);
+  display: inline-block; margin-bottom: 8px;
+}
+.cr__cost-commentary > p { margin: 0 0 10px; font-size: 13px; color: var(--dim); line-height: 1.5; }
+.cr__drivers { list-style: none; margin: 0; padding: 0; }
+.cr__drivers li {
+  padding: 8px 0; border-top: 1px solid var(--edge); font-size: 12px; color: var(--dim); line-height: 1.5;
+}
+.cr__drivers li:first-child { border-top: 0; }
+.cr__drivers .cr__badge { margin: 0 6px 0 0; vertical-align: 1px; }
+
 .cr__legend { display: flex; gap: 16px; margin-top: 10px; }
 .cr__legend-item {
   display: inline-flex; align-items: center; gap: 6px;

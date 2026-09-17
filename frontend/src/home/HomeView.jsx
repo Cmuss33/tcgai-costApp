@@ -9,6 +9,19 @@ const MAX_POLLS = 20;
 const GAP_LABELS = { catalog: "catalog", policy: "policy", capability: "capability", other: "other" };
 const STATUS_LABELS = { out_of_stock: "out of stock", not_carried: "not carried", unknown: "unknown" };
 const PRIO_LABELS = { high: "High impact", medium: "Medium", low: "Low" };
+const ASSESSMENT_LABELS = {
+  real_increase: "Real increase",
+  real_decrease: "Real decrease",
+  measurement_artifact: "Measurement artifact",
+  mixed: "Mixed",
+  no_significant_change: "No significant change",
+  insufficient_data: "Not enough data",
+};
+const DRIVER_LABELS = {
+  measurement_artifact: "measurement",
+  real_usage_change: "real usage",
+  unexplained: "unexplained",
+};
 
 const nf = new Intl.NumberFormat("en-US");
 const fmtNum = (n) => (n == null ? "—" : nf.format(n));
@@ -310,6 +323,42 @@ function UsageByKeyPanel({ data }) {
   );
 }
 
+function CostCommentaryPanel({ data }) {
+  if (!data || data.insufficient_data) return null;
+  if (data.error) {
+    return (
+      <p className="cr__notice">
+        Couldn&rsquo;t generate a cost explanation this month ({data.error}).
+      </p>
+    );
+  }
+  const drivers = asList(data.drivers);
+  return (
+    <div className="cr__panel cr__cost-commentary" style={{ "--accent": "var(--a-cost)" }}>
+      <h2>Why did cost move?</h2>
+      <div className="cr__note">
+        Grounded in this month&rsquo;s real spend/conversation numbers above and a
+        maintained changelog of known measurement changes &mdash; never a guess.
+      </div>
+      {data.assessment && (
+        <span className="cr__badge">{ASSESSMENT_LABELS[data.assessment] ?? data.assessment}</span>
+      )}
+      {data.headline && <p>{data.headline}</p>}
+      {drivers.length > 0 && (
+        <ul className="cr__drivers">
+          {drivers.map((d, i) => (
+            <li key={i}>
+              <span className="cr__badge">{DRIVER_LABELS[d.type] ?? d.type}</span>{" "}
+              {d.description}
+              {d.changelog_date && <span className="cr__muted"> ({d.changelog_date})</span>}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 /* ---------- insight sections ---------- */
 const asList = (v) => (Array.isArray(v) ? v : []);
 
@@ -606,6 +655,7 @@ function HomeView() {
         )}
         <StatsBand stats={stats} />
         <UsageByKeyPanel data={usageByKey} />
+        <CostCommentaryPanel data={insights?.cost_commentary} />
 
         {insights?.regenerating && (
           <p className="cr__notice">Refreshing this month&rsquo;s insights in the background…</p>
