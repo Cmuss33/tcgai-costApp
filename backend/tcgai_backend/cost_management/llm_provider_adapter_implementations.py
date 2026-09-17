@@ -21,6 +21,21 @@ def cache_creation_tokens(result):
     return creation.get('ephemeral_5m_input_tokens', 0) + creation.get('ephemeral_1h_input_tokens', 0)
 
 
+def _tracked_api_key_ids():
+    """Production Anthropic API key ids (ANTHROPIC_TRACKED_API_KEY_IDS,
+    comma-separated) this app's own traffic is scoped to when deriving
+    token totals and rates. Replaces the old ANTHROPIC_WORKSPACE_ID scoping
+    (ENG-148 follow-up): confirmed live 2026-09-16 that cost_report reports
+    workspace_id: null on cache-cost line items even for keys that ARE
+    workspace-scoped at creation, so workspace_id can't be trusted as a
+    filter dimension -- usage_report's api_key_id is a real, per-request
+    field and (unlike workspace_id) never comes back null. Empty/unset is a
+    safe default -- unscoped, whole-org totals, same as before this feature
+    existed."""
+    raw = os.environ.get('ANTHROPIC_TRACKED_API_KEY_IDS') or ''
+    return [k.strip() for k in raw.split(',') if k.strip()]
+
+
 class AnthropicAdapter(LLMAdapter):
 
     def get_cost(self, year=None, month=None):
@@ -30,16 +45,21 @@ class AnthropicAdapter(LLMAdapter):
         month = int(month) if month else today.month
 
         starting_at = f"{year}-{month:02d}-01T00:00:00Z"
-        workspace_id = os.environ.get('ANTHROPIC_WORKSPACE_ID') or None
 
-        # First, get the cost report. cost_report has no server-side filter,
-        # only group_by, so grouping by both workspace_id and description lets
-        # us scope to one workspace ourselves below while still getting the
-        # per-model/token_type breakdown description grouping provides.
+        # cost_report has no server-side filter and its group_by only ever
+        # accepts "description"/"workspace_id" -- never api_key_id (confirmed
+        # against the real API 2026-09-16) -- so per-key cost scoping isn't
+        # possible here at all. workspace_id grouping was tried previously,
+        # but cost_report reports workspace_id: null on real cache-cost line
+        # items even for workspace-scoped keys, which silently zeroed out
+        # results whenever ANTHROPIC_WORKSPACE_ID was set. This Anthropic org
+        # only holds this app's own keys, so an unscoped, whole-org total is
+        # both the only option cost_report supports and (for this org) the
+        # accurate one.
         url = "https://api.anthropic.com/v1/organizations/cost_report"
         params = {
             "starting_at": starting_at,  # dynamic starting date
-            "group_by[]": ["workspace_id", "description"],
+            "group_by[]": "description",
             "limit": 31
         }
         headers = {
@@ -58,8 +78,6 @@ class AnthropicAdapter(LLMAdapter):
             for day_data in cost_data['data']:
                 day = day_data['starting_at'][:10]  # Extract the date
                 results = day_data['results']
-                if workspace_id:
-                    results = [r for r in results if r.get('workspace_id') == workspace_id]
                 total_cost = round(sum(float(result['amount']) for result in results) / 100, 2) # TODO: Possibly convert to CAD (currently USD)
                 daily_costs.append({'day': day, 'total_cost': total_cost})
                 num_days += 1
@@ -70,7 +88,7 @@ class AnthropicAdapter(LLMAdapter):
             else:
                 monthly_average_cost = 0
 
-            return {"costs": daily_costs, "monthly_average_cost": monthly_average_cost, "workspace_id": workspace_id}
+            return {"costs": daily_costs, "monthly_average_cost": monthly_average_cost}
         else:
             return {"error": response.text}
         
@@ -81,7 +99,7 @@ class AnthropicAdapter(LLMAdapter):
         month = int(month) if month else today.month
 
         starting_at = f"{year}-{month:02d}-01T00:00:00Z"
-        workspace_id = os.environ.get('ANTHROPIC_WORKSPACE_ID') or None
+        tracked_key_ids = _tracked_api_key_ids()
 
         headers = {
             "anthropic-version": "2023-06-01",
@@ -93,13 +111,9 @@ class AnthropicAdapter(LLMAdapter):
 
         params = {
             "starting_at": starting_at,
-            "group_by[]": "workspace_id",
+            "group_by[]": "api_key_id",
             "limit": 31
         }
-        # usage_report/messages supports a real server-side workspace filter,
-        # unlike cost_report which only supports group_by.
-        if workspace_id:
-            params["workspace_ids[]"] = workspace_id
 
         response = requests.get(url, params=params, headers=headers)
 
@@ -116,6 +130,12 @@ class AnthropicAdapter(LLMAdapter):
                 read = 0
                 output_tokens = 0
                 for result in day_data["results"]:
+                    # usage_report has no server-side per-key filter, so scope
+                    # client-side to our own production keys when configured
+                    # (see _tracked_api_key_ids) -- unset means unscoped,
+                    # whole-org totals, same as before this feature existed.
+                    if tracked_key_ids and result.get('api_key_id') not in tracked_key_ids:
+                        continue
                     uncached += result.get('uncached_input_tokens', 0)
                     creation += cache_creation_tokens(result)
                     read += result.get('cache_read_input_tokens', 0)
@@ -139,7 +159,7 @@ class AnthropicAdapter(LLMAdapter):
                     "hit_rate": hit_rate,
                 },
                 "test_tokens": usage_data,
-                "workspace_id": workspace_id,
+                "tracked_key_ids": tracked_key_ids or None,
             }
         else:
             return {"error": response.text}
@@ -153,24 +173,30 @@ class AnthropicAdapter(LLMAdapter):
         month = int(month) if month else today.month
 
         starting_at = f"{year}-{month:02d}-01T00:00:00Z"
-        workspace_id = os.environ.get('ANTHROPIC_WORKSPACE_ID') or None
+        tracked_key_ids = _tracked_api_key_ids()
         headers = {
             "anthropic-version": "2023-06-01",
             "content-type": "application/json",
             "x-api-key": os.environ.get('ANTHROPIC_ADMIN_KEY')
         }
 
+        # cost_report can't group/filter by api_key_id (only description/
+        # workspace_id), so the $ numerator stays whole-org -- see get_cost's
+        # comment for why that's both the only option and, for this
+        # single-tenant org, the accurate one.
         cost_response = requests.get(
             "https://api.anthropic.com/v1/organizations/cost_report",
-            params={"starting_at": starting_at, "group_by[]": ["workspace_id", "description"], "limit": 31},
+            params={"starting_at": starting_at, "group_by[]": "description", "limit": 31},
             headers=headers,
         )
         if cost_response.status_code != 200:
             return {"error": cost_response.text}
 
-        usage_params = {"starting_at": starting_at, "group_by[]": "model", "limit": 31}
-        if workspace_id:
-            usage_params["workspace_ids[]"] = workspace_id
+        # The token denominator, in contrast, CAN be scoped to our own keys
+        # via usage_report's real api_key_id field (see _tracked_api_key_ids)
+        # -- unlike cost_report's workspace_id, which comes back null on real
+        # cache-cost rows even for workspace-scoped keys.
+        usage_params = {"starting_at": starting_at, "group_by[]": ["model", "api_key_id"], "limit": 31}
         usage_response = requests.get(
             "https://api.anthropic.com/v1/organizations/usage_report/messages",
             params=usage_params,
@@ -197,8 +223,6 @@ class AnthropicAdapter(LLMAdapter):
                 model = result.get('model')
                 if not model or result.get('cost_type') != 'tokens':
                     continue
-                if workspace_id and result.get('workspace_id') != workspace_id:
-                    continue
                 amount = float(result.get('amount') or 0)
                 token_type = result.get('token_type')
                 if token_type == 'uncached_input_tokens':
@@ -222,6 +246,8 @@ class AnthropicAdapter(LLMAdapter):
                 model = result.get('model')
                 if not model:
                     continue
+                if tracked_key_ids and result.get('api_key_id') not in tracked_key_ids:
+                    continue
                 input_tokens[model] = input_tokens.get(model, 0) + result.get('uncached_input_tokens', 0)
                 output_tokens[model] = output_tokens.get(model, 0) + result.get('output_tokens', 0)
                 cache_creation_tok[model] = cache_creation_tok.get(model, 0) + cache_creation_tokens(result)
@@ -242,7 +268,7 @@ class AnthropicAdapter(LLMAdapter):
             if entry:
                 rates[model] = entry
 
-        return {"rates": rates, "workspace_id": workspace_id}
+        return {"rates": rates, "tracked_key_ids": tracked_key_ids or None}
 
     def get_usage_by_key(self, year=None, month=None):
         """Per-API-key token usage this month, with names resolved from
@@ -265,7 +291,6 @@ class AnthropicAdapter(LLMAdapter):
         month = int(month) if month else today.month
 
         starting_at = f"{year}-{month:02d}-01T00:00:00Z"
-        workspace_id = os.environ.get('ANTHROPIC_WORKSPACE_ID') or None
 
         headers = {
             "anthropic-version": "2023-06-01",
@@ -273,13 +298,14 @@ class AnthropicAdapter(LLMAdapter):
             "x-api-key": os.environ.get('ANTHROPIC_ADMIN_KEY')
         }
 
+        # Deliberately unscoped -- this view's whole purpose is to show every
+        # key with usage (including one nobody expected), so it must not
+        # filter itself down to only the known production keys.
         usage_params = {
             "starting_at": starting_at,
             "group_by[]": ["api_key_id", "model"],
             "limit": 31,
         }
-        if workspace_id:
-            usage_params["workspace_ids[]"] = workspace_id
 
         usage_response = requests.get(
             "https://api.anthropic.com/v1/organizations/usage_report/messages",
@@ -330,6 +356,4 @@ class AnthropicAdapter(LLMAdapter):
             })
         keys.sort(key=lambda k: k['input_tokens'] + k['output_tokens'], reverse=True)
 
-        return {"keys": keys, "workspace_id": workspace_id}
-
-        return {"rates": rates, "workspace_id": workspace_id}
+        return {"keys": keys}
