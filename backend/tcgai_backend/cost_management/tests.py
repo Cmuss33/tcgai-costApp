@@ -887,6 +887,24 @@ class InsightsPromptGroundingTests(TestCase):
         self.assertIn("never recount or estimate it", prompt)
         self.assertIn("must be exactly 61", prompt)
 
+    def test_prompt_requires_headline_claims_to_be_backed_by_a_structured_item(self):
+        """A headline naming a specific gap/product with no matching
+        unmet_needs/product_demand entry reads as a finding with no evidence
+        behind it -- the store owner relies on that evidence list (with
+        example conversation ids) to trust the finding."""
+        from .insights_views import _build_prompt
+
+        prompt = _build_prompt(["<conversation id=\"c-1\">hi</conversation>"], "2026-09", 61)
+
+        self.assertIn("must also appear as its own item in unmet_needs or product_demand", prompt)
+
+    def test_prompt_asks_for_forward_looking_unmet_needs_wording(self):
+        from .insights_views import _build_prompt
+
+        prompt = _build_prompt(["<conversation id=\"c-1\">hi</conversation>"], "2026-09", 61)
+
+        self.assertIn("forward-looking opportunity", prompt)
+
 
 class InsightsSummaryTests(TestCase):
     def setUp(self):
