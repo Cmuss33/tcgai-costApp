@@ -10,7 +10,7 @@ from django.http import JsonResponse
 from django.utils import timezone
 
 from . import views as base_views
-from .llm_provider_adapter_implementations import app_api_key_ids
+from .llm_provider_adapter_implementations import app_api_key_ids, chat_api_key_ids
 from .models import Chat
 from .month_utils import current_month_start, month_range, parse_month_param, prev_month, real_chats
 
@@ -25,8 +25,13 @@ def _pct_delta(current, previous):
 
 
 def _spend_for(month_start):
-    """(total_usd, [{day, amount}], error) from the Anthropic cost report."""
-    resp = base_views.llmprovider.get_cost(year=month_start.year, month=month_start.month)
+    """(total_usd, [{day, amount}], error) from the Anthropic cost report,
+    scoped to the chat surface's own key(s) -- see chat_api_key_ids -- so
+    AI Search Curator/narrative/report spend can't inflate cost/conversation
+    against a denominator that only ever counts chat conversations."""
+    resp = base_views.llmprovider.get_cost(
+        year=month_start.year, month=month_start.month, key_ids=chat_api_key_ids()
+    )
     if not isinstance(resp, dict) or resp.get("error"):
         err = resp.get("error") if isinstance(resp, dict) else "cost source unavailable"
         return None, [], err
@@ -46,8 +51,12 @@ def _tokens_for(month_start):
     not just uncached input as before. cache_info is {creation_tokens,
     read_tokens, hit_rate} -- defaults to all-zero/None if the adapter
     response doesn't carry a "cache" key at all (an older/unpatched adapter,
-    or an error response), so callers never need a None-check of their own."""
-    resp = base_views.llmprovider.get_tokens(year=month_start.year, month=month_start.month)
+    or an error response), so callers never need a None-check of their own.
+    Scoped to the chat surface's own key(s) -- see chat_api_key_ids -- to
+    stay consistent with _spend_for above."""
+    resp = base_views.llmprovider.get_tokens(
+        year=month_start.year, month=month_start.month, key_ids=chat_api_key_ids()
+    )
     if not isinstance(resp, dict) or resp.get("error"):
         err = resp.get("error") if isinstance(resp, dict) else "usage source unavailable"
         return None, None, [], {"creation_tokens": 0, "read_tokens": 0, "hit_rate": None}, err

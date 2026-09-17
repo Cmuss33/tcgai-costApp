@@ -26,6 +26,27 @@ def app_api_key_ids():
     return [k.strip() for k in raw.split(',') if k.strip()]
 
 
+def chat_api_key_ids():
+    """This app's chat-surface Anthropic API key ids specifically
+    (ANTHROPIC_CHAT_API_KEY_IDS, comma-separated) -- a narrower subset of
+    app_api_key_ids() covering only the chat widget, not the AI Search
+    Curator/narrative/report surfaces the same app also owns keys for
+    (ENG-147's three-way key split). Used by stats_views' cost_pc KPI
+    (spend / chat-conversation count): that denominator only ever counts
+    Chat rows, which only the chat surface's log_message calls create, so
+    the numerator must be scoped the same way or growth on a different
+    surface inflates "cost per conversation" with nothing behind it on the
+    conversation side.
+
+    Falls back to app_api_key_ids() when unset -- a safe default that
+    reproduces the prior (app-wide) behavior until an operator explicitly
+    narrows it to the real chat key id(s) (the pre-rotation shared key plus
+    CLAUDE_API_KEY_CHATBOT's corresponding id)."""
+    raw = os.environ.get('ANTHROPIC_CHAT_API_KEY_IDS') or ''
+    scoped = [k.strip() for k in raw.split(',') if k.strip()]
+    return scoped if scoped else app_api_key_ids()
+
+
 def cache_creation_tokens(result):
     """Sum a usage_report/messages result's cache-write tokens across both
     TTL variants. Confirmed against the live API 2026-09-16: unlike
@@ -42,19 +63,22 @@ def cache_creation_tokens(result):
 
 class AnthropicAdapter(LLMAdapter):
 
-    def get_cost(self, year=None, month=None):
-        """Estimated $ spend for this app's own tracked keys
-        (ANTHROPIC_APP_API_KEY_IDS), this month. cost_report can't be scoped
-        by api_key_id at all (only description/workspace_id), and
-        workspace_id comes back null on real cache-cost line items even for
-        workspace-scoped keys -- so there's no way to pull an accurate
-        per-app dollar total directly from cost_report when the org also
-        holds unrelated projects (confirmed live 2026-09-16). Instead this
-        multiplies get_model_rates' whole-org $/token unit rates (valid
-        regardless of which keys generated the traffic -- see that method's
-        docstring) by this app's own reliably-scoped (via usage_report's
-        real api_key_id field) token counts -- the same estimation
-        technique stats_views.usage_by_key already uses per individual key."""
+    def get_cost(self, year=None, month=None, key_ids=None):
+        """Estimated $ spend for this app's own tracked keys, this month.
+        Scoped to `key_ids` when passed (e.g. chat_api_key_ids(), for a
+        surface-specific total); defaults to app_api_key_ids() -- ALL of
+        this app's keys -- when not passed, unchanged from prior behavior.
+        cost_report can't be scoped by api_key_id at all (only
+        description/workspace_id), and workspace_id comes back null on real
+        cache-cost line items even for workspace-scoped keys -- so there's
+        no way to pull an accurate per-app dollar total directly from
+        cost_report when the org also holds unrelated projects (confirmed
+        live 2026-09-16). Instead this multiplies get_model_rates' whole-org
+        $/token unit rates (valid regardless of which keys generated the
+        traffic -- see that method's docstring) by this app's own
+        reliably-scoped (via usage_report's real api_key_id field) token
+        counts -- the same estimation technique stats_views.usage_by_key
+        already uses per individual key."""
         today = datetime.today()
         year = int(year) if year else today.year
         month = int(month) if month else today.month
@@ -65,7 +89,7 @@ class AnthropicAdapter(LLMAdapter):
         rates = rates_resp.get("rates", {})
 
         starting_at = f"{year}-{month:02d}-01T00:00:00Z"
-        app_key_ids = app_api_key_ids()
+        app_key_ids = key_ids if key_ids is not None else app_api_key_ids()
         headers = {
             "anthropic-version": "2023-06-01",
             "content-type": "application/json",
@@ -101,14 +125,14 @@ class AnthropicAdapter(LLMAdapter):
         monthly_average_cost = round(monthly_cost / num_days, 2) if num_days else 0
         return {"costs": daily_costs, "monthly_average_cost": monthly_average_cost}
         
-    def get_tokens(self, year=None, month=None):
+    def get_tokens(self, year=None, month=None, key_ids=None):
          # Determine year and month
         today = datetime.today()
         year = int(year) if year else today.year
         month = int(month) if month else today.month
 
         starting_at = f"{year}-{month:02d}-01T00:00:00Z"
-        app_key_ids = app_api_key_ids()
+        app_key_ids = key_ids if key_ids is not None else app_api_key_ids()
 
         headers = {
             "anthropic-version": "2023-06-01",
@@ -121,6 +145,8 @@ class AnthropicAdapter(LLMAdapter):
         # This is an absolute total (not a unit rate like get_model_rates),
         # so it must be scoped to this app's own keys when configured -- see
         # _app_api_key_ids for why (the org also holds unrelated projects).
+        # `key_ids`, when passed by the caller, narrows this further (e.g.
+        # to just the chat surface -- see chat_api_key_ids).
         params = {
             "starting_at": starting_at,
             "group_by[]": "api_key_id",

@@ -1262,9 +1262,9 @@ class MonthlyStatsTests(TestCase):
     def _patch_adapter(self):
         # month M (current) totals 15.0 spend / 3000 in / 700 out; month P totals 10.0 / 800 / 200
         cur, prev = self.this_month.month, self.prev_month.month
-        get_cost = MagicMock(side_effect=lambda year, month:
+        get_cost = MagicMock(side_effect=lambda year, month, key_ids=None:
                              _cost_resp(5.0, 7.0, 3.0) if month == cur else _cost_resp(4.0, 6.0))
-        get_tokens = MagicMock(side_effect=lambda year, month:
+        get_tokens = MagicMock(side_effect=lambda year, month, key_ids=None:
                                _tok_resp((1000, 300), (2000, 400)) if month == cur else _tok_resp((800, 200)))
         p = patch.multiple("cost_management.views.llmprovider",
                            get_cost=get_cost, get_tokens=get_tokens)
@@ -1440,6 +1440,29 @@ class MonthlyStatsTests(TestCase):
             os.environ.pop('ANTHROPIC_WORKSPACE_ID', None)
             d = self.client.get("/api/cost/monthly_stats/").json()
         self.assertIsNone(d["workspace_id"])
+
+    def test_spend_and_tokens_are_scoped_to_chat_api_key_ids(self):
+        """cost_pc's numerator (and the tokens/cache-hit-rate KPIs alongside
+        it) must be scoped to the chat surface specifically, not every key
+        this app has ever issued (ANTHROPIC_APP_API_KEY_IDS also covers the
+        AI Search Curator/narrative/report surfaces since ENG-147's 3-way
+        key split) -- otherwise growth on those surfaces inflates
+        cost/conversation with no matching increase in the (chat-only)
+        conversation count."""
+        get_cost, get_tokens = self._patch_adapter()
+        self._seed(3, self.this_month.replace(day=10))
+        self.client.force_login(self.user)
+
+        with patch.dict('os.environ', {
+            'ANTHROPIC_APP_API_KEY_IDS': 'apikey_chat,apikey_search,apikey_report',
+            'ANTHROPIC_CHAT_API_KEY_IDS': 'apikey_chat',
+        }):
+            self.client.get("/api/cost/monthly_stats/")
+
+        for call in get_cost.call_args_list:
+            self.assertEqual(call.kwargs.get("key_ids"), ["apikey_chat"])
+        for call in get_tokens.call_args_list:
+            self.assertEqual(call.kwargs.get("key_ids"), ["apikey_chat"])
 
 
 class MonthlyStatsCacheHitRateTests(TestCase):
@@ -1747,6 +1770,91 @@ class AppApiKeyScopingTests(TestCase):
             result = AnthropicAdapter().get_cost(year=2026, month=8)
 
         self.assertEqual(result["error"], "boom")
+
+
+class ChatApiKeyScopingTests(TestCase):
+    """The "Cost / conversation" KPI (stats_views.cost_pc) divides an
+    Anthropic-spend numerator by a chat-conversation-only denominator
+    (Chat rows only ever come from the chatbot's own log_message calls --
+    the AI Search Curator/narrative/report surfaces never write one). Before
+    this, the numerator was scoped to ANTHROPIC_APP_API_KEY_IDS -- ALL of
+    this app's keys, chat AND search AND report (ENG-147's three-way key
+    split) -- so any growth in curator/narrative/report usage inflated
+    cost/conversation with zero matching increase in the denominator. This
+    adds an optional, narrower key_ids override so the stats endpoint can
+    scope to chat-only keys specifically, while every other/existing caller
+    (which doesn't pass key_ids) keeps the prior app-wide behavior."""
+
+    def test_get_cost_accepts_a_key_ids_override_narrower_than_app_api_key_ids(self):
+        cost_resp = MagicMock(status_code=200, json=lambda: {"data": [{"results": [
+            {"model": "claude-haiku-4-5", "cost_type": "tokens", "token_type": "uncached_input_tokens", "amount": "100.0"},
+        ]}]})
+        rate_usage_resp = MagicMock(status_code=200, json=lambda: {"data": [{"results": [
+            {"model": "claude-haiku-4-5", "uncached_input_tokens": 1_000_000, "output_tokens": 0},
+        ]}]})
+        own_usage_resp = MagicMock(status_code=200, json=lambda: {"data": [{"starting_at": "2026-08-01T00:00:00Z", "results": [
+            {"model": "claude-haiku-4-5", "api_key_id": "apikey_chat", "uncached_input_tokens": 500_000, "output_tokens": 0},
+            {"model": "claude-haiku-4-5", "api_key_id": "apikey_search", "uncached_input_tokens": 9_000_000, "output_tokens": 0},
+        ]}]})
+        from .llm_provider_adapter_implementations import AnthropicAdapter
+        # ANTHROPIC_APP_API_KEY_IDS covers both keys, but the explicit
+        # key_ids override passed to get_cost should win over it.
+        with patch.dict('os.environ', {'ANTHROPIC_APP_API_KEY_IDS': 'apikey_chat,apikey_search'}), \
+             patch("cost_management.llm_provider_adapter_implementations.requests.get",
+                   side_effect=[cost_resp, rate_usage_resp, own_usage_resp]):
+            result = AnthropicAdapter().get_cost(year=2026, month=8, key_ids=["apikey_chat"])
+
+        # $0.000001/token * 500,000 chat-only tokens = $0.50 -- search's 9M excluded.
+        self.assertEqual(result["costs"][0]["total_cost"], 0.5)
+
+    def test_get_cost_falls_back_to_app_api_key_ids_when_key_ids_not_passed(self):
+        """Backward compatibility: every existing caller that doesn't pass
+        key_ids must see exactly the prior app-wide-scoped behavior."""
+        cost_resp = MagicMock(status_code=200, json=lambda: {"data": [{"results": [
+            {"model": "claude-haiku-4-5", "cost_type": "tokens", "token_type": "uncached_input_tokens", "amount": "100.0"},
+        ]}]})
+        rate_usage_resp = MagicMock(status_code=200, json=lambda: {"data": [{"results": [
+            {"model": "claude-haiku-4-5", "uncached_input_tokens": 1_000_000, "output_tokens": 0},
+        ]}]})
+        own_usage_resp = MagicMock(status_code=200, json=lambda: {"data": [{"starting_at": "2026-08-01T00:00:00Z", "results": [
+            {"model": "claude-haiku-4-5", "api_key_id": "apikey_chat", "uncached_input_tokens": 500_000, "output_tokens": 0},
+            {"model": "claude-haiku-4-5", "api_key_id": "apikey_search", "uncached_input_tokens": 9_000_000, "output_tokens": 0},
+        ]}]})
+        from .llm_provider_adapter_implementations import AnthropicAdapter
+        with patch.dict('os.environ', {'ANTHROPIC_APP_API_KEY_IDS': 'apikey_chat,apikey_search'}), \
+             patch("cost_management.llm_provider_adapter_implementations.requests.get",
+                   side_effect=[cost_resp, rate_usage_resp, own_usage_resp]):
+            result = AnthropicAdapter().get_cost(year=2026, month=8)
+
+        # Both keys included -- unchanged prior behavior.
+        self.assertEqual(result["costs"][0]["total_cost"], 9.5)
+
+    def test_get_tokens_accepts_a_key_ids_override(self):
+        resp = MagicMock(status_code=200, json=lambda: {"data": [{"starting_at": "2026-08-01T00:00:00Z", "results": [
+            {"api_key_id": "apikey_chat", "uncached_input_tokens": 100, "output_tokens": 10},
+            {"api_key_id": "apikey_search", "uncached_input_tokens": 900, "output_tokens": 90},
+        ]}]})
+        from .llm_provider_adapter_implementations import AnthropicAdapter
+        with patch.dict('os.environ', {'ANTHROPIC_APP_API_KEY_IDS': 'apikey_chat,apikey_search'}), \
+             patch("cost_management.llm_provider_adapter_implementations.requests.get",
+                   return_value=resp):
+            result = AnthropicAdapter().get_tokens(year=2026, month=8, key_ids=["apikey_chat"])
+
+        self.assertEqual(result["tokens"][0]["input_tokens"], 100)
+
+    def test_chat_api_key_ids_falls_back_to_app_api_key_ids_when_unset(self):
+        from .llm_provider_adapter_implementations import chat_api_key_ids
+        with patch.dict('os.environ', {'ANTHROPIC_APP_API_KEY_IDS': 'apikey_chat,apikey_search'}, clear=False):
+            os.environ.pop('ANTHROPIC_CHAT_API_KEY_IDS', None)
+            self.assertEqual(chat_api_key_ids(), ['apikey_chat', 'apikey_search'])
+
+    def test_chat_api_key_ids_uses_its_own_env_var_when_set(self):
+        from .llm_provider_adapter_implementations import chat_api_key_ids
+        with patch.dict('os.environ', {
+            'ANTHROPIC_APP_API_KEY_IDS': 'apikey_chat,apikey_search,apikey_report',
+            'ANTHROPIC_CHAT_API_KEY_IDS': 'apikey_chat',
+        }):
+            self.assertEqual(chat_api_key_ids(), ['apikey_chat'])
 
 
 class CacheTokenAdapterTests(TestCase):
