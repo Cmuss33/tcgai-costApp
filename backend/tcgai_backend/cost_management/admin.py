@@ -7,6 +7,7 @@ from .models import Chat
 class ChatAdmin(admin.ModelAdmin):
     list_display = (
         "chat_id",
+        "likely_automated",
         "investigation_status",
         "flagged_by",
         "flagged_at",
@@ -14,7 +15,7 @@ class ChatAdmin(admin.ModelAdmin):
         "evaluation_score",
         "timestamp",
     )
-    list_editable = ("investigation_status",)
-    list_filter = ("investigation_status", "model")
+    list_editable = ("investigation_status", "likely_automated")
+    list_filter = ("likely_automated", "investigation_status", "model")
     search_fields = ("chat_id", "flag_reason", "github_issue_url", "linear_issue_url")
     readonly_fields = ("chat_id", "timestamp")

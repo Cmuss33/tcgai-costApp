@@ -5,6 +5,7 @@ from unittest.mock import patch, MagicMock
 import requests
 
 from django.contrib.auth.models import User
+from django.core.management import call_command
 from django.test import TestCase, override_settings
 
 from .models import Chat, Message
@@ -884,6 +885,31 @@ class InsightsSummaryTests(TestCase):
         snap = InsightsSnapshot.objects.get(month=first_of_month)
         self.assertEqual(snap.conversations_analyzed, 6)
 
+    @patch("cost_management.insights_views._generate_insights", return_value=dict(CANNED_INSIGHTS))
+    def test_likely_automated_chats_are_excluded_from_the_sample(self, mock_gen):
+        """ENG-149/150: a high-frequency bot pings the live chat endpoint with
+        the same message on a schedule -- at 200-most-recent-chats-per-month
+        sampling, that traffic alone could crowd out every real conversation
+        from the analysis. Chats flagged likely_automated must never reach
+        the transcript sample or the analyzed count."""
+        self._make_conversations(6, with_customer_text=2, prefix="real")
+        for i in range(20):
+            chat = Chat.objects.create(chat_id=f"bot-{i}", model="claude-haiku-4-5", likely_automated=True)
+            Chat.objects.filter(pk=chat.pk).update(timestamp=_now())
+            Message.objects.create(
+                chat=chat, content="Do you have any Pokemon booster boxes in stock?",
+                llm_formatted_message="{}", returned_content="Yes! We have several in stock.",
+                llm_formatted_returned_message="{}", tokens_in=10, tokens_out=5, model="claude-haiku-4-5",
+            )
+        self.client.force_login(self.user)
+
+        data = self.client.get("/api/cost/insights_summary/").json()
+
+        self.assertEqual(data["conversations_analyzed"], 6)
+        transcripts_seen = mock_gen.call_args[0][0]
+        self.assertEqual(len(transcripts_seen), 6)
+        self.assertTrue(all("booster boxes" not in t for t in transcripts_seen))
+
     @patch(
         "cost_management.insights_views._generate_insights",
         return_value={
@@ -1183,6 +1209,28 @@ class MonthlyStatsTests(TestCase):
         self.assertEqual(len(d["conversations"]["daily"]), 2)
         self.assertEqual(d["conversations"]["busiest"]["count"], 3)
         self.assertEqual(d["per_conversation"]["cost"], round(15.0 / 4, 4))
+
+    def test_likely_automated_chats_are_excluded_from_every_stat(self):
+        """ENG-149/150: a flagged bot chat must not appear in the dashboard's
+        conversation count, daily breakdown, busiest-day, model mix, or the
+        per-conversation cost denominator -- flag_automated_chats sets this
+        field on exactly the chats that corrupted these numbers in prod."""
+        self._patch_adapter()
+        self._seed(3, self.this_month.replace(day=10))  # 3 real conversations
+        for i in range(20):
+            chat = Chat.objects.create(
+                chat_id=f"bot-{i}", model="claude-haiku-4-5",
+                tokens_in=1000, tokens_out=300, likely_automated=True,
+            )
+            Chat.objects.filter(pk=chat.pk).update(timestamp=self.this_month.replace(day=10))
+        self.client.force_login(self.user)
+
+        d = self.client.get("/api/cost/monthly_stats/").json()
+
+        self.assertEqual(d["conversations"]["total"], 3)
+        self.assertEqual(d["conversations"]["busiest"]["count"], 3)
+        self.assertEqual(d["per_conversation"]["cost"], round(15.0 / 3, 4))
+        self.assertEqual(sum(m["conversations"] for m in d["model_mix"]), 3)
 
     def test_eval_coverage(self):
         self._patch_adapter()
@@ -1972,3 +2020,123 @@ class ModelRatesEndpointTests(TestCase):
     def test_invalid_month_is_400(self):
         self.client.force_login(self.user)
         self.assertEqual(self.client.get("/api/cost/get_model_rates/?month=nope").status_code, 400)
+
+
+class FlagAutomatedChatsCommandTests(TestCase):
+    """ENG-149/150: a scripted caller hit the live chat endpoint with the same
+    message every ~6 minutes for weeks, each time as a brand-new chat_id --
+    corrupting both the dashboard's conversation count and the AI-generated
+    monthly insights (which sample the most-recent chats and can be crowded
+    out entirely by a high-frequency bot). This command detects that exact
+    signature after the fact: the same normalized opening message spiking
+    across many distinct chats within one hour is not what a real batch of
+    shoppers looks like."""
+
+    def _chat_with_message(self, chat_id, content, when, model="claude-haiku-4-5"):
+        chat = Chat.objects.create(chat_id=chat_id, model=model)
+        Chat.objects.filter(pk=chat.pk).update(timestamp=when)
+        msg = Message.objects.create(
+            chat=chat, content=content, llm_formatted_message="{}",
+            returned_content="", llm_formatted_returned_message="{}",
+            tokens_in=0, tokens_out=0, model=model,
+        )
+        # Message.timestamp is auto_now_add=True, which silently ignores any
+        # explicit value passed to .create() -- must override post-creation,
+        # same as Chat's timestamp above.
+        Message.objects.filter(pk=msg.pk).update(timestamp=when)
+
+    def test_flags_a_repeated_message_spike_within_the_hour(self):
+        hour = _now().replace(minute=5, second=0, microsecond=0)
+        for i in range(6):
+            self._chat_with_message(f"bot-{i}", "Do you have any Pokemon booster boxes in stock?",
+                                     hour + timedelta(minutes=i))
+
+        call_command("flag_automated_chats")
+
+        flagged = set(Chat.objects.filter(likely_automated=True).values_list("chat_id", flat=True))
+        self.assertEqual(flagged, {f"bot-{i}" for i in range(6)})
+
+    def test_does_not_flag_at_or_below_the_threshold(self):
+        hour = _now().replace(minute=5, second=0, microsecond=0)
+        for i in range(5):
+            self._chat_with_message(f"ok-{i}", "do you have destined rivals booster box in stock?",
+                                     hour + timedelta(minutes=i))
+
+        call_command("flag_automated_chats")
+
+        self.assertEqual(Chat.objects.filter(likely_automated=True).count(), 0)
+
+    def test_matching_is_case_and_whitespace_insensitive(self):
+        hour = _now().replace(minute=5, second=0, microsecond=0)
+        texts = ["Booster box?", "  booster   box?  ", "BOOSTER BOX?", "booster box?", "Booster Box?", "booster box? "]
+        for i, text in enumerate(texts):
+            self._chat_with_message(f"variant-{i}", text, hour + timedelta(minutes=i))
+
+        call_command("flag_automated_chats")
+
+        self.assertEqual(Chat.objects.filter(likely_automated=True).count(), 6)
+
+    def test_does_not_flag_different_messages_even_in_large_volume(self):
+        hour = _now().replace(minute=5, second=0, microsecond=0)
+        for i in range(10):
+            self._chat_with_message(f"real-{i}", f"unique question {i}", hour + timedelta(minutes=i))
+
+        call_command("flag_automated_chats")
+
+        self.assertEqual(Chat.objects.filter(likely_automated=True).count(), 0)
+
+    def test_does_not_flag_across_different_hours(self):
+        base = _now().replace(minute=5, second=0, microsecond=0)
+        for i in range(3):
+            self._chat_with_message(f"h1-{i}", "same question", base + timedelta(minutes=i))
+        for i in range(3):
+            self._chat_with_message(f"h2-{i}", "same question", base + timedelta(hours=2, minutes=i))
+
+        call_command("flag_automated_chats")
+
+        self.assertEqual(Chat.objects.filter(likely_automated=True).count(), 0)
+
+    def test_dry_run_makes_no_changes(self):
+        hour = _now().replace(minute=5, second=0, microsecond=0)
+        for i in range(6):
+            self._chat_with_message(f"dry-{i}", "same spammy question",
+                                     hour + timedelta(minutes=i))
+
+        call_command("flag_automated_chats", "--dry-run")
+
+        self.assertEqual(Chat.objects.filter(likely_automated=True).count(), 0)
+
+    def test_is_idempotent_across_repeated_runs(self):
+        hour = _now().replace(minute=5, second=0, microsecond=0)
+        for i in range(6):
+            self._chat_with_message(f"idem-{i}", "same spammy question",
+                                     hour + timedelta(minutes=i))
+
+        call_command("flag_automated_chats")
+        first_run_flagged = set(Chat.objects.filter(likely_automated=True).values_list("chat_id", flat=True))
+        call_command("flag_automated_chats")
+        second_run_flagged = set(Chat.objects.filter(likely_automated=True).values_list("chat_id", flat=True))
+
+        self.assertEqual(first_run_flagged, second_run_flagged)
+        self.assertEqual(len(first_run_flagged), 6)
+
+    def test_ignores_chats_with_no_messages(self):
+        chat = Chat.objects.create(chat_id="empty-chat", model="claude-haiku-4-5")
+        Chat.objects.filter(pk=chat.pk).update(timestamp=_now())
+
+        call_command("flag_automated_chats")  # must not raise
+
+        self.assertFalse(Chat.objects.get(chat_id="empty-chat").likely_automated)
+
+    def test_manual_admin_override_is_not_reverted_by_a_clean_rerun(self):
+        chat = Chat.objects.create(chat_id="manually-flagged", model="claude-haiku-4-5", likely_automated=True)
+        Chat.objects.filter(pk=chat.pk).update(timestamp=_now())
+        Message.objects.create(
+            chat=chat, content="a totally normal one-off question", llm_formatted_message="{}",
+            returned_content="", llm_formatted_returned_message="{}",
+            tokens_in=0, tokens_out=0, model="claude-haiku-4-5", timestamp=_now(),
+        )
+
+        call_command("flag_automated_chats")
+
+        self.assertTrue(Chat.objects.get(chat_id="manually-flagged").likely_automated)

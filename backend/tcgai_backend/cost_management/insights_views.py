@@ -16,6 +16,7 @@ from .month_utils import (
     month_range as _month_range,
     next_month as _next_month,
     parse_month_param as _parse_month_param,
+    real_chats as _real_chats,
 )
 
 MAX_CONVERSATIONS = 200
@@ -256,9 +257,9 @@ def _generate_insights(transcripts, month_label):
 def _build_payload(month_start):
     label = month_start.strftime("%Y-%m")
     start_dt, end_dt = _month_range(month_start)
-    all_chats = Chat.objects.filter(
+    all_chats = _real_chats(Chat.objects.filter(
         timestamp__gte=start_dt, timestamp__lt=end_dt
-    ).order_by("-timestamp")
+    )).order_by("-timestamp")
     total = all_chats.count()
     if total < MIN_CONVERSATIONS:
         return {"insufficient_data": True, "conversations_analyzed": total, "month": label}
@@ -308,8 +309,7 @@ def _maybe_backfill_previous_month(current_start):
     previous = (current_start - timedelta(days=1)).replace(day=1)
     if InsightsSnapshot.objects.filter(month=previous).exists():
         return
-    start_dt, end_dt = _month_range(previous)
-    if Chat.objects.filter(timestamp__gte=start_dt, timestamp__lt=end_dt).count() < MIN_CONVERSATIONS:
+    if _conversation_count(previous) < MIN_CONVERSATIONS:
         return
     payload = _build_payload(previous)
     if not payload.get("insufficient_data") and not payload.get("error"):
