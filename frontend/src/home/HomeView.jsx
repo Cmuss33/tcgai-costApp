@@ -511,12 +511,6 @@ function HomeView() {
     loadInsights({ month: arg });
     loadUsageByKey(arg);
   };
-  const refreshCurrent = () => {
-    const arg = shown?.is_current ? undefined : shown?.value;
-    loadStats(arg, true);
-    loadInsights({ month: arg, refresh: true });
-    loadUsageByKey(arg, true);
-  };
 
   if (firstLoad) {
     return (
@@ -635,11 +629,6 @@ function HomeView() {
           </p>
         )}
 
-        {showFindings && (
-          <button className="cr__refresh" onClick={refreshCurrent}>
-            Refresh
-          </button>
-        )}
       </div>
     </div>
   );
