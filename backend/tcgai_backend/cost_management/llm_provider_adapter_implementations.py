@@ -7,7 +7,7 @@ from datetime import datetime
 load_dotenv()
 
 
-def _app_api_key_ids():
+def app_api_key_ids():
     """This app's own Anthropic API key ids (ANTHROPIC_APP_API_KEY_IDS,
     comma-separated) -- past and present production keys, e.g. the old
     pre-rotation shared key plus the current per-surface keys. Used to scope
@@ -18,7 +18,10 @@ def _app_api_key_ids():
     Empty/unset is a safe default -- unscoped, whole-org totals. Deliberately
     NOT used by get_model_rates, which derives a $/token unit rate rather
     than an absolute total -- see WholeOrgRateDerivationTests for why that
-    one must stay whole-org."""
+    one must stay whole-org. Also used by stats_views.usage_by_key to filter
+    the per-key panel down to keys this app actually issued -- the adapter's
+    own get_usage_by_key stays unscoped (see its docstring); the filter is
+    applied by the caller instead."""
     raw = os.environ.get('ANTHROPIC_APP_API_KEY_IDS') or ''
     return [k.strip() for k in raw.split(',') if k.strip()]
 
@@ -62,7 +65,7 @@ class AnthropicAdapter(LLMAdapter):
         rates = rates_resp.get("rates", {})
 
         starting_at = f"{year}-{month:02d}-01T00:00:00Z"
-        app_key_ids = _app_api_key_ids()
+        app_key_ids = app_api_key_ids()
         headers = {
             "anthropic-version": "2023-06-01",
             "content-type": "application/json",
@@ -105,7 +108,7 @@ class AnthropicAdapter(LLMAdapter):
         month = int(month) if month else today.month
 
         starting_at = f"{year}-{month:02d}-01T00:00:00Z"
-        app_key_ids = _app_api_key_ids()
+        app_key_ids = app_api_key_ids()
 
         headers = {
             "anthropic-version": "2023-06-01",
@@ -286,6 +289,13 @@ class AnthropicAdapter(LLMAdapter):
         with get_model_rates' per-model rates themselves (see
         stats_views.usage_by_key) -- it's necessarily an estimate (this
         month's blended rate x tokens), not Anthropic's own billed figure.
+
+        Each by_model entry carries uncached_input_tokens/output_tokens/
+        cache_creation_tokens/cache_read_tokens separately (not blended)
+        so a caller can price each token type at its own rate the way
+        get_cost does. A key's top-level "input_tokens" is the TRUE input
+        total (uncached + both cache directions, ENG-148) -- matching
+        get_tokens' definition -- not just the uncached slice.
         """
         today = datetime.today()
         year = int(year) if year else today.year
@@ -316,7 +326,7 @@ class AnthropicAdapter(LLMAdapter):
         if usage_response.status_code != 200:
             return {"error": usage_response.text}
 
-        totals = {}  # api_key_id -> {model: {input_tokens, output_tokens}}
+        totals = {}  # api_key_id -> {model: {uncached_input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens}}
         for day_data in usage_response.json().get('data', []):
             for result in day_data.get('results', []):
                 kid = result.get('api_key_id')
@@ -324,9 +334,16 @@ class AnthropicAdapter(LLMAdapter):
                     continue
                 model = result.get('model') or 'unknown'
                 by_model = totals.setdefault(kid, {})
-                entry = by_model.setdefault(model, {'input_tokens': 0, 'output_tokens': 0})
-                entry['input_tokens'] += result.get('uncached_input_tokens', 0)
+                entry = by_model.setdefault(model, {
+                    'uncached_input_tokens': 0,
+                    'output_tokens': 0,
+                    'cache_creation_tokens': 0,
+                    'cache_read_tokens': 0,
+                })
+                entry['uncached_input_tokens'] += result.get('uncached_input_tokens', 0)
                 entry['output_tokens'] += result.get('output_tokens', 0)
+                entry['cache_creation_tokens'] += cache_creation_tokens(result)
+                entry['cache_read_tokens'] += result.get('cache_read_input_tokens', 0)
 
         # Best-effort name resolution -- a broken/unreachable /api_keys call
         # shouldn't sink usage data that already succeeded, so degrade to
@@ -346,7 +363,10 @@ class AnthropicAdapter(LLMAdapter):
 
         keys = []
         for kid, by_model in totals.items():
-            input_tokens = sum(m['input_tokens'] for m in by_model.values())
+            input_tokens = sum(
+                m['uncached_input_tokens'] + m['cache_creation_tokens'] + m['cache_read_tokens']
+                for m in by_model.values()
+            )
             output_tokens = sum(m['output_tokens'] for m in by_model.values())
             keys.append({
                 "api_key_id": kid,

@@ -10,6 +10,7 @@ from django.http import JsonResponse
 from django.utils import timezone
 
 from . import views as base_views
+from .llm_provider_adapter_implementations import app_api_key_ids
 from .models import Chat
 from .month_utils import current_month_start, month_range, parse_month_param, prev_month, real_chats
 
@@ -73,14 +74,28 @@ def _chat_qs(month_start):
 
 
 def _daily_counts(month_start):
+    """Per-day conversation counts, split real vs. automated/bot (ENG-149/150
+    -- see month_utils.real_chats). `count` is real-only, same population as
+    the "Conversations" KPI/busiest-day logic below -- `bot_count` is purely
+    additive so the stacked-bar chart can show both without changing what
+    counts as a "real" conversation anywhere else."""
+    start_dt, end_dt = month_range(month_start)
     rows = (
-        _chat_qs(month_start)
+        Chat.objects.filter(timestamp__gte=start_dt, timestamp__lt=end_dt)
         .annotate(day=TruncDate("timestamp"))
-        .values("day")
+        .values("day", "likely_automated")
         .annotate(count=Count("chat_id"))
         .order_by("day")
     )
-    return [{"day": r["day"].isoformat(), "count": r["count"]} for r in rows]
+    by_day = {}
+    for r in rows:
+        day = r["day"].isoformat()
+        entry = by_day.setdefault(day, {"day": day, "count": 0, "bot_count": 0})
+        if r["likely_automated"]:
+            entry["bot_count"] += r["count"]
+        else:
+            entry["count"] += r["count"]
+    return [by_day[day] for day in sorted(by_day)]
 
 
 def _daily_mean(qs, field):
@@ -267,7 +282,19 @@ def usage_by_key(request):
     estimate -- Anthropic's cost_report has no per-key breakdown to derive a
     real billed figure from (see get_usage_by_key's docstring) -- so this
     multiplies each key's per-model token counts by that model's blended
-    rate rather than reporting Anthropic's own billed cost per key."""
+    rate rather than reporting Anthropic's own billed cost per key. Each
+    token type (uncached input, output, cache creation, cache read) is
+    priced at its own rate -- lumping cache tokens into the plain input/
+    output rate (or dropping them) would misprice every cache-hit turn and
+    make this panel's rows unable to sum to the "Anthropic spend" KPI,
+    which does include cache costs (see get_cost).
+
+    Unlike get_usage_by_key itself (deliberately unscoped -- it exists to
+    show every key with usage, expected or not), this VIEW filters its
+    output down to ANTHROPIC_APP_API_KEY_IDS when set, the same key-id list
+    that already scopes the "Anthropic spend"/"Tokens" KPIs -- so this
+    panel reads as "usage by *our* keys" rather than every key in the org,
+    and its rows sum to the same spend total shown elsewhere on the page."""
     refresh = request.GET.get("refresh", "").lower() in ("1", "true", "yes")
     month_param = request.GET.get("month")
     current = current_month_start()
@@ -295,13 +322,20 @@ def usage_by_key(request):
     rates_resp = base_views.llmprovider.get_model_rates(year=month_start.year, month=month_start.month)
     rates = rates_resp.get("rates", {}) if isinstance(rates_resp, dict) else {}
 
+    allowed_ids = set(app_api_key_ids())
+    raw_keys = usage_resp.get("keys", [])
+    if allowed_ids:
+        raw_keys = [k for k in raw_keys if k["api_key_id"] in allowed_ids]
+
     keys = []
-    for k in usage_resp.get("keys", []):
+    for k in raw_keys:
         estimated_cost = 0.0
         for model, tok in k.get("by_model", {}).items():
             rate = rates.get(model, {})
-            estimated_cost += tok.get("input_tokens", 0) * rate.get("input", 0)
+            estimated_cost += tok.get("uncached_input_tokens", 0) * rate.get("input", 0)
             estimated_cost += tok.get("output_tokens", 0) * rate.get("output", 0)
+            estimated_cost += tok.get("cache_creation_tokens", 0) * rate.get("cache_creation", 0)
+            estimated_cost += tok.get("cache_read_tokens", 0) * rate.get("cache_read", 0)
         keys.append({
             "api_key_id": k["api_key_id"],
             "name": k["name"],

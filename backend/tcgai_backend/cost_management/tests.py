@@ -1269,6 +1269,28 @@ class MonthlyStatsTests(TestCase):
         self.assertEqual(d["conversations"]["busiest"]["count"], 3)
         self.assertEqual(d["per_conversation"]["cost"], round(15.0 / 3, 4))
         self.assertEqual(sum(m["conversations"] for m in d["model_mix"]), 3)
+        # The bot chats still show up in the daily breakdown's bot_count --
+        # for the stacked bar chart -- without inflating `count` (real).
+        day10 = next(day for day in d["conversations"]["daily"] if day["count"] or day["bot_count"])
+        self.assertEqual(day10["count"], 3)
+        self.assertEqual(day10["bot_count"], 20)
+
+    def test_daily_breakdown_splits_real_and_bot_counts_per_day(self):
+        """The 'Conversations per day' stacked bar needs both series -- a day
+        with only bot traffic must still appear (count=0, bot_count>0)."""
+        self._patch_adapter()
+        self._seed(2, self.this_month.replace(day=5))  # real only
+        bot_only_chat = Chat.objects.create(chat_id="bot-only", model="claude-haiku-4-5", likely_automated=True)
+        Chat.objects.filter(pk=bot_only_chat.pk).update(timestamp=self.this_month.replace(day=6))
+        self.client.force_login(self.user)
+
+        daily = self.client.get("/api/cost/monthly_stats/").json()["conversations"]["daily"]
+        by_day = {row["day"]: row for row in daily}
+
+        day5 = self.this_month.replace(day=5).date().isoformat()
+        day6 = self.this_month.replace(day=6).date().isoformat()
+        self.assertEqual(by_day[day5], {"day": day5, "count": 2, "bot_count": 0})
+        self.assertEqual(by_day[day6], {"day": day6, "count": 0, "bot_count": 1})
 
     def test_eval_coverage(self):
         self._patch_adapter()
@@ -1820,9 +1842,39 @@ class UsageByKeyAdapterTests(TestCase):
         self.assertEqual(by_id["apikey_chat"]["name"], "prod-shopify-chatbot")
         self.assertEqual(by_id["apikey_chat"]["input_tokens"], 1500)
         self.assertEqual(by_id["apikey_chat"]["output_tokens"], 300)
-        self.assertEqual(by_id["apikey_chat"]["by_model"]["claude-sonnet-5"]["input_tokens"], 500)
+        self.assertEqual(by_id["apikey_chat"]["by_model"]["claude-sonnet-5"]["uncached_input_tokens"], 500)
         self.assertEqual(by_id["apikey_search"]["name"], "prod-shopify-search")
         self.assertEqual(by_id["apikey_search"]["input_tokens"], 300)
+
+    def test_input_tokens_include_cache_creation_and_read_eng_148(self):
+        """Same gap ENG-148 fixed for get_tokens: a key's input_tokens must
+        be the TRUE total (uncached + both cache directions), not just the
+        uncached slice -- otherwise per-key rows can never sum to the
+        dashboard's own "Anthropic spend"/"Tokens" KPIs, which do include
+        cache tokens."""
+        usage_resp = MagicMock(status_code=200, json=lambda: {"data": [{"results": [{
+            "api_key_id": "apikey_chat",
+            "model": "claude-haiku-4-5",
+            "uncached_input_tokens": 1000,
+            "cache_creation": {"ephemeral_5m_input_tokens": 300, "ephemeral_1h_input_tokens": 200},
+            "cache_read_input_tokens": 4000,
+            "output_tokens": 50,
+        }]}]})
+        keys_resp = MagicMock(status_code=200, json=lambda: self._keys_list())
+        from .llm_provider_adapter_implementations import AnthropicAdapter
+        with patch(
+            "cost_management.llm_provider_adapter_implementations.requests.get",
+            side_effect=[usage_resp, keys_resp],
+        ):
+            result = AnthropicAdapter().get_usage_by_key(year=2026, month=9)
+
+        key = result["keys"][0]
+        # 1000 uncached + 300 + 200 cache creation + 4000 cache read = 5500
+        self.assertEqual(key["input_tokens"], 5500)
+        by_model = key["by_model"]["claude-haiku-4-5"]
+        self.assertEqual(by_model["uncached_input_tokens"], 1000)
+        self.assertEqual(by_model["cache_creation_tokens"], 500)
+        self.assertEqual(by_model["cache_read_tokens"], 4000)
 
     def test_unknown_key_id_falls_back_to_the_raw_id_as_name(self):
         usage_resp = MagicMock(status_code=200, json=lambda: self._usage_report(
@@ -1944,7 +1996,10 @@ class UsageByKeyEndpointTests(TestCase):
             usage_return={"keys": [{
                 "api_key_id": "apikey_chat", "name": "prod-shopify-chatbot",
                 "input_tokens": 1_000_000, "output_tokens": 500_000,
-                "by_model": {"claude-haiku-4-5": {"input_tokens": 1_000_000, "output_tokens": 500_000}},
+                "by_model": {"claude-haiku-4-5": {
+                    "uncached_input_tokens": 1_000_000, "output_tokens": 500_000,
+                    "cache_creation_tokens": 0, "cache_read_tokens": 0,
+                }},
             }], "workspace_id": "wrkspc_target"},
             rates_return={"rates": {"claude-haiku-4-5": {"input": 0.000001, "output": 0.000005}}},
         )
@@ -1955,12 +2010,40 @@ class UsageByKeyEndpointTests(TestCase):
         self.assertEqual(d["keys"][0]["estimated_cost"], 1.0 + 2.5)
         self.assertTrue(d["estimated"])
 
+    def test_estimated_cost_includes_cache_creation_and_read_at_their_own_rates(self):
+        """Per-key cost must price cache tokens at their own rate (not the
+        plain input rate, and not drop them) -- otherwise this panel's rows
+        can never sum to the "Anthropic spend" KPI, which does include
+        cache costs (see get_cost)."""
+        self._patch_adapter(
+            usage_return={"keys": [{
+                "api_key_id": "apikey_chat", "name": "prod-shopify-chatbot",
+                "input_tokens": 1_000_100, "output_tokens": 0,
+                "by_model": {"claude-haiku-4-5": {
+                    "uncached_input_tokens": 100, "output_tokens": 0,
+                    "cache_creation_tokens": 1_000, "cache_read_tokens": 999_000,
+                }},
+            }]},
+            rates_return={"rates": {"claude-haiku-4-5": {
+                "input": 0.000001, "cache_creation": 0.00000125, "cache_read": 0.0000001,
+            }}},
+        )
+        self.client.force_login(self.user)
+
+        d = self.client.get("/api/cost/get_usage_by_key/").json()
+
+        # 100*0.000001 + 1000*0.00000125 + 999000*0.0000001 = 0.0001 + 0.00125 + 0.0999
+        self.assertEqual(d["keys"][0]["estimated_cost"], round(0.0001 + 0.00125 + 0.0999, 2))
+
     def test_missing_rate_for_a_model_contributes_zero_not_an_error(self):
         self._patch_adapter(
             usage_return={"keys": [{
                 "api_key_id": "apikey_x", "name": "x",
                 "input_tokens": 100, "output_tokens": 100,
-                "by_model": {"some-unpriced-model": {"input_tokens": 100, "output_tokens": 100}},
+                "by_model": {"some-unpriced-model": {
+                    "uncached_input_tokens": 100, "output_tokens": 100,
+                    "cache_creation_tokens": 0, "cache_read_tokens": 0,
+                }},
             }], "workspace_id": None},
             rates_return={"rates": {}},
         )
@@ -1969,6 +2052,50 @@ class UsageByKeyEndpointTests(TestCase):
         d = self.client.get("/api/cost/get_usage_by_key/").json()
 
         self.assertEqual(d["keys"][0]["estimated_cost"], 0.0)
+
+    def test_filters_to_app_api_key_ids_when_set(self):
+        """The panel must read as 'usage by our keys', not every key in the
+        org -- unlike get_usage_by_key itself, which stays deliberately
+        unscoped (see UsageByKeyAdapterTests)."""
+        self._patch_adapter(
+            usage_return={"keys": [
+                {"api_key_id": "apikey_ours", "name": "prod-shopify-chatbot",
+                 "input_tokens": 100, "output_tokens": 0,
+                 "by_model": {"m": {"uncached_input_tokens": 100, "output_tokens": 0,
+                                     "cache_creation_tokens": 0, "cache_read_tokens": 0}}},
+                {"api_key_id": "apikey_unrelated", "name": "budget-etl-key",
+                 "input_tokens": 5_000_000, "output_tokens": 0,
+                 "by_model": {"m": {"uncached_input_tokens": 5_000_000, "output_tokens": 0,
+                                     "cache_creation_tokens": 0, "cache_read_tokens": 0}}},
+            ]},
+            rates_return={"rates": {"m": {"input": 0.000001}}},
+        )
+        self.client.force_login(self.user)
+
+        with patch.dict('os.environ', {'ANTHROPIC_APP_API_KEY_IDS': 'apikey_ours'}):
+            d = self.client.get("/api/cost/get_usage_by_key/").json()
+
+        self.assertEqual([k["api_key_id"] for k in d["keys"]], ["apikey_ours"])
+
+    def test_shows_every_key_when_app_api_key_ids_unset(self):
+        self._patch_adapter(
+            usage_return={"keys": [
+                {"api_key_id": "apikey_a", "name": "a", "input_tokens": 10, "output_tokens": 0,
+                 "by_model": {"m": {"uncached_input_tokens": 10, "output_tokens": 0,
+                                     "cache_creation_tokens": 0, "cache_read_tokens": 0}}},
+                {"api_key_id": "apikey_b", "name": "b", "input_tokens": 5, "output_tokens": 0,
+                 "by_model": {"m": {"uncached_input_tokens": 5, "output_tokens": 0,
+                                     "cache_creation_tokens": 0, "cache_read_tokens": 0}}},
+            ]},
+            rates_return={"rates": {"m": {"input": 0.0}}},
+        )
+        self.client.force_login(self.user)
+
+        with patch.dict('os.environ', {}, clear=False):
+            os.environ.pop('ANTHROPIC_APP_API_KEY_IDS', None)
+            d = self.client.get("/api/cost/get_usage_by_key/").json()
+
+        self.assertEqual({k["api_key_id"] for k in d["keys"]}, {"apikey_a", "apikey_b"})
 
     def test_usage_source_error_returns_empty_keys_with_error(self):
         self._patch_adapter(usage_return={"error": "boom"})
@@ -2000,9 +2127,11 @@ class UsageByKeyEndpointTests(TestCase):
         self._patch_adapter(
             usage_return={"keys": [
                 {"api_key_id": "small", "name": "small", "input_tokens": 10, "output_tokens": 0,
-                 "by_model": {"m": {"input_tokens": 10, "output_tokens": 0}}},
+                 "by_model": {"m": {"uncached_input_tokens": 10, "output_tokens": 0,
+                                     "cache_creation_tokens": 0, "cache_read_tokens": 0}}},
                 {"api_key_id": "big", "name": "big", "input_tokens": 1000, "output_tokens": 0,
-                 "by_model": {"m": {"input_tokens": 1000, "output_tokens": 0}}},
+                 "by_model": {"m": {"uncached_input_tokens": 1000, "output_tokens": 0,
+                                     "cache_creation_tokens": 0, "cache_read_tokens": 0}}},
             ], "workspace_id": None},
             rates_return={"rates": {"m": {"input": 0.01, "output": 0.0}}},
         )

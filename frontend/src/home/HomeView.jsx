@@ -55,11 +55,10 @@ const shortDay = (iso) => {
   return `${MONTHS[m - 1]} ${d}`;
 };
 
-function BarSeries({ data, color, w = 1000, h = 118 }) {
+function StackedBarSeries({ data, colorReal, colorBot, w = 1000, h = 118 }) {
   if (!data || data.length === 0) return null;
-  const counts = data.map((d) => d.count);
-  const max = Math.max(...counts, 1);
-  const hi = counts.indexOf(Math.max(...counts));
+  const totals = data.map((d) => d.count + (d.bot_count || 0));
+  const max = Math.max(...totals, 1);
   const gap = 2;
   const plotH = h - 20; // room for date labels
   const bw = (w - gap * (data.length - 1)) / data.length;
@@ -68,18 +67,19 @@ function BarSeries({ data, color, w = 1000, h = 118 }) {
     <svg viewBox={`0 0 ${w} ${h}`} width="100%" height={h}>
       <line className="cr-grid" x1="0" x2={w} y1={plotH * 0.5} y2={plotH * 0.5} />
       {data.map((d, i) => {
-        const bh = Math.max(2, (d.count / max) * (plotH - 3));
+        const bot = d.bot_count || 0;
+        const total = d.count + bot;
+        const totalH = total > 0 ? Math.max(2, (total / max) * (plotH - 3)) : 0;
+        const realH = total > 0 ? (d.count / total) * totalH : 0;
+        const botH = totalH - realH;
+        const x = i * (bw + gap);
+        const realY = plotH - realH;
+        const botY = realY - botH;
         return (
-          <rect
-            key={i}
-            x={i * (bw + gap)}
-            y={plotH - bh}
-            width={bw}
-            height={bh}
-            rx="2"
-            fill={color}
-            fillOpacity={i === hi ? 1 : 0.55}
-          />
+          <g key={i}>
+            {realH > 0 && <rect x={x} y={realY} width={bw} height={realH} rx="2" fill={colorReal} />}
+            {botH > 0 && <rect x={x} y={botY} width={bw} height={botH} rx="2" fill={colorBot} />}
+          </g>
         );
       })}
       {data.map((d, i) =>
@@ -165,6 +165,7 @@ function StatsBand({ stats }) {
   const tk = stats.tokens || {};
   const spendSeries = (s.daily || []).map((d) => d.amount);
   const convDaily = c.daily || [];
+  const botTotal = convDaily.reduce((sum, d) => sum + (d.bot_count || 0), 0);
   const tokSeries = (tk.daily || []).map((d) => d.input + d.output);
 
   return (
@@ -242,10 +243,21 @@ function StatsBand({ stats }) {
         <div className="cr__panel" style={{ "--accent": "var(--a-convo)" }}>
           <h2>Conversations per day</h2>
           <div className="cr__note">
-            {fmtNum(c.total)} total this month
+            {fmtNum(c.total)} real conversations this month
             {c.busiest ? ` · busiest ${shortDay(c.busiest.day)} (${c.busiest.count})` : ""}
+            {botTotal > 0 ? ` · ${fmtNum(botTotal)} automated/bot excluded from those totals` : ""}
           </div>
-          <BarSeries data={convDaily} color="#2fe0a6" />
+          <StackedBarSeries data={convDaily} colorReal="#2fe0a6" colorBot="#6c7488" />
+          {botTotal > 0 && (
+            <div className="cr__legend">
+              <span className="cr__legend-item">
+                <i style={{ background: "#2fe0a6" }} /> real
+              </span>
+              <span className="cr__legend-item">
+                <i style={{ background: "#6c7488" }} /> automated / bot
+              </span>
+            </div>
+          )}
         </div>
       )}
     </>
@@ -265,7 +277,7 @@ function UsageByKeyPanel({ data }) {
         model) &mdash; Anthropic&rsquo;s cost report can&rsquo;t break down by individual
         key, only by workspace.
       </div>
-      <table className="cr__want">
+      <table className="cr__want cr__keys">
         <tbody>
           {keys.map((k) => (
             <tr key={k.api_key_id}>

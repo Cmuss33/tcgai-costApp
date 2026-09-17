@@ -119,6 +119,13 @@
 }
 .cr__panel .cr__note { font-family: var(--font-m); font-size: 11.5px; color: var(--faint); margin-bottom: 14px; }
 
+.cr__legend { display: flex; gap: 16px; margin-top: 10px; }
+.cr__legend-item {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-family: var(--font-m); font-size: 11px; color: var(--dim);
+}
+.cr__legend-item i { width: 9px; height: 9px; border-radius: 2px; }
+
 .cr__trend-sub {
   font-family: var(--font-m); font-size: 10.5px; letter-spacing: 0.1em; text-transform: uppercase;
   color: var(--dim); margin: 12px 0 4px; display: flex; gap: 8px; align-items: center;
@@ -182,6 +189,13 @@
 .cr__want .cr__st::before { content: "\25CF  "; color: var(--bad); }
 .cr__want .cr__st.nc::before { color: var(--a-cost); }
 .cr__want-more { font-family: var(--font-m); font-size: 11.5px; color: var(--faint); margin-top: 12px; }
+
+/* usage-by-key: token counts run long ("3.27M in / 745K out") -- override
+   the want-list column's narrow fixed width so the row stays on one line,
+   and drop the want-list's "flagged item" bullet, which doesn't apply to a
+   plain cost figure. */
+.cr__keys .cr__x { width: auto; white-space: nowrap; }
+.cr__keys .cr__st::before { content: none; }
 
 /* recommendations */
 .cr__rec {
