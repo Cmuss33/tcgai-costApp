@@ -529,6 +529,12 @@ function HomeView() {
     loadInsights({ month: arg });
     loadUsageByKey(arg);
   };
+  const refreshCurrent = () => {
+    const arg = shown?.is_current ? undefined : shown?.value;
+    loadStats(arg, true);
+    loadInsights({ month: arg, refresh: true });
+    loadUsageByKey(arg, true);
+  };
 
   if (firstLoad) {
     return (
@@ -615,7 +621,7 @@ function HomeView() {
 
         {pollTimedOut && (
           <p className="cr__notice">
-            Still working on it — this is taking longer than usual. Check back in a moment.
+            Still working on it — this is taking longer than usual. Use Refresh in a moment.
           </p>
         )}
 
@@ -647,6 +653,11 @@ function HomeView() {
           </p>
         )}
 
+        {showFindings && (
+          <button className="cr__refresh" onClick={refreshCurrent}>
+            Refresh
+          </button>
+        )}
       </div>
     </div>
   );

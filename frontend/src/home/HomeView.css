@@ -225,6 +225,13 @@
   margin-top: 26px; padding-top: 16px; border-top: 1px solid var(--edge);
   font-family: var(--font-m); font-size: 11px; color: var(--faint); line-height: 1.7;
 }
+.cr__refresh {
+  margin-top: 8px; padding: 6px 14px; font-family: var(--font-m); font-size: 11px;
+  color: var(--text); background: var(--panel-2); border: 1px solid var(--edge);
+  border-radius: 8px; cursor: pointer;
+}
+.cr__refresh:hover { border-color: var(--a-eval); color: var(--a-eval); }
+
 /* states */
 .cr__notice {
   margin-top: 16px; padding: 12px 16px; border: 1px solid #f2d98a55;
