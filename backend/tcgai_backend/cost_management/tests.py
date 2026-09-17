@@ -1401,70 +1401,33 @@ class ModelRatesAdapterTests(TestCase):
         self.assertEqual(result["error"], "boom")
 
 
-class WholeOrgScopingTests(TestCase):
-    """get_cost/get_tokens/get_model_rates are always whole-org now, with no
-    per-key or per-workspace filter anywhere. Two prior scoping attempts were
-    tried and retracted here, in order:
+class WholeOrgRateDerivationTests(TestCase):
+    """get_model_rates computes a $/token UNIT rate, not an absolute total --
+    Anthropic prices uniformly per model/token-type across the whole org, so
+    the rate is accurate regardless of which keys generated the underlying
+    cost_report/usage_report rows. Both sides of the ratio must cover the
+    SAME population for the arithmetic to be valid at all, and since
+    cost_report can never be scoped by api_key_id (only description/
+    workspace_id -- and workspace_id comes back null on real cache-cost line
+    items even for workspace-scoped keys, confirmed live 2026-09-16), the
+    only valid choice for BOTH sides is whole-org, unfiltered.
 
-    1. ANTHROPIC_WORKSPACE_ID (removed): cost_report reports workspace_id:
-       null on real cache-cost line items even for keys that ARE
-       workspace-scoped at creation (confirmed live 2026-09-16), which
-       silently zeroed out every Haiku cache rate whenever it was set.
+    A prior attempt to scope just the usage_report side to a handful of
+    tracked key ids was tried and retracted the same day: right after
+    rotating to new per-surface keys, most of the month's spend still sat
+    under the old, now-untracked shared key, so a tiny token denominator
+    (hours of the new keys' traffic) divided into a full month of org-wide
+    cost inflated one real chat's estimated cost by ~1500x ($35 for ~53k
+    Haiku tokens that should cost about $0.02).
 
-    2. ANTHROPIC_TRACKED_API_KEY_IDS, filtering get_tokens/get_model_rates'
-       usage_report side only (also removed, same day): cost_report can
-       never be scoped by key at all, so its $ numerator always stayed
-       whole-org -- filtering only the usage_report token denominator to a
-       handful of keys broke the numerator/denominator match a real rate
-       requires. Caught live right after rotating to new per-surface keys:
-       most of the month's spend still sat under the now-untracked old
-       shared key, so the tiny denominator (~hours of the new keys' traffic)
-       against the full month's org-wide cost inflated one real chat's
-       estimated cost by ~1500x ($35 for ~53k Haiku tokens that should cost
-       about $0.02). See test_get_model_rates_stays_accurate_across_a_key_rotation
-       below for the regression test this incident produced.
+    Contrast with AppApiKeyScopingTests below: get_cost/get_tokens report
+    ABSOLUTE totals, which DO need real scoping -- unlike a unit rate, an
+    absolute total is directly inflated by any unrelated project sharing the
+    same Anthropic org (confirmed live 2026-09-16: this org also holds
+    Claude Code, BudgetETL, Photo Highlights, and Roblox Studio workspaces,
+    unknown to this app until that point)."""
 
-    get_usage_by_key is unaffected by any of this -- it was always meant to
-    show every key with usage, unscoped, by design."""
-
-    def test_get_cost_is_whole_org_and_groups_by_description_only(self):
-        resp = MagicMock(status_code=200, json=lambda: {"data": [{"starting_at": "2026-08-01T00:00:00Z", "results": [
-            {"amount": "100.0", "cost_type": "tokens", "model": "claude-haiku-4-5", "token_type": "uncached_input_tokens"},
-            {"amount": "900.0", "cost_type": "tokens", "model": "claude-haiku-4-5", "token_type": "output_tokens"},
-        ]}]})
-        from .llm_provider_adapter_implementations import AnthropicAdapter
-        with patch(
-            "cost_management.llm_provider_adapter_implementations.requests.get", return_value=resp
-        ) as mock_get:
-            result = AnthropicAdapter().get_cost(year=2026, month=8)
-
-        self.assertEqual(result["costs"][0]["total_cost"], 10.0)
-        self.assertNotIn("workspace_id", result)
-        params = mock_get.call_args.kwargs["params"]
-        self.assertEqual(params["group_by[]"], "description")
-
-    def test_get_tokens_ignores_tracked_key_ids_and_the_legacy_workspace_env_var(self):
-        resp = MagicMock(status_code=200, json=lambda: {"data": [{"starting_at": "2026-08-01T00:00:00Z", "results": [
-            {"api_key_id": "apikey_a", "uncached_input_tokens": 100, "output_tokens": 10},
-            {"api_key_id": "apikey_b", "uncached_input_tokens": 900, "output_tokens": 90},
-        ]}]})
-        from .llm_provider_adapter_implementations import AnthropicAdapter
-        with patch.dict('os.environ', {
-            'ANTHROPIC_TRACKED_API_KEY_IDS': 'apikey_a',
-            'ANTHROPIC_WORKSPACE_ID': 'wrkspc_target',
-        }), patch("cost_management.llm_provider_adapter_implementations.requests.get",
-                  return_value=resp) as mock_get:
-            result = AnthropicAdapter().get_tokens(year=2026, month=8)
-
-        # Both keys' tokens counted -- not just apikey_a's.
-        self.assertEqual(result["tokens"][0]["input_tokens"], 1000)
-        self.assertEqual(result["tokens"][0]["output_tokens"], 100)
-        self.assertNotIn("workspace_id", result)
-        self.assertNotIn("tracked_key_ids", result)
-        params = mock_get.call_args.kwargs["params"]
-        self.assertNotIn("workspace_ids[]", params)
-
-    def test_get_model_rates_ignores_tracked_key_ids_and_the_legacy_workspace_env_var(self):
+    def test_get_model_rates_ignores_app_api_key_ids_and_the_legacy_workspace_env_var(self):
         cost_resp = MagicMock(status_code=200, json=lambda: {"data": [{"results": [
             {"model": "claude-haiku-4-5", "cost_type": "tokens", "token_type": "uncached_input_tokens", "amount": "100.0"},
         ]}]})
@@ -1474,7 +1437,7 @@ class WholeOrgScopingTests(TestCase):
         ]}]})
         from .llm_provider_adapter_implementations import AnthropicAdapter
         with patch.dict('os.environ', {
-            'ANTHROPIC_TRACKED_API_KEY_IDS': 'apikey_target',
+            'ANTHROPIC_APP_API_KEY_IDS': 'apikey_target',
             'ANTHROPIC_WORKSPACE_ID': 'wrkspc_target',
         }), patch("cost_management.llm_provider_adapter_implementations.requests.get",
                   side_effect=[cost_resp, usage_resp]) as mock_get:
@@ -1482,8 +1445,6 @@ class WholeOrgScopingTests(TestCase):
 
         # $1.00 whole-org / 10,000,000 whole-org tokens -- both keys counted.
         self.assertEqual(result["rates"]["claude-haiku-4-5"]["input"], 1.0 / 10_000_000)
-        self.assertNotIn("workspace_id", result)
-        self.assertNotIn("tracked_key_ids", result)
         cost_call_params = mock_get.call_args_list[0].kwargs["params"]
         self.assertEqual(cost_call_params["group_by[]"], "description")
         usage_call_params = mock_get.call_args_list[1].kwargs["params"]
@@ -1504,13 +1465,131 @@ class WholeOrgScopingTests(TestCase):
             {"model": "claude-haiku-4-5", "api_key_id": "apikey_new_tracked", "uncached_input_tokens": 1_000_000, "output_tokens": 0},
         ]}]})
         from .llm_provider_adapter_implementations import AnthropicAdapter
-        with patch.dict('os.environ', {'ANTHROPIC_TRACKED_API_KEY_IDS': 'apikey_new_tracked'}), \
+        with patch.dict('os.environ', {'ANTHROPIC_APP_API_KEY_IDS': 'apikey_new_tracked'}), \
              patch("cost_management.llm_provider_adapter_implementations.requests.get",
                    side_effect=[cost_resp, usage_resp]):
             result = AnthropicAdapter().get_model_rates(year=2026, month=9)
 
         # $1000 / 1,000,000,000 whole-org tokens = $1/1M, not $1000/1M.
         self.assertEqual(result["rates"]["claude-haiku-4-5"]["input"], 1000.0 / 1_000_000_000)
+
+
+class AppApiKeyScopingTests(TestCase):
+    """get_cost/get_tokens report ABSOLUTE totals for this app specifically,
+    scoped to ANTHROPIC_APP_API_KEY_IDS (comma-separated Anthropic
+    api_key_id values -- this app's own production keys, past and present,
+    e.g. the old pre-rotation shared key plus the current per-surface
+    keys). Unlike get_model_rates' $/token unit rate (see
+    WholeOrgRateDerivationTests above), an absolute total is directly
+    inflated by any other project sharing the same Anthropic org --
+    confirmed live 2026-09-16 when a "whole-org" total included ~$37 from
+    four unrelated workspaces (Claude Code, BudgetETL, Photo Highlights,
+    Roblox Studio) this app had no way to know about.
+
+    get_tokens filters usage_report rows by api_key_id directly (a real,
+    reliable, per-request field -- unlike workspace_id, which comes back
+    null on real cache-cost rows). get_cost cannot do the equivalent against
+    cost_report (no per-key filter exists there at all), so it instead
+    multiplies get_model_rates' whole-org $/token rates by this app's own
+    api_key_id-scoped token counts -- the same estimation technique
+    stats_views.usage_by_key already uses per individual key, applied here
+    to the whole app's total."""
+
+    def test_get_tokens_filters_to_app_api_key_ids_when_set(self):
+        resp = MagicMock(status_code=200, json=lambda: {"data": [{"starting_at": "2026-08-01T00:00:00Z", "results": [
+            {"api_key_id": "apikey_target", "uncached_input_tokens": 100, "output_tokens": 10},
+            {"api_key_id": "apikey_other", "uncached_input_tokens": 900, "output_tokens": 90},
+        ]}]})
+        from .llm_provider_adapter_implementations import AnthropicAdapter
+        with patch.dict('os.environ', {'ANTHROPIC_APP_API_KEY_IDS': 'apikey_target'}), \
+             patch("cost_management.llm_provider_adapter_implementations.requests.get",
+                   return_value=resp):
+            result = AnthropicAdapter().get_tokens(year=2026, month=8)
+
+        self.assertEqual(result["tokens"][0]["input_tokens"], 100)
+        self.assertEqual(result["tokens"][0]["output_tokens"], 10)
+
+    def test_get_tokens_includes_every_key_by_default(self):
+        resp = MagicMock(status_code=200, json=lambda: {"data": [{"starting_at": "2026-08-01T00:00:00Z", "results": [
+            {"api_key_id": "apikey_a", "uncached_input_tokens": 100, "output_tokens": 10},
+            {"api_key_id": "apikey_b", "uncached_input_tokens": 900, "output_tokens": 90},
+        ]}]})
+        from .llm_provider_adapter_implementations import AnthropicAdapter
+        with patch.dict('os.environ', {}, clear=False):
+            os.environ.pop('ANTHROPIC_APP_API_KEY_IDS', None)
+            with patch("cost_management.llm_provider_adapter_implementations.requests.get",
+                       return_value=resp):
+                result = AnthropicAdapter().get_tokens(year=2026, month=8)
+
+        self.assertEqual(result["tokens"][0]["input_tokens"], 1000)
+
+    def test_get_tokens_ignores_the_legacy_workspace_env_var(self):
+        resp = MagicMock(status_code=200, json=lambda: {"data": []})
+        from .llm_provider_adapter_implementations import AnthropicAdapter
+        with patch.dict('os.environ', {'ANTHROPIC_WORKSPACE_ID': 'wrkspc_target'}), \
+             patch("cost_management.llm_provider_adapter_implementations.requests.get",
+                   return_value=resp) as mock_get:
+            AnthropicAdapter().get_tokens(year=2026, month=8)
+
+        params = mock_get.call_args.kwargs["params"]
+        self.assertNotIn("workspace_ids[]", params)
+
+    def test_get_cost_estimates_from_rates_times_app_key_tokens(self):
+        cost_resp = MagicMock(status_code=200, json=lambda: {"data": [{"results": [
+            {"model": "claude-haiku-4-5", "cost_type": "tokens", "token_type": "uncached_input_tokens", "amount": "100.0"},
+        ]}]})
+        rate_usage_resp = MagicMock(status_code=200, json=lambda: {"data": [{"results": [
+            {"model": "claude-haiku-4-5", "uncached_input_tokens": 1_000_000, "output_tokens": 0},
+        ]}]})
+        own_usage_resp = MagicMock(status_code=200, json=lambda: {"data": [{"starting_at": "2026-08-01T00:00:00Z", "results": [
+            {"model": "claude-haiku-4-5", "api_key_id": "apikey_target", "uncached_input_tokens": 500_000, "output_tokens": 0},
+            {"model": "claude-haiku-4-5", "api_key_id": "apikey_other", "uncached_input_tokens": 9_000_000, "output_tokens": 0},
+        ]}]})
+        from .llm_provider_adapter_implementations import AnthropicAdapter
+        with patch.dict('os.environ', {'ANTHROPIC_APP_API_KEY_IDS': 'apikey_target'}), \
+             patch("cost_management.llm_provider_adapter_implementations.requests.get",
+                   side_effect=[cost_resp, rate_usage_resp, own_usage_resp]):
+            result = AnthropicAdapter().get_cost(year=2026, month=8)
+
+        # rate = $1.00 / 1,000,000 = $0.000001/token; our tokens = 500,000
+        self.assertEqual(result["costs"][0]["total_cost"], 0.5)
+        self.assertEqual(result["monthly_average_cost"], 0.5)
+
+    def test_get_cost_excludes_unrelated_workspaces_traffic_when_scoped(self):
+        """The live incident regression: this org also holds unrelated
+        Claude Code / BudgetETL / Photo Highlights / Roblox Studio traffic
+        -- a huge unrelated key's tokens must never leak into this app's
+        cost total just because they share the same Anthropic org."""
+        cost_resp = MagicMock(status_code=200, json=lambda: {"data": [{"results": [
+            {"model": "claude-haiku-4-5", "cost_type": "tokens", "token_type": "uncached_input_tokens", "amount": "100.0"},
+        ]}]})
+        rate_usage_resp = MagicMock(status_code=200, json=lambda: {"data": [{"results": [
+            {"model": "claude-haiku-4-5", "uncached_input_tokens": 1_000_000, "output_tokens": 0},
+        ]}]})
+        own_usage_resp = MagicMock(status_code=200, json=lambda: {"data": [{"starting_at": "2026-08-01T00:00:00Z", "results": [
+            {"model": "claude-haiku-4-5", "api_key_id": "apikey_old_chatbot", "uncached_input_tokens": 20_000_000, "output_tokens": 0},
+            {"model": "claude-haiku-4-5", "api_key_id": "apikey_new_chatbot", "uncached_input_tokens": 1_000_000, "output_tokens": 0},
+            {"model": "claude-haiku-4-5", "api_key_id": "apikey_roblox_unrelated", "uncached_input_tokens": 50_000_000, "output_tokens": 0},
+        ]}]})
+        from .llm_provider_adapter_implementations import AnthropicAdapter
+        with patch.dict('os.environ', {'ANTHROPIC_APP_API_KEY_IDS': 'apikey_old_chatbot,apikey_new_chatbot'}), \
+             patch("cost_management.llm_provider_adapter_implementations.requests.get",
+                   side_effect=[cost_resp, rate_usage_resp, own_usage_resp]):
+            result = AnthropicAdapter().get_cost(year=2026, month=8)
+
+        # (20M + 1M) tokens * $0.000001/token = $21.00 -- Roblox's 50M excluded.
+        self.assertEqual(result["costs"][0]["total_cost"], 21.0)
+
+    def test_get_cost_propagates_rate_derivation_errors(self):
+        cost_resp = MagicMock(status_code=500, text="boom")
+        from .llm_provider_adapter_implementations import AnthropicAdapter
+        with patch(
+            "cost_management.llm_provider_adapter_implementations.requests.get",
+            side_effect=[cost_resp],
+        ):
+            result = AnthropicAdapter().get_cost(year=2026, month=8)
+
+        self.assertEqual(result["error"], "boom")
 
 
 class CacheTokenAdapterTests(TestCase):

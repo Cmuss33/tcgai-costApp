@@ -7,6 +7,22 @@ from datetime import datetime
 load_dotenv()
 
 
+def _app_api_key_ids():
+    """This app's own Anthropic API key ids (ANTHROPIC_APP_API_KEY_IDS,
+    comma-separated) -- past and present production keys, e.g. the old
+    pre-rotation shared key plus the current per-surface keys. Used to scope
+    get_cost/get_tokens' ABSOLUTE totals to just this app, since this
+    Anthropic org also holds other, unrelated projects/workspaces
+    (confirmed live 2026-09-16: Claude Code, BudgetETL, Photo Highlights,
+    Roblox Studio) whose traffic must never leak into this app's numbers.
+    Empty/unset is a safe default -- unscoped, whole-org totals. Deliberately
+    NOT used by get_model_rates, which derives a $/token unit rate rather
+    than an absolute total -- see WholeOrgRateDerivationTests for why that
+    one must stay whole-org."""
+    raw = os.environ.get('ANTHROPIC_APP_API_KEY_IDS') or ''
+    return [k.strip() for k in raw.split(',') if k.strip()]
+
+
 def cache_creation_tokens(result):
     """Sum a usage_report/messages result's cache-write tokens across both
     TTL variants. Confirmed against the live API 2026-09-16: unlike
@@ -24,58 +40,63 @@ def cache_creation_tokens(result):
 class AnthropicAdapter(LLMAdapter):
 
     def get_cost(self, year=None, month=None):
-        # Determine year and month
+        """Estimated $ spend for this app's own tracked keys
+        (ANTHROPIC_APP_API_KEY_IDS), this month. cost_report can't be scoped
+        by api_key_id at all (only description/workspace_id), and
+        workspace_id comes back null on real cache-cost line items even for
+        workspace-scoped keys -- so there's no way to pull an accurate
+        per-app dollar total directly from cost_report when the org also
+        holds unrelated projects (confirmed live 2026-09-16). Instead this
+        multiplies get_model_rates' whole-org $/token unit rates (valid
+        regardless of which keys generated the traffic -- see that method's
+        docstring) by this app's own reliably-scoped (via usage_report's
+        real api_key_id field) token counts -- the same estimation
+        technique stats_views.usage_by_key already uses per individual key."""
         today = datetime.today()
         year = int(year) if year else today.year
         month = int(month) if month else today.month
 
-        starting_at = f"{year}-{month:02d}-01T00:00:00Z"
+        rates_resp = self.get_model_rates(year=year, month=month)
+        if not isinstance(rates_resp, dict) or rates_resp.get("error"):
+            return {"error": rates_resp.get("error") if isinstance(rates_resp, dict) else "rate derivation failed"}
+        rates = rates_resp.get("rates", {})
 
-        # cost_report has no server-side filter and its group_by only ever
-        # accepts "description"/"workspace_id" -- never api_key_id (confirmed
-        # against the real API 2026-09-16) -- so per-key cost scoping isn't
-        # possible here at all. workspace_id grouping was tried previously,
-        # but cost_report reports workspace_id: null on real cache-cost line
-        # items even for workspace-scoped keys, which silently zeroed out
-        # results whenever ANTHROPIC_WORKSPACE_ID was set. This Anthropic org
-        # only holds this app's own keys, so an unscoped, whole-org total is
-        # both the only option cost_report supports and (for this org) the
-        # accurate one.
-        url = "https://api.anthropic.com/v1/organizations/cost_report"
-        params = {
-            "starting_at": starting_at,  # dynamic starting date
-            "group_by[]": "description",
-            "limit": 31
-        }
+        starting_at = f"{year}-{month:02d}-01T00:00:00Z"
+        app_key_ids = _app_api_key_ids()
         headers = {
             "anthropic-version": "2023-06-01",
             "content-type": "application/json",
             "x-api-key": os.environ.get('ANTHROPIC_ADMIN_KEY')
         }
-
-        response = requests.get(url, params=params, headers=headers)
-
-        if response.status_code == 200:
-            cost_data = response.json()
-            daily_costs = []
-            num_days = 0
-            monthly_cost = 0
-            for day_data in cost_data['data']:
-                day = day_data['starting_at'][:10]  # Extract the date
-                results = day_data['results']
-                total_cost = round(sum(float(result['amount']) for result in results) / 100, 2) # TODO: Possibly convert to CAD (currently USD)
-                daily_costs.append({'day': day, 'total_cost': total_cost})
-                num_days += 1
-                monthly_cost += total_cost
-
-            if num_days > 0:
-                monthly_average_cost = round(monthly_cost / num_days, 2)
-            else:
-                monthly_average_cost = 0
-
-            return {"costs": daily_costs, "monthly_average_cost": monthly_average_cost}
-        else:
+        response = requests.get(
+            "https://api.anthropic.com/v1/organizations/usage_report/messages",
+            params={"starting_at": starting_at, "group_by[]": ["model", "api_key_id"], "limit": 31},
+            headers=headers,
+        )
+        if response.status_code != 200:
             return {"error": response.text}
+
+        daily_costs = []
+        num_days = 0
+        monthly_cost = 0
+        for day_data in response.json().get('data', []):
+            day = day_data['starting_at'][:10]
+            day_cost = 0.0
+            for result in day_data.get('results', []):
+                if app_key_ids and result.get('api_key_id') not in app_key_ids:
+                    continue
+                model_rates = rates.get(result.get('model'), {})
+                day_cost += result.get('uncached_input_tokens', 0) * model_rates.get('input', 0)
+                day_cost += result.get('output_tokens', 0) * model_rates.get('output', 0)
+                day_cost += cache_creation_tokens(result) * model_rates.get('cache_creation', 0)
+                day_cost += result.get('cache_read_input_tokens', 0) * model_rates.get('cache_read', 0)
+            day_cost = round(day_cost, 2)
+            daily_costs.append({'day': day, 'total_cost': day_cost})
+            num_days += 1
+            monthly_cost += day_cost
+
+        monthly_average_cost = round(monthly_cost / num_days, 2) if num_days else 0
+        return {"costs": daily_costs, "monthly_average_cost": monthly_average_cost}
         
     def get_tokens(self, year=None, month=None):
          # Determine year and month
@@ -84,6 +105,7 @@ class AnthropicAdapter(LLMAdapter):
         month = int(month) if month else today.month
 
         starting_at = f"{year}-{month:02d}-01T00:00:00Z"
+        app_key_ids = _app_api_key_ids()
 
         headers = {
             "anthropic-version": "2023-06-01",
@@ -93,12 +115,9 @@ class AnthropicAdapter(LLMAdapter):
 
         url = "https://api.anthropic.com/v1/organizations/usage_report/messages"
 
-        # Whole-org, unfiltered. A per-key filter here was tried and
-        # retracted 2026-09-16: right after rotating to new per-surface
-        # keys, filtering token counts down to just those keys while
-        # cost_report's $ side stayed whole-org (it has no per-key filter at
-        # all) inflated one chat's estimated cost ~1500x, because the new
-        # keys had only hours of traffic against a full month of org spend.
+        # This is an absolute total (not a unit rate like get_model_rates),
+        # so it must be scoped to this app's own keys when configured -- see
+        # _app_api_key_ids for why (the org also holds unrelated projects).
         params = {
             "starting_at": starting_at,
             "group_by[]": "api_key_id",
@@ -120,6 +139,8 @@ class AnthropicAdapter(LLMAdapter):
                 read = 0
                 output_tokens = 0
                 for result in day_data["results"]:
+                    if app_key_ids and result.get('api_key_id') not in app_key_ids:
+                        continue
                     uncached += result.get('uncached_input_tokens', 0)
                     creation += cache_creation_tokens(result)
                     read += result.get('cache_read_input_tokens', 0)
