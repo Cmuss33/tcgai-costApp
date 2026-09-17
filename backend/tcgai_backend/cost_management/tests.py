@@ -898,6 +898,66 @@ class ReportInsightsSchemaTests(TestCase):
         self.assertEqual(props["recommendations"]["minItems"], 3)
         self.assertEqual(props["recommendations"]["maxItems"], 6)
 
+    def test_evidence_lists_have_a_maxitems_cap(self):
+        """Bounding worst-case output size reduces how often a rich report
+        exceeds INSIGHTS_MAX_TOKENS and gets cut off mid-generation (see
+        InsightsTruncationTests)."""
+        from .insights_views import (
+            MAX_DEMAND_ITEMS, MAX_TOP_REQUESTS, MAX_UNMET_NEEDS, REPORT_INSIGHTS_TOOL,
+        )
+
+        props = REPORT_INSIGHTS_TOOL["input_schema"]["properties"]
+        self.assertEqual(props["top_requests"]["maxItems"], MAX_TOP_REQUESTS)
+        self.assertEqual(props["unmet_needs"]["maxItems"], MAX_UNMET_NEEDS)
+        self.assertEqual(props["product_demand"]["maxItems"], MAX_DEMAND_ITEMS)
+
+
+class InsightsTruncationTests(TestCase):
+    """Observed live (2026-09-17): a tool call truncated at max_tokens
+    produced a structurally-plausible but garbled result (see
+    InsightsSummaryTests.test_malformed_model_output_is_sanitized_not_passed_through
+    for the exact shape) rather than an obvious error. stop_reason ==
+    "max_tokens" is the one reliable signal from the API itself that a
+    result can't be trusted -- _generate_insights must treat it as a
+    failure, not silently return the partial block.input."""
+
+    def _mock_client(self, stop_reason, content=None):
+        message = MagicMock(stop_reason=stop_reason, content=content or [])
+        client = MagicMock()
+        client.messages.create.return_value = message
+        return client
+
+    def test_raises_when_truncated_at_max_tokens(self):
+        from .insights_views import _generate_insights
+
+        client = self._mock_client("max_tokens")
+        with patch("anthropic.Anthropic", return_value=client):
+            with self.assertRaises(ValueError):
+                _generate_insights(["<conversation id=\"c-1\">hi</conversation>"], "2026-09", 61)
+
+    def test_returns_the_tool_input_on_a_normal_completion(self):
+        from .insights_views import _generate_insights
+
+        block = MagicMock(type="tool_use", input={"headline": "ok"})
+        block.name = "report_insights"  # MagicMock(name=...) sets the mock's own repr name, not this attr
+        client = self._mock_client("tool_use", content=[block])
+        with patch("anthropic.Anthropic", return_value=client):
+            result = _generate_insights(["<conversation id=\"c-1\">hi</conversation>"], "2026-09", 61)
+
+        self.assertEqual(result, {"headline": "ok"})
+
+    def test_requests_the_larger_token_budget(self):
+        from .insights_views import INSIGHTS_MAX_TOKENS, _generate_insights
+
+        block = MagicMock(type="tool_use", input={})
+        block.name = "report_insights"
+        client = self._mock_client("tool_use", content=[block])
+        with patch("anthropic.Anthropic", return_value=client):
+            _generate_insights(["<conversation id=\"c-1\">hi</conversation>"], "2026-09", 61)
+
+        self.assertEqual(client.messages.create.call_args.kwargs["max_tokens"], INSIGHTS_MAX_TOKENS)
+        self.assertGreater(INSIGHTS_MAX_TOKENS, 4096)
+
 
 class InsightsPromptGroundingTests(TestCase):
     """_build_prompt is pure string-building split out of _generate_insights
@@ -1081,6 +1141,13 @@ class InsightsSummaryTests(TestCase):
             [{"gap": "Grading questions", "gap_type": "capability", "count": 2,
               "summary": "Bot defers to email.", "examples": ["conv-3"]}],
         )
+        # This fixture's shape is exactly what a truncated tool call produced
+        # live (2026-09-17): a malformed list field accompanied by that list
+        # item's own fields ("count", "share_pct", "examples") orphaned as
+        # top-level siblings. Those must never leak into the API response.
+        self.assertNotIn("count", data)
+        self.assertNotIn("share_pct", data)
+        self.assertNotIn("examples", data)
 
     @patch("cost_management.insights_views._generate_insights", return_value=dict(CANNED_INSIGHTS))
     def test_second_call_within_the_hour_is_served_from_cache(self, mock_gen):

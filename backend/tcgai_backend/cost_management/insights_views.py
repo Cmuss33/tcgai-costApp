@@ -27,9 +27,22 @@ CACHE_TIMEOUT = 3600
 LOCK_TIMEOUT = 600
 CACHE_KEY = "insights_summary:current"
 INSIGHTS_MODEL = "claude-sonnet-5"
+# Observed live (2026-09-17) at the old 4096: the model's tool call got cut
+# off mid-generation (stop_reason "max_tokens") while reporting on a full
+# 61-conversation month, producing a mangled tool_use.input -- top_requests/
+# unmet_needs/product_demand/recommendations all closed out as `[]` while an
+# in-progress list item's own fields (count, examples, gap_type, summary,
+# status, detail, impact, effort, addresses, evidence_count) ended up as
+# stray siblings at the top level instead of nested inside their array. A
+# full report (headline + up to MAX_TOP_REQUESTS/MAX_UNMET_NEEDS/
+# MAX_DEMAND_ITEMS items, each with 2-3 example conversation ids) can
+# legitimately need more than 4096 output tokens.
+INSIGHTS_MAX_TOKENS = 8192
 
 MIN_DEMAND_COUNT = 2
 MAX_DEMAND_ITEMS = 10
+MAX_TOP_REQUESTS = 8
+MAX_UNMET_NEEDS = 8
 MAX_RECOMMENDATIONS = 6
 _IMPACT_ORDER = {"high": 0, "medium": 1, "low": 2}
 
@@ -42,6 +55,7 @@ REPORT_INSIGHTS_TOOL = {
             "top_requests": {
                 "type": "array",
                 "minItems": 1,
+                "maxItems": MAX_TOP_REQUESTS,
                 "items": {
                     "type": "object",
                     "properties": {
@@ -56,6 +70,7 @@ REPORT_INSIGHTS_TOOL = {
             "unmet_needs": {
                 "type": "array",
                 "minItems": 1,
+                "maxItems": MAX_UNMET_NEEDS,
                 "items": {
                     "type": "object",
                     "properties": {
@@ -74,6 +89,7 @@ REPORT_INSIGHTS_TOOL = {
             "product_demand": {
                 "type": "array",
                 "minItems": 1,
+                "maxItems": MAX_DEMAND_ITEMS,
                 "items": {
                     "type": "object",
                     "properties": {
@@ -106,15 +122,14 @@ REPORT_INSIGHTS_TOOL = {
                     "required": ["title", "detail", "impact", "addresses", "evidence_count", "examples"],
                 },
             },
-            # Deliberately declared LAST -- Claude tends to fill a tool call's
-            # fields in declaration order, and a "headline" declared first was
-            # observed live (2026-09-17) getting a full, specific summary while
-            # every list field below it came back empty, e.g. a headline naming
-            # "nearly 20 chats" of a specific stockout with top_requests/
-            # unmet_needs/product_demand/recommendations all `[]`. Declaring
-            # the evidence lists first forces the model to have already
-            # committed to concrete items before it writes the headline, so the
-            # headline can only summarize what already exists as evidence.
+            # Declared LAST on the theory that field order nudges generation
+            # order. Kept, but not fully trusted on its own: a *second* live
+            # failure (2026-09-17, after this reorder was already live) still
+            # produced a complete headline with every list `[]` -- consistent
+            # with output truncation (max_tokens) cutting the tool call short
+            # regardless of schema field order, not with the model ignoring
+            # instructions. See INSIGHTS_MAX_TOKENS and the stop_reason check
+            # in _generate_insights for the fix that actually addresses that.
             "headline": {"type": "string"},
         },
         "required": [
@@ -199,7 +214,16 @@ def _sanitize_report(core):
     generation (e.g. a field emitted as a string instead of a list of objects)
     would otherwise flow straight through to storage and the frontend, which
     calls .map() on these fields and crashes the whole page. Drop any field
-    that doesn't match the expected shape rather than passing it through."""
+    that doesn't match the expected shape rather than passing it through.
+
+    Whitelisting to exactly the known top-level keys is deliberate, not just
+    tidiness: observed live (2026-09-17) that a truncated tool call (see
+    INSIGHTS_MAX_TOKENS) can produce a result where a list item's own fields
+    (e.g. "count", "examples", "status") end up as stray top-level siblings
+    once its parent array got closed early -- structurally a valid dict, so
+    the per-field type check above wouldn't have caught it, and blindly
+    passing those extra keys through would have leaked them into the API
+    response and onto the page."""
     core = dict(core)
     for field in _LIST_FIELDS:
         value = core.get(field)
@@ -207,7 +231,7 @@ def _sanitize_report(core):
             core[field] = []
     if not isinstance(core.get("headline"), str):
         core["headline"] = ""
-    return core
+    return {field: core[field] for field in (*_LIST_FIELDS, "headline")}
 
 
 def _trim_findings(core):
@@ -297,12 +321,21 @@ def _generate_insights(transcripts, month_label, total_conversations):
     client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
     message = client.messages.create(
         model=INSIGHTS_MODEL,
-        max_tokens=4096,
+        max_tokens=INSIGHTS_MAX_TOKENS,
         system=system,
         tools=[REPORT_INSIGHTS_TOOL],
         tool_choice={"type": "tool", "name": "report_insights"},
         messages=[{"role": "user", "content": prompt}],
     )
+    if message.stop_reason == "max_tokens":
+        # The tool call itself was cut off mid-generation -- block.input at
+        # this point is a best-effort reconstruction from partial JSON and
+        # can look structurally valid while actually being garbage (e.g. a
+        # list item's fields orphaned as top-level siblings once its parent
+        # array got closed early). Treat it as unusable rather than risk
+        # storing/serving it -- see INSIGHTS_MAX_TOKENS's docstring for the
+        # live incident this caught.
+        raise ValueError("model response was truncated at max_tokens before completing the report")
     for block in message.content:
         if getattr(block, "type", None) == "tool_use" and block.name == "report_insights":
             return block.input
