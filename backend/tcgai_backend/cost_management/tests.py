@@ -2029,6 +2029,35 @@ class CacheEconomicsEndpointTests(TestCase):
         # baseline: all 1_000_100 tokens billed at plain input rate
         self.assertEqual(d["baseline_cost"], round(1_000_100 * 0.000001, 2))
         self.assertEqual(d["savings"], round(d["baseline_cost"] - d["actual_cost"], 2))
+        self.assertEqual(d["verdict"], "helping")
+        # investment = 1000*(0.00000125-0.000001) = 0.00025; return = 999000*(0.000001-0.0000001) = 0.8991
+        self.assertEqual(d["roi_multiple"], round(0.8991 / 0.00025, 2))
+
+    def test_hurting_verdict_when_write_premium_exceeds_read_discount(self):
+        """A cache write premium that isn't earned back by enough cheap reads
+        must show as costing money, not as a positive-looking ratio -- this
+        is exactly the scenario the plain-language verdict exists to flag."""
+        self._patch_adapter(
+            usage_return={"keys": [{
+                "api_key_id": "apikey_chat", "name": "chat",
+                "input_tokens": 1_001_000, "output_tokens": 0,
+                "by_model": {"m": {
+                    "uncached_input_tokens": 0, "output_tokens": 0,
+                    "cache_creation_tokens": 1_000_000, "cache_read_tokens": 1_000,
+                }},
+            }]},
+            rates_return={"rates": {"m": {
+                "input": 0.000001, "cache_creation": 0.000002, "cache_read": 0.0000005,
+            }}},
+        )
+        self.client.force_login(self.user)
+
+        with patch.dict('os.environ', {'ANTHROPIC_CHAT_API_KEY_IDS': 'apikey_chat'}):
+            d = self.client.get("/api/cost/cache_economics/").json()
+
+        self.assertLess(d["savings"], 0)
+        self.assertEqual(d["verdict"], "hurting")
+        self.assertLess(d["roi_multiple"], 1)
 
     def test_key_outside_chat_scope_is_excluded(self):
         """A key outside chat_api_key_ids() (e.g. AI Search Curator's) must
@@ -2063,6 +2092,8 @@ class CacheEconomicsEndpointTests(TestCase):
         self.assertIsNone(d["reads_per_write"])
         self.assertIsNone(d["actual_cost"])
         self.assertIsNone(d["savings"])
+        self.assertEqual(d["verdict"], "no_data")
+        self.assertIsNone(d["roi_multiple"])
 
     def test_missing_rate_for_a_model_contributes_zero_not_an_error(self):
         self._patch_adapter(
@@ -2084,6 +2115,8 @@ class CacheEconomicsEndpointTests(TestCase):
         self.assertEqual(d["reads_per_write"], 9.0)  # token ratio survives missing rates
         self.assertIsNone(d["actual_cost"])
         self.assertIsNone(d["savings"])
+        self.assertEqual(d["verdict"], "no_data")
+        self.assertIsNone(d["roi_multiple"])
 
     def test_chat_scope_is_app_wide_when_env_var_unset(self):
         self._patch_adapter()

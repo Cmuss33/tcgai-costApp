@@ -38,6 +38,30 @@ const fmtCompact = (n) => {
 };
 const fmtPct = (n) => (n == null ? "—" : `${Math.round(n * 100)}%`);
 
+const CACHE_VERDICT = {
+  helping: {
+    tone: "good",
+    label: "Caching is helping",
+    headline: (d) =>
+      `Caching saved you ${fmtUsd(d.savings, true)} this month, compared to sending everything ` +
+      `uncached${d.roi_multiple != null ? ` — about $${d.roi_multiple} back for every $1 spent enabling it` : ""}. ` +
+      `No action needed.`,
+  },
+  hurting: {
+    tone: "bad",
+    label: "Caching is costing you money",
+    headline: (d) =>
+      `Caching cost you ${fmtUsd(Math.abs(d.savings ?? 0), true)} more than sending everything uncached ` +
+      `this month. Worth flagging to your developer — the cached content isn't being reused enough to ` +
+      `earn back what it costs to write.`,
+  },
+  no_data: {
+    tone: "flat",
+    label: "Not enough data",
+    headline: () => "Caching wasn't used enough this month to tell whether it's helping.",
+  },
+};
+
 /* ---------- tiny charts ---------- */
 function AreaSpark({ values, color, w = 200, h = 36 }) {
   if (!values || values.length < 2) return null;
@@ -322,15 +346,14 @@ function UsageByKeyPanel({ data }) {
 function CacheEconomicsPanel({ data }) {
   if (!data || data.cache_creation_tokens == null) return null;
   const hasCost = data.actual_cost != null && data.baseline_cost != null;
+  const verdict = CACHE_VERDICT[data.verdict] ?? CACHE_VERDICT.no_data;
   return (
     <div className="cr__panel" style={{ "--accent": "var(--a-tok)" }}>
       <h2>Prompt caching</h2>
-      <div className="cr__note">
-        Cache reads bill at Anthropic&rsquo;s steep discount; cache writes bill at a premium over
-        plain input. Break-even is under one read per write, so any reuse tends to win &mdash;
-        writing more into the cache without it getting reused doesn&rsquo;t help. The lever is
-        reads per write, not the raw hit-rate number.
-      </div>
+      <span className={`cr__chip ${verdict.tone}`}>{verdict.label}</span>
+      <p style={{ margin: "8px 0 14px", fontSize: 13, color: "var(--dim)", lineHeight: 1.5 }}>
+        {verdict.headline(data)}
+      </p>
       {data.chat_scope_is_app_wide && (
         <p className="cr__notice">
           ANTHROPIC_CHAT_API_KEY_IDS isn&rsquo;t set &mdash; these figures still include AI Search
@@ -340,13 +363,6 @@ function CacheEconomicsPanel({ data }) {
       <table className="cr__want cr__keys">
         <tbody>
           <tr>
-            <td className="cr__p">Reads per write</td>
-            <td className="cr__x">
-              {fmtCompact(data.cache_read_tokens)} read / {fmtCompact(data.cache_creation_tokens)} written
-            </td>
-            <td className="cr__st">{data.reads_per_write != null ? `${data.reads_per_write}×` : "—"}</td>
-          </tr>
-          <tr>
             <td className="cr__p">Cost with caching</td>
             <td className="cr__x">vs. {fmtUsd(data.baseline_cost, true)} if none of it were cached</td>
             <td className="cr__st">{hasCost ? fmtUsd(data.actual_cost, true) : "—"}</td>
@@ -355,6 +371,13 @@ function CacheEconomicsPanel({ data }) {
             <td className="cr__p">Savings from caching</td>
             <td className="cr__x">{data.savings_pct != null ? `${data.savings_pct}% of baseline` : ""}</td>
             <td className="cr__st">{hasCost ? fmtUsd(data.savings, true) : "—"}</td>
+          </tr>
+          <tr>
+            <td className="cr__p">Reads per write</td>
+            <td className="cr__x">
+              {fmtCompact(data.cache_read_tokens)} read / {fmtCompact(data.cache_creation_tokens)} written
+            </td>
+            <td className="cr__st">{data.reads_per_write != null ? `${data.reads_per_write}×` : "—"}</td>
           </tr>
         </tbody>
       </table>
