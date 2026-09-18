@@ -148,3 +148,12 @@ LINEAR_API_KEY = os.environ.get('LINEAR_API_KEY', '')
 LINEAR_TEAM_ID = os.environ.get('LINEAR_TEAM_ID', '')
 LINEAR_PROJECT_ID = os.environ.get('LINEAR_PROJECT_ID', '')
 COST_APP_PUBLIC_URL = os.environ.get('COST_APP_PUBLIC_URL', '')
+
+# -----------------------------
+# AOP dashboard SSO bridge (cost_management/sso.py)
+# -----------------------------
+# Shared secret with the AOP monitoring app -- must be set to the exact same
+# value in both deployments, or AOP-signed tokens will never verify here.
+COSTAPP_SSO_SECRET = os.environ.get('COSTAPP_SSO_SECRET', '')
+# Which existing Django user AOP's dashboard link logs the browser in as.
+COSTAPP_SSO_USERNAME = os.environ.get('COSTAPP_SSO_USERNAME', '')

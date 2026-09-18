@@ -1,5 +1,8 @@
+import hashlib
+import hmac
 import json
 import os
+import time
 from unittest.mock import patch, MagicMock
 
 import requests
@@ -3294,3 +3297,87 @@ class FlagAutomatedChatsCommandTests(TestCase):
         call_command("flag_automated_chats")
 
         self.assertTrue(Chat.objects.get(chat_id="manually-flagged").likely_automated)
+
+
+class SsoLoginTests(TestCase):
+    """cost_management/sso.py -- the AOP-dashboard login bridge."""
+
+    SECRET = "test-sso-secret"
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="operator", password="pw")
+
+    def _sign(self, exp):
+        return hmac.new(self.SECRET.encode(), str(exp).encode(), hashlib.sha256).hexdigest()
+
+    @override_settings(COSTAPP_SSO_SECRET=SECRET, COSTAPP_SSO_USERNAME="operator",
+                        COST_APP_PUBLIC_URL="https://cost.example.com")
+    def test_valid_token_logs_in_and_redirects_to_the_requested_chat(self):
+        exp = int(time.time()) + 120
+        token = self._sign(exp)
+
+        resp = self.client.get(f"/api/cost/sso_login/?token={token}&exp={exp}&redirect=/chats?chat=abc-123")
+
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(resp["Location"], "https://cost.example.com/chats?chat=abc-123")
+        # The session cookie set by this response now authenticates us, same
+        # as a normal POST /login/ would.
+        self.assertTrue(self.client.get("/api/cost/auth-check/").json()["authenticated"])
+
+    @override_settings(COSTAPP_SSO_SECRET=SECRET, COSTAPP_SSO_USERNAME="operator",
+                        COST_APP_PUBLIC_URL="https://cost.example.com")
+    def test_missing_redirect_param_defaults_to_the_chat_list(self):
+        exp = int(time.time()) + 120
+        token = self._sign(exp)
+
+        resp = self.client.get(f"/api/cost/sso_login/?token={token}&exp={exp}")
+
+        self.assertEqual(resp["Location"], "https://cost.example.com/chats")
+
+    @override_settings(COSTAPP_SSO_SECRET=SECRET, COSTAPP_SSO_USERNAME="operator",
+                        COST_APP_PUBLIC_URL="https://cost.example.com")
+    def test_expired_token_is_rejected(self):
+        exp = int(time.time()) - 5
+        token = self._sign(exp)
+
+        resp = self.client.get(f"/api/cost/sso_login/?token={token}&exp={exp}")
+
+        self.assertEqual(resp.status_code, 403)
+        self.assertFalse(self.client.get("/api/cost/auth-check/").json()["authenticated"])
+
+    @override_settings(COSTAPP_SSO_SECRET=SECRET, COSTAPP_SSO_USERNAME="operator")
+    def test_bad_signature_is_rejected(self):
+        exp = int(time.time()) + 120
+
+        resp = self.client.get(f"/api/cost/sso_login/?token=0000deadbeef&exp={exp}")
+
+        self.assertEqual(resp.status_code, 403)
+
+    @override_settings(COSTAPP_SSO_SECRET="", COSTAPP_SSO_USERNAME="operator")
+    def test_unconfigured_secret_rejects_every_token(self):
+        resp = self.client.get("/api/cost/sso_login/?token=whatever&exp=9999999999")
+
+        self.assertEqual(resp.status_code, 403)
+
+    @override_settings(COSTAPP_SSO_SECRET=SECRET, COSTAPP_SSO_USERNAME="nobody-configured")
+    def test_username_with_no_matching_user_is_rejected(self):
+        exp = int(time.time()) + 120
+        token = self._sign(exp)
+
+        resp = self.client.get(f"/api/cost/sso_login/?token={token}&exp={exp}")
+
+        self.assertEqual(resp.status_code, 403)
+
+    @override_settings(COSTAPP_SSO_SECRET=SECRET, COSTAPP_SSO_USERNAME="operator",
+                        COST_APP_PUBLIC_URL="https://cost.example.com")
+    def test_external_redirect_target_is_ignored_not_followed(self):
+        """The redirect param must stay inside this app -- never an open redirect."""
+        exp = int(time.time()) + 120
+        token = self._sign(exp)
+
+        resp = self.client.get(
+            f"/api/cost/sso_login/?token={token}&exp={exp}&redirect=https://evil.example.com/phish"
+        )
+
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(resp["Location"], "https://cost.example.com/chats")
