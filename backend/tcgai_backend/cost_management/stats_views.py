@@ -194,6 +194,40 @@ def _chat_scope_is_app_wide():
     return not bool([k.strip() for k in raw.split(',') if k.strip()])
 
 
+def _chat_cache_buckets(month_start):
+    """({model: {uncached_input_tokens, output_tokens, cache_creation_tokens,
+    cache_read_tokens}}, error) for the chat surface this month, summed from
+    AnthropicAdapter.get_usage_by_key's per-key by_model breakdown.
+    get_usage_by_key is deliberately never scoped by itself (it exists to
+    show every key with usage) -- the chat_api_key_ids() filter is applied
+    here, mirroring how stats_views.usage_by_key filters the same raw
+    response to app_api_key_ids() one layer up. Model keys come straight
+    from Anthropic's usage report on both sides of this ratio (buckets and,
+    via _rates_for, rates), so an exact dict lookup is correct here --
+    unlike _rate_for's prefix match, which exists only to bridge our own
+    dated Chat.model strings against Anthropic's shorter rate keys."""
+    resp = base_views.llmprovider.get_usage_by_key(year=month_start.year, month=month_start.month)
+    if not isinstance(resp, dict) or resp.get("error"):
+        err = resp.get("error") if isinstance(resp, dict) else "usage source unavailable"
+        return {}, err
+
+    allowed_ids = set(chat_api_key_ids())
+    buckets = {}
+    for k in resp.get("keys", []):
+        if allowed_ids and k.get("api_key_id") not in allowed_ids:
+            continue
+        for model, tok in k.get("by_model", {}).items():
+            agg = buckets.setdefault(model, {
+                "uncached_input_tokens": 0, "output_tokens": 0,
+                "cache_creation_tokens": 0, "cache_read_tokens": 0,
+            })
+            agg["uncached_input_tokens"] += tok.get("uncached_input_tokens", 0)
+            agg["output_tokens"] += tok.get("output_tokens", 0)
+            agg["cache_creation_tokens"] += tok.get("cache_creation_tokens", 0)
+            agg["cache_read_tokens"] += tok.get("cache_read_tokens", 0)
+    return buckets, None
+
+
 def _chat_qs(month_start):
     start_dt, end_dt = month_range(month_start)
     return real_chats(Chat.objects.filter(timestamp__gte=start_dt, timestamp__lt=end_dt))
@@ -540,6 +574,79 @@ def cost_reconciliation(request):
         "unaccounted": round(spend - logged_spend, 2) if spend is not None else None,
         "chat_scope_is_app_wide": _chat_scope_is_app_wide(),
         "cost_source_error": cost_err,
+    }
+    cache.set(key, payload, CURRENT_TTL if month_start == current else PAST_TTL)
+    return JsonResponse(payload)
+
+
+@login_required
+def cache_economics(request):
+    """Prompt-cache economics for the chat surface this month: a reads-per-
+    write reuse ratio (a plain token-count ratio, so it degrades gracefully
+    without rate data) plus an estimated $ actually spent on that input vs.
+    a baseline of pricing the same tokens as though none of them had ever
+    been cached -- the "no caching at all" comparison the break-even framing
+    needs, not a different-TTL comparison. Cache reads bill at Anthropic's
+    steep discount and cache writes at a premium over plain input, so this
+    prices each token type at its own rate via _rates_for's whole-org unit
+    rates, same as cost_reconciliation/usage_by_key. Same chat_api_key_ids()
+    scope as cost_reconciliation, so it carries the same chat_scope_is_app_wide
+    caveat when ANTHROPIC_CHAT_API_KEY_IDS is unset."""
+    refresh = request.GET.get("refresh", "").lower() in ("1", "true", "yes")
+    month_param = request.GET.get("month")
+    current = current_month_start()
+
+    month_start = current
+    if month_param:
+        parsed = parse_month_param(month_param)
+        if parsed is None:
+            return JsonResponse({"error": "invalid month; expected YYYY-MM"}, status=400)
+        month_start = parsed
+
+    key = f"cache_economics:{month_start:%Y-%m}"
+    if not refresh:
+        cached = cache.get(key)
+        if cached is not None:
+            return JsonResponse({**cached, "cached": True})
+
+    buckets, usage_err = _chat_cache_buckets(month_start)
+    rates = _rates_for(month_start)
+
+    total_creation = sum(b["cache_creation_tokens"] for b in buckets.values())
+    total_read = sum(b["cache_read_tokens"] for b in buckets.values())
+    reads_per_write = round(total_read / total_creation, 2) if total_creation else None
+
+    actual_cost = 0.0
+    baseline_cost = 0.0
+    priced_any = False
+    for model, tok in buckets.items():
+        rate = rates.get(model, {})
+        input_rate = rate.get("input")
+        if not input_rate:
+            continue
+        priced_any = True
+        uncached = tok["uncached_input_tokens"]
+        creation = tok["cache_creation_tokens"]
+        read = tok["cache_read_tokens"]
+        actual_cost += uncached * input_rate
+        actual_cost += creation * rate.get("cache_creation", 0)
+        actual_cost += read * rate.get("cache_read", 0)
+        baseline_cost += (uncached + creation + read) * input_rate
+
+    savings = round(baseline_cost - actual_cost, 2) if priced_any else None
+    savings_pct = round(savings / baseline_cost * 100, 1) if priced_any and baseline_cost else None
+
+    payload = {
+        "month": month_start.strftime("%Y-%m"),
+        "cache_read_tokens": total_read,
+        "cache_creation_tokens": total_creation,
+        "reads_per_write": reads_per_write,
+        "actual_cost": round(actual_cost, 2) if priced_any else None,
+        "baseline_cost": round(baseline_cost, 2) if priced_any else None,
+        "savings": savings,
+        "savings_pct": savings_pct,
+        "chat_scope_is_app_wide": _chat_scope_is_app_wide(),
+        "cost_source_error": usage_err,
     }
     cache.set(key, payload, CURRENT_TTL if month_start == current else PAST_TTL)
     return JsonResponse(payload)
