@@ -1433,8 +1433,17 @@ class MonthlyStatsTests(TestCase):
                              _cost_resp(5.0, 7.0, 3.0) if month == cur else _cost_resp(4.0, 6.0))
         get_tokens = MagicMock(side_effect=lambda year, month, key_ids=None:
                                _tok_resp((1000, 300), (2000, 400)) if month == cur else _tok_resp((800, 200)))
+        # Needed so _rates_for (called from _build_stats to cost-weight the
+        # ENG-149/150 bot's share out of cost_pc's numerator) doesn't hit the
+        # real network from every test in this class -- see _rates_for's
+        # "returns {} on error or exception" contract, which is what an
+        # unmocked call would otherwise silently fall back to.
+        get_model_rates = MagicMock(return_value={"rates": {
+            "claude-haiku-4-5": {"input": 0.000001, "output": 0.000005},
+            "claude-sonnet-5": {"input": 0.000003, "output": 0.000015},
+        }})
         p = patch.multiple("cost_management.views.llmprovider",
-                           get_cost=get_cost, get_tokens=get_tokens)
+                           get_cost=get_cost, get_tokens=get_tokens, get_model_rates=get_model_rates)
         p.start()
         self.addCleanup(p.stop)
         return get_cost, get_tokens
@@ -1466,9 +1475,16 @@ class MonthlyStatsTests(TestCase):
 
     def test_likely_automated_chats_are_excluded_from_every_stat(self):
         """ENG-149/150: a flagged bot chat must not appear in the dashboard's
-        conversation count, daily breakdown, busiest-day, model mix, or the
-        per-conversation cost denominator -- flag_automated_chats sets this
-        field on exactly the chats that corrupted these numbers in prod."""
+        conversation count, daily breakdown, busiest-day, or model mix --
+        flag_automated_chats sets this field on exactly the chats that
+        corrupted these numbers in prod. The cost/conversation numerator
+        must ALSO exclude the bot's own logged spend: the bot hits the same
+        chat API key as real shoppers, so billed spend this month still
+        includes its traffic even though `convs` (the denominator) already
+        excludes it. Dividing the full $15 by 3 real conversations would
+        still overstate cost/conversation by the bot's share of logged
+        spend -- 20 of these 23 chats are bot, same model, identical token
+        counts, so 20/23 of the $15 is prorated out first."""
         self._patch_adapter()
         self._seed(3, self.this_month.replace(day=10))  # 3 real conversations
         for i in range(20):
@@ -1483,7 +1499,10 @@ class MonthlyStatsTests(TestCase):
 
         self.assertEqual(d["conversations"]["total"], 3)
         self.assertEqual(d["conversations"]["busiest"]["count"], 3)
-        self.assertEqual(d["per_conversation"]["cost"], round(15.0 / 3, 4))
+        self.assertEqual(d["per_conversation"]["cost"], round(15.0 * (3 / 23) / 3, 4))
+        self.assertEqual(d["per_conversation"]["billed_spend"], 15.0)
+        self.assertAlmostEqual(d["per_conversation"]["spend_excl_bot"], round(15.0 * (3 / 23), 2), places=2)
+        self.assertEqual(d["per_conversation"]["bot_share_pct"], round(20 / 23 * 100, 1))
         self.assertEqual(sum(m["conversations"] for m in d["model_mix"]), 3)
         # The bot chats still show up in the daily breakdown's bot_count --
         # for the stacked bar chart -- without inflating `count` (real).
@@ -1648,7 +1667,14 @@ class MonthlyStatsCacheHitRateTests(TestCase):
     def _patch_adapter(self, cache_info):
         get_cost = MagicMock(return_value=_cost_resp(5.0))
         get_tokens = MagicMock(return_value=_tok_resp((1000, 300), cache=cache_info))
-        p = patch.multiple("cost_management.views.llmprovider", get_cost=get_cost, get_tokens=get_tokens)
+        # _build_stats now fetches rates (to prorate the bot's spend share
+        # out of cost_pc) whenever spend isn't None -- mock it so these
+        # tests don't hit the real network for a KPI they don't assert on.
+        get_model_rates = MagicMock(return_value={"rates": {}})
+        p = patch.multiple(
+            "cost_management.views.llmprovider",
+            get_cost=get_cost, get_tokens=get_tokens, get_model_rates=get_model_rates,
+        )
         p.start()
         self.addCleanup(p.stop)
 
@@ -1675,7 +1701,11 @@ class MonthlyStatsCacheHitRateTests(TestCase):
         must not break the whole monthly_stats response."""
         get_cost = MagicMock(return_value=_cost_resp(5.0))
         get_tokens = MagicMock(return_value=_tok_resp((1000, 300)))  # no cache=...
-        p = patch.multiple("cost_management.views.llmprovider", get_cost=get_cost, get_tokens=get_tokens)
+        get_model_rates = MagicMock(return_value={"rates": {}})
+        p = patch.multiple(
+            "cost_management.views.llmprovider",
+            get_cost=get_cost, get_tokens=get_tokens, get_model_rates=get_model_rates,
+        )
         p.start()
         self.addCleanup(p.stop)
         self.client.force_login(self.user)
@@ -1685,6 +1715,262 @@ class MonthlyStatsCacheHitRateTests(TestCase):
         self.assertIsNone(d["tokens"]["cache_hit_rate"])
         self.assertEqual(d["tokens"]["cache_creation"], 0)
         self.assertEqual(d["tokens"]["cache_read"], 0)
+
+
+class RateForHelperTests(TestCase):
+    """_rate_for mirrors the frontend's getModelRate (chatSummary/pricing.js)
+    -- longest-prefix match, since Chat/Message `model` values carry a dated
+    snapshot suffix (e.g. "claude-haiku-4-5-20251001") while Anthropic's
+    cost/usage reports key rates by a shorter model string."""
+
+    def test_matches_exact_model(self):
+        from .stats_views import _rate_for
+        rates = {"claude-haiku-4-5": {"input": 1e-6}}
+        self.assertEqual(_rate_for(rates, "claude-haiku-4-5"), {"input": 1e-6})
+
+    def test_matches_dated_suffix_via_prefix(self):
+        from .stats_views import _rate_for
+        rates = {"claude-haiku-4-5": {"input": 1e-6}, "claude-sonnet-5": {"input": 3e-6}}
+        self.assertEqual(_rate_for(rates, "claude-haiku-4-5-20251001"), {"input": 1e-6})
+
+    def test_prefers_the_longest_matching_prefix(self):
+        rates = {
+            "claude-haiku-4-5": {"input": 1e-6},
+            "claude-haiku-4-5-2025": {"input": 9e-6},
+        }
+        from .stats_views import _rate_for
+        self.assertEqual(_rate_for(rates, "claude-haiku-4-5-20251001"), {"input": 9e-6})
+
+    def test_returns_none_when_no_prefix_matches(self):
+        from .stats_views import _rate_for
+        self.assertIsNone(_rate_for({"claude-sonnet-5": {"input": 3e-6}}, "claude-haiku-4-5-20251001"))
+
+    def test_returns_none_for_missing_model_or_empty_rates(self):
+        from .stats_views import _rate_for
+        self.assertIsNone(_rate_for({"claude-haiku-4-5": {"input": 1e-6}}, None))
+        self.assertIsNone(_rate_for({}, "claude-haiku-4-5"))
+        self.assertIsNone(_rate_for(None, "claude-haiku-4-5"))
+
+
+class RatesForHelperTests(TestCase):
+    """_rates_for must never raise -- a missing/unmocked/erroring adapter
+    call has to degrade the dashboard, not break it."""
+
+    def test_returns_rates_dict_on_success(self):
+        from .stats_views import _rates_for
+        get_model_rates = MagicMock(return_value={"rates": {"claude-haiku-4-5": {"input": 1e-6}}})
+        p = patch.multiple("cost_management.views.llmprovider", get_model_rates=get_model_rates)
+        p.start()
+        self.addCleanup(p.stop)
+
+        self.assertEqual(_rates_for(_now().replace(day=1)), {"claude-haiku-4-5": {"input": 1e-6}})
+
+    def test_returns_empty_dict_on_error_response(self):
+        from .stats_views import _rates_for
+        get_model_rates = MagicMock(return_value={"error": "boom"})
+        p = patch.multiple("cost_management.views.llmprovider", get_model_rates=get_model_rates)
+        p.start()
+        self.addCleanup(p.stop)
+
+        self.assertEqual(_rates_for(_now().replace(day=1)), {})
+
+    def test_returns_empty_dict_on_exception(self):
+        """The real regression this guards: MonthlyStatsTests' shared
+        _patch_adapter didn't mock get_model_rates until this fix, so every
+        cost_pc-touching test would have hit the real adapter (and the
+        network) the moment _build_stats started calling it."""
+        from .stats_views import _rates_for
+        get_model_rates = MagicMock(side_effect=requests.exceptions.ConnectionError("no network"))
+        p = patch.multiple("cost_management.views.llmprovider", get_model_rates=get_model_rates)
+        p.start()
+        self.addCleanup(p.stop)
+
+        self.assertEqual(_rates_for(_now().replace(day=1)), {})
+
+
+class BotSpendShareTests(TestCase):
+    """cost_pc's numerator must exclude the ENG-149/150 bot's own logged
+    spend -- cost-weighted, not token-weighted, since cache reads bill at a
+    steep discount and cache writes at a premium (see _bot_spend_share)."""
+
+    def setUp(self):
+        self.month_start = _now().replace(day=1)
+
+    def _chat(self, chat_id, model, tokens_in, tokens_out, likely_automated):
+        chat = Chat.objects.create(
+            chat_id=chat_id, model=model, tokens_in=tokens_in, tokens_out=tokens_out,
+            likely_automated=likely_automated,
+        )
+        Chat.objects.filter(pk=chat.pk).update(timestamp=self.month_start.replace(day=10))
+        return chat
+
+    def _message(self, chat, cache_creation_tokens=0, cache_read_tokens=0):
+        Message.objects.create(
+            chat=chat, content="", llm_formatted_message="", returned_content="",
+            llm_formatted_returned_message="", tokens_in=chat.tokens_in, tokens_out=chat.tokens_out,
+            cache_creation_tokens=cache_creation_tokens, cache_read_tokens=cache_read_tokens,
+            model=chat.model,
+        )
+
+    def test_logged_spend_split_prices_chat_and_message_tokens_at_their_own_rate(self):
+        from .stats_views import _logged_spend_split
+        real = self._chat("real-1", "claude-haiku-4-5", 1_000_000, 500_000, False)
+        self._message(real, cache_creation_tokens=100_000)
+        rates = {"claude-haiku-4-5": {
+            "input": 0.000001, "output": 0.000005, "cache_creation": 0.00000125, "cache_read": 0.0000001,
+        }}
+
+        split = _logged_spend_split(self.month_start, rates)
+
+        # 1,000,000*1e-6 + 500,000*5e-6 + 100,000*1.25e-6 = 1.0 + 2.5 + 0.125
+        self.assertAlmostEqual(split["real"], 1.0 + 2.5 + 0.125, places=6)
+        self.assertEqual(split["bot"], 0.0)
+
+    def test_missing_rate_for_a_model_contributes_zero_not_an_error(self):
+        from .stats_views import _logged_spend_split
+        self._chat("real-1", "some-unpriced-model", 1000, 300, False)
+
+        split = _logged_spend_split(self.month_start, {"claude-haiku-4-5": {"input": 1e-6}})
+
+        self.assertEqual(split, {"real": 0.0, "bot": 0.0})
+
+    def test_bot_share_is_cost_weighted_not_token_weighted(self):
+        """A bot chat with 100x a real chat's own token volume, almost
+        entirely cheap cache reads, must not claim a ~99% (token-weighted)
+        share of logged spend -- only its actual, much smaller cost share."""
+        from .stats_views import _bot_spend_share
+        real = self._chat("real-1", "claude-haiku-4-5", 1_000_000, 500_000, False)
+        self._message(real)
+        bot = self._chat("bot-1", "claude-haiku-4-5", 1_000_000, 500_000, True)
+        self._message(bot, cache_read_tokens=100_000_000)  # 100x the real chat's own token volume
+        rates = {"claude-haiku-4-5": {
+            "input": 0.000001, "output": 0.000005, "cache_read": 0.0000001,  # 10x cheaper than input
+        }}
+
+        share = _bot_spend_share(self.month_start, rates)
+
+        real_cost = 1_000_000 * 0.000001 + 500_000 * 0.000005          # 1.0 + 2.5 = 3.5
+        bot_cost = real_cost + 100_000_000 * 0.0000001                  # 3.5 + 10.0 = 13.5
+        expected_share = bot_cost / (real_cost + bot_cost)              # 13.5 / 17.0
+        self.assertAlmostEqual(share, expected_share, places=6)
+        # A naive token-weighted share would be ~99% (100M of ~101.5M total
+        # tokens) -- the real, cost-weighted share must land far below that.
+        self.assertLess(share, 0.9)
+
+    def test_bot_spend_share_none_when_no_rates(self):
+        from .stats_views import _bot_spend_share
+        self._chat("bot-1", "claude-haiku-4-5", 1000, 300, True)
+        self.assertIsNone(_bot_spend_share(self.month_start, {}))
+
+    def test_bot_spend_share_none_when_no_logged_tokens_are_priceable(self):
+        """Degrades to None, not 0.0, so _real_spend_for leaves the billed
+        figure untouched rather than claiming a confirmed zero bot share."""
+        from .stats_views import _bot_spend_share
+        self._chat("bot-1", "some-unpriced-model", 1000, 300, True)
+        rates = {"claude-haiku-4-5": {"input": 0.000001, "output": 0.000005}}
+        self.assertIsNone(_bot_spend_share(self.month_start, rates))
+
+    def test_real_spend_for_prorates_out_the_bot_share(self):
+        from .stats_views import _real_spend_for
+        self._chat("real-1", "claude-haiku-4-5", 1_000_000, 500_000, False)
+        for i in range(3):
+            self._chat(f"bot-{i}", "claude-haiku-4-5", 1_000_000, 500_000, True)
+        rates = {"claude-haiku-4-5": {"input": 0.000001, "output": 0.000005}}
+
+        prorated, share = _real_spend_for(20.0, self.month_start, rates)
+
+        self.assertAlmostEqual(share, 3 / 4, places=6)  # 3 of 4 chats, identical cost each, are bot
+        self.assertAlmostEqual(prorated, 20.0 * (1 / 4), places=6)
+
+    def test_real_spend_for_passes_through_billed_spend_when_share_is_none(self):
+        from .stats_views import _real_spend_for
+        prorated, share = _real_spend_for(20.0, self.month_start, {})
+        self.assertEqual(prorated, 20.0)
+        self.assertIsNone(share)
+
+    def test_real_spend_for_returns_none_when_spend_is_none(self):
+        from .stats_views import _real_spend_for
+        prorated, share = _real_spend_for(None, self.month_start, {"claude-haiku-4-5": {"input": 1e-6}})
+        self.assertIsNone(prorated)
+        self.assertIsNone(share)
+
+
+class CostReconciliationEndpointTests(TestCase):
+    """Billed spend vs. summed per-chat/per-message logged estimates -- the
+    gap is chat-key spend with no matching Message row (rejected probes,
+    failed requests, unlogged calls)."""
+
+    def setUp(self):
+        cache.clear()
+        self.user = User.objects.create_user(username="owner", password="pw")
+        self.this_month = _now().replace(day=1)
+
+    def tearDown(self):
+        cache.clear()
+
+    def _patch_adapter(self, spend=15.0, rates=None):
+        get_cost = MagicMock(return_value=_cost_resp(spend))
+        get_model_rates = MagicMock(return_value={"rates": rates if rates is not None else {
+            "claude-haiku-4-5": {"input": 0.000001, "output": 0.000005},
+        }})
+        p = patch.multiple("cost_management.views.llmprovider", get_cost=get_cost, get_model_rates=get_model_rates)
+        p.start()
+        self.addCleanup(p.stop)
+        return get_cost, get_model_rates
+
+    def _chat(self, chat_id, tokens_in, tokens_out, likely_automated=False, model="claude-haiku-4-5"):
+        chat = Chat.objects.create(
+            chat_id=chat_id, model=model, tokens_in=tokens_in, tokens_out=tokens_out,
+            likely_automated=likely_automated,
+        )
+        Chat.objects.filter(pk=chat.pk).update(timestamp=self.this_month.replace(day=10))
+        return chat
+
+    def test_requires_login(self):
+        self.assertEqual(self.client.get("/api/cost/cost_reconciliation/").status_code, 302)
+
+    def test_billed_vs_logged_with_unaccounted_remainder(self):
+        self._patch_adapter(spend=15.0)
+        self._chat("c-1", 1_000_000, 500_000)  # logged: 1_000_000*1e-6 + 500_000*5e-6 = 1.0 + 2.5 = 3.5
+        self.client.force_login(self.user)
+
+        d = self.client.get("/api/cost/cost_reconciliation/").json()
+
+        self.assertEqual(d["billed_spend"], 15.0)
+        self.assertEqual(d["logged_spend"], 3.5)
+        self.assertEqual(d["unaccounted"], round(15.0 - 3.5, 2))
+
+    def test_chat_scope_is_app_wide_when_env_var_unset(self):
+        self._patch_adapter()
+        self.client.force_login(self.user)
+        with patch.dict('os.environ', {}, clear=False):
+            os.environ.pop('ANTHROPIC_CHAT_API_KEY_IDS', None)
+            d = self.client.get("/api/cost/cost_reconciliation/").json()
+        self.assertTrue(d["chat_scope_is_app_wide"])
+
+    def test_chat_scope_is_not_app_wide_when_chat_key_ids_configured(self):
+        self._patch_adapter()
+        self.client.force_login(self.user)
+        with patch.dict('os.environ', {'ANTHROPIC_CHAT_API_KEY_IDS': 'apikey_chat'}):
+            d = self.client.get("/api/cost/cost_reconciliation/").json()
+        self.assertFalse(d["chat_scope_is_app_wide"])
+
+    def test_caches_and_refresh_bypasses(self):
+        get_cost, _ = self._patch_adapter()
+        self.client.force_login(self.user)
+
+        self.client.get("/api/cost/cost_reconciliation/")
+        calls_after_first = get_cost.call_count
+        cached = self.client.get("/api/cost/cost_reconciliation/").json()
+        self.assertTrue(cached["cached"])
+        self.assertEqual(get_cost.call_count, calls_after_first)
+
+        self.client.get("/api/cost/cost_reconciliation/?refresh=1")
+        self.assertGreater(get_cost.call_count, calls_after_first)
+
+    def test_invalid_month_is_400(self):
+        self.client.force_login(self.user)
+        self.assertEqual(self.client.get("/api/cost/cost_reconciliation/?month=nope").status_code, 400)
 
 
 class CostCommentaryTests(TestCase):
