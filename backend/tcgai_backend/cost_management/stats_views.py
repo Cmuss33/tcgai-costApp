@@ -4,14 +4,14 @@ import os
 
 from django.contrib.auth.decorators import login_required
 from django.core.cache import cache
-from django.db.models import Avg, Count
+from django.db.models import Avg, Count, Sum
 from django.db.models.functions import TruncDate
 from django.http import JsonResponse
 from django.utils import timezone
 
 from . import views as base_views
 from .llm_provider_adapter_implementations import app_api_key_ids, chat_api_key_ids
-from .models import Chat
+from .models import Chat, Message
 from .month_utils import current_month_start, month_range, parse_month_param, prev_month, real_chats
 
 CURRENT_TTL = 900       # 15 min — the current month's cost figures still move
@@ -75,6 +75,123 @@ def _tokens_for(month_start):
         "hit_rate": cache_info.get("hit_rate"),
     }
     return total_in, total_out, daily, cache_info, None
+
+
+def _rates_for(month_start):
+    """This month's effective $/token rate per model, from get_model_rates --
+    or {} on any error/exception (a missing rate source must degrade the
+    cost/conversation KPI to its unadjusted figure, never break the whole
+    dashboard). Whole-org, like get_model_rates itself -- see that
+    function's docstring for why it must never be key-scoped."""
+    try:
+        resp = base_views.llmprovider.get_model_rates(year=month_start.year, month=month_start.month)
+    except Exception:
+        return {}
+    if not isinstance(resp, dict) or resp.get("error"):
+        return {}
+    return resp.get("rates") or {}
+
+
+def _rate_for(rates, model):
+    """Longest-prefix match against `rates` -- mirrors the frontend's
+    getModelRate (chatSummary/pricing.js). Chat/Message `model` values carry
+    a dated snapshot suffix (e.g. "claude-haiku-4-5-20251001") while
+    Anthropic's cost/usage reports key rates by a shorter model string; an
+    exact dict lookup would silently price a whole model at $0."""
+    if not model or not rates:
+        return None
+    candidates = [k for k in rates if model.startswith(k)]
+    if not candidates:
+        return None
+    return rates[max(candidates, key=len)]
+
+
+def _logged_spend_split(month_start, rates):
+    """{"real": $, "bot": $} -- this month's LOGGED (Chat/Message) token
+    counts priced via `rates` and split by likely_automated. Chat.tokens_in/
+    tokens_out are the non-cache totals (ENG-148 -- cache tokens are
+    additive on Message, not folded into Chat's running total), so they're
+    priced at "input"/"output"; Message.cache_creation_tokens/
+    cache_read_tokens are priced separately at their own, steeply
+    different rates. A model with no entry in `rates` contributes $0 rather
+    than erroring -- same "missing rate prices at zero" rule as
+    stats_views.usage_by_key."""
+    start_dt, end_dt = month_range(month_start)
+    real = 0.0
+    bot = 0.0
+
+    for row in (
+        Chat.objects.filter(timestamp__gte=start_dt, timestamp__lt=end_dt)
+        .values("model", "likely_automated")
+        .annotate(tin=Sum("tokens_in"), tout=Sum("tokens_out"))
+    ):
+        rate = _rate_for(rates, row["model"])
+        if not rate:
+            continue
+        cost = (row["tin"] or 0) * rate.get("input", 0) + (row["tout"] or 0) * rate.get("output", 0)
+        if row["likely_automated"]:
+            bot += cost
+        else:
+            real += cost
+
+    for row in (
+        Message.objects.filter(chat__timestamp__gte=start_dt, chat__timestamp__lt=end_dt)
+        .values("model", "chat__likely_automated")
+        .annotate(ccreate=Sum("cache_creation_tokens"), cread=Sum("cache_read_tokens"))
+    ):
+        rate = _rate_for(rates, row["model"])
+        if not rate:
+            continue
+        cost = (row["ccreate"] or 0) * rate.get("cache_creation", 0) + (row["cread"] or 0) * rate.get("cache_read", 0)
+        if row["chat__likely_automated"]:
+            bot += cost
+        else:
+            real += cost
+
+    return {"real": real, "bot": bot}
+
+
+def _bot_spend_share(month_start, rates):
+    """Cost-weighted fraction of this month's LOGGED spend attributable to
+    likely_automated chats (see _logged_spend_split) -- cost-weighted, not
+    token-weighted, because cache reads bill at a steep discount and cache
+    writes at a premium; a token-count share would badly mis-state a
+    cache-heavy population's true cost share. None -- not 0 -- when there's
+    no rate source or nothing priceable was logged this month, so a missing
+    rate/model mapping degrades _real_spend_for to the unadjusted billed
+    figure instead of silently claiming zero bot spend."""
+    if not rates:
+        return None
+    split = _logged_spend_split(month_start, rates)
+    total = split["real"] + split["bot"]
+    if not total:
+        return None
+    return split["bot"] / total
+
+
+def _real_spend_for(spend, month_start, rates):
+    """(prorated_spend, bot_share) -- billed `spend` with the bot's
+    cost-weighted share (see _bot_spend_share) removed, so cost_pc's
+    numerator reflects what real shoppers' conversations actually cost
+    instead of the full billed total (which includes the ENG-149/150 bot's
+    traffic -- it hits the same chat API key as real shoppers). Degrades to
+    (spend, None) -- the old, unadjusted figure -- when spend is None or
+    there's no bot share to apply, rather than guessing."""
+    if spend is None:
+        return spend, None
+    share = _bot_spend_share(month_start, rates)
+    if share is None:
+        return spend, None
+    return spend * (1 - share), share
+
+
+def _chat_scope_is_app_wide():
+    """True when ANTHROPIC_CHAT_API_KEY_IDS isn't set -- chat_api_key_ids()
+    then falls back to app_api_key_ids(), so cost_pc's numerator (and
+    cost_reconciliation below) still includes AI Search Curator/narrative/
+    report spend, not chat traffic alone."""
+    raw = os.environ.get('ANTHROPIC_CHAT_API_KEY_IDS') or ''
+    return not bool([k.strip() for k in raw.split(',') if k.strip()])
 
 
 def _chat_qs(month_start):
@@ -152,8 +269,20 @@ def _build_stats(month_start):
     prev_in_pc = _daily_mean(_chat_qs(previous), "tokens_in")
     prev_out_pc = _daily_mean(_chat_qs(previous), "tokens_out")
 
-    cost_pc = round(spend / convs, 4) if (spend is not None and convs) else None
-    prev_cost_pc = round(prev_spend / prev_convs, 4) if (prev_spend is not None and prev_convs) else None
+    # Cost-weighted proration: billed spend this month includes the
+    # ENG-149/150 bot's own traffic (same chat API key as real shoppers),
+    # but `convs` above already excludes it -- dividing raw billed spend by
+    # a bot-free denominator overstates cost/conversation by roughly the
+    # bot's share of logged spend. See _real_spend_for/_bot_spend_share.
+    # Rates are only fetched when there's a spend figure to prorate --
+    # each call hits the admin API.
+    rates = _rates_for(month_start) if spend is not None else {}
+    prev_rates = _rates_for(previous) if prev_spend is not None else {}
+    real_spend, bot_share = _real_spend_for(spend, month_start, rates)
+    prev_real_spend, _prev_bot_share = _real_spend_for(prev_spend, previous, prev_rates)
+
+    cost_pc = round(real_spend / convs, 4) if (real_spend is not None and convs) else None
+    prev_cost_pc = round(prev_real_spend / prev_convs, 4) if (prev_real_spend is not None and prev_convs) else None
 
     projected = None
     if is_current and spend is not None and timezone.now().day:
@@ -226,6 +355,12 @@ def _build_stats(month_start):
             "cost": cost_pc,
             "prev_cost": prev_cost_pc,
             "cost_delta_pct": _pct_delta(cost_pc, prev_cost_pc),
+            # Leave `spend.total` above (the "Anthropic spend" KPI) whole --
+            # the bot's cost was real money. Only cost_pc's numerator is
+            # adjusted; these three fields show the adjustment itself.
+            "billed_spend": spend,
+            "spend_excl_bot": round(real_spend, 2) if real_spend is not None else None,
+            "bot_share_pct": round(bot_share * 100, 1) if bot_share is not None else None,
         },
         "model_mix": model_mix,
     }
@@ -358,6 +493,53 @@ def usage_by_key(request):
         "keys": keys,
         "workspace_id": usage_resp.get("workspace_id"),
         "estimated": True,
+    }
+    cache.set(key, payload, CURRENT_TTL if month_start == current else PAST_TTL)
+    return JsonResponse(payload)
+
+
+@login_required
+def cost_reconciliation(request):
+    """Billed Anthropic spend (chat-key-scoped -- the same numerator cost_pc
+    uses) vs. this month's summed per-chat/per-message LOGGED token
+    estimates (_logged_spend_split's real+bot total). The gap
+    ("unaccounted") is chat-key spend with no matching Message row --
+    rejected probes, failed requests, calls the chatbot never logged.
+    `chat_scope_is_app_wide` warns when ANTHROPIC_CHAT_API_KEY_IDS isn't
+    set: in that state both sides of this reconciliation (and cost_pc's own
+    numerator) are still scoped to every key this app has issued -- AI
+    Search Curator/narrative/report included, not chat alone."""
+    refresh = request.GET.get("refresh", "").lower() in ("1", "true", "yes")
+    month_param = request.GET.get("month")
+    current = current_month_start()
+
+    month_start = current
+    if month_param:
+        parsed = parse_month_param(month_param)
+        if parsed is None:
+            return JsonResponse({"error": "invalid month; expected YYYY-MM"}, status=400)
+        month_start = parsed
+
+    key = f"cost_reconciliation:{month_start:%Y-%m}"
+    if not refresh:
+        cached = cache.get(key)
+        if cached is not None:
+            return JsonResponse({**cached, "cached": True})
+
+    spend, _, cost_err = _spend_for(month_start)
+    rates = _rates_for(month_start) if spend is not None else {}
+    split = _logged_spend_split(month_start, rates)
+    logged_spend = round(split["real"] + split["bot"], 2)
+
+    payload = {
+        "month": month_start.strftime("%Y-%m"),
+        "billed_spend": spend,
+        "logged_spend": logged_spend,
+        "real_spend": round(split["real"], 2),
+        "bot_spend": round(split["bot"], 2),
+        "unaccounted": round(spend - logged_spend, 2) if spend is not None else None,
+        "chat_scope_is_app_wide": _chat_scope_is_app_wide(),
+        "cost_source_error": cost_err,
     }
     cache.set(key, payload, CURRENT_TTL if month_start == current else PAST_TTL)
     return JsonResponse(payload)

@@ -239,7 +239,11 @@ function StatsBand({ stats }) {
           accent="--a-cost"
           label="Cost / conversation"
           value={fmtUsd(pc.cost, true)}
-          sub="spend ÷ conversations"
+          sub={
+            pc.bot_share_pct
+              ? `spend ÷ conversations · ${pc.bot_share_pct}% of spend excluded (bot traffic)`
+              : "spend ÷ conversations"
+          }
           deltaPct={pc.cost_delta_pct}
           betterWhen="down"
         />
@@ -317,6 +321,51 @@ function UsageByKeyPanel({ data }) {
               <td className="cr__st">~{fmtUsd(k.estimated_cost, true)}</td>
             </tr>
           ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function CostReconciliationPanel({ data }) {
+  if (!data || data.billed_spend == null) return null;
+  const pctUnaccounted =
+    data.billed_spend > 0 && data.unaccounted != null ? (data.unaccounted / data.billed_spend) * 100 : null;
+  return (
+    <div className="cr__panel" style={{ "--accent": "var(--a-cost)" }}>
+      <h2>Billed vs. logged</h2>
+      <div className="cr__note">
+        Anthropic&rsquo;s billed spend for the chat surface&rsquo;s key(s) this month, compared
+        against what this app can actually price from logged Chat/Message token counts.
+        The gap is spend with no matching logged call &mdash; rejected probes, failed
+        requests, or calls this app never received.
+      </div>
+      {data.chat_scope_is_app_wide && (
+        <p className="cr__notice">
+          ANTHROPIC_CHAT_API_KEY_IDS isn&rsquo;t set &mdash; both figures below still
+          include AI Search Curator, narrative, and monthly-report spend, not chat
+          traffic alone.
+        </p>
+      )}
+      <table className="cr__want cr__keys">
+        <tbody>
+          <tr>
+            <td className="cr__p">Billed spend</td>
+            <td className="cr__x" />
+            <td className="cr__st">{fmtUsd(data.billed_spend, true)}</td>
+          </tr>
+          <tr>
+            <td className="cr__p">Logged spend</td>
+            <td className="cr__x">
+              {fmtUsd(data.real_spend, true)} real / {fmtUsd(data.bot_spend, true)} bot
+            </td>
+            <td className="cr__st">{fmtUsd(data.logged_spend, true)}</td>
+          </tr>
+          <tr>
+            <td className="cr__p">Unaccounted</td>
+            <td className="cr__x">{pctUnaccounted != null ? `${pctUnaccounted.toFixed(1)}% of billed` : ""}</td>
+            <td className="cr__st">{fmtUsd(data.unaccounted, true)}</td>
+          </tr>
         </tbody>
       </table>
     </div>
@@ -467,6 +516,7 @@ function HomeView() {
   const [stats, setStats] = useState(null);
   const [statsError, setStatsError] = useState(false);
   const [usageByKey, setUsageByKey] = useState(null);
+  const [costReconciliation, setCostReconciliation] = useState(null);
   const [insights, setInsights] = useState(null);
   const [firstLoad, setFirstLoad] = useState(true);
   const [netError, setNetError] = useState(false);
@@ -506,6 +556,25 @@ function HomeView() {
         });
         if (res.status === 401 || res.status === 403) return navigate("/");
         setUsageByKey(await res.json());
+      } catch {
+        // Non-critical panel -- the rest of the dashboard still works without it.
+      }
+    },
+    [navigate]
+  );
+
+  const loadCostReconciliation = useCallback(
+    async (month, refresh) => {
+      try {
+        const params = new URLSearchParams();
+        if (month) params.set("month", month);
+        if (refresh) params.set("refresh", "1");
+        const qs = params.toString();
+        const res = await fetch(`${API_URL}/api/cost/cost_reconciliation/${qs ? `?${qs}` : ""}`, {
+          credentials: "include",
+        });
+        if (res.status === 401 || res.status === 403) return navigate("/");
+        setCostReconciliation(await res.json());
       } catch {
         // Non-critical panel -- the rest of the dashboard still works without it.
       }
@@ -555,13 +624,14 @@ function HomeView() {
         loadStats();
         loadInsights();
         loadUsageByKey();
+        loadCostReconciliation();
       })
       .catch(() => {
         setNetError(true);
         setFirstLoad(false);
       });
     return () => clearTimeout(pollRef.current);
-  }, [navigate, loadStats, loadInsights, loadUsageByKey]);
+  }, [navigate, loadStats, loadInsights, loadUsageByKey, loadCostReconciliation]);
 
   const months = insights?.available_months ?? [];
   const curIdx = Math.max(
@@ -577,12 +647,14 @@ function HomeView() {
     loadStats(arg);
     loadInsights({ month: arg });
     loadUsageByKey(arg);
+    loadCostReconciliation(arg);
   };
   const refreshCurrent = () => {
     const arg = shown?.is_current ? undefined : shown?.value;
     loadStats(arg, true);
     loadInsights({ month: arg, refresh: true });
     loadUsageByKey(arg, true);
+    loadCostReconciliation(arg, true);
   };
 
   if (firstLoad) {
@@ -655,6 +727,7 @@ function HomeView() {
         )}
         <StatsBand stats={stats} />
         <UsageByKeyPanel data={usageByKey} />
+        <CostReconciliationPanel data={costReconciliation} />
         <CostCommentaryPanel data={insights?.cost_commentary} />
 
         {insights?.regenerating && (
