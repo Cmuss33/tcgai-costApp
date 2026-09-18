@@ -591,7 +591,16 @@ def cache_economics(request):
     prices each token type at its own rate via _rates_for's whole-org unit
     rates, same as cost_reconciliation/usage_by_key. Same chat_api_key_ids()
     scope as cost_reconciliation, so it carries the same chat_scope_is_app_wide
-    caveat when ANTHROPIC_CHAT_API_KEY_IDS is unset."""
+    caveat when ANTHROPIC_CHAT_API_KEY_IDS is unset.
+
+    Also returns `roi_multiple` ($ returned via the read discount per $1
+    "invested" via the write premium -- see the inline comment above the
+    loop) and a deterministic `verdict` ("helping"/"hurting"/"no_data") so
+    the frontend can render a plain-language take for a non-technical
+    reader instead of just the raw numbers. The verdict is a clean
+    savings>0 check, not a judgment call, so it's computed here rather
+    than routed through the LLM-generated cost commentary elsewhere on
+    the dashboard."""
     refresh = request.GET.get("refresh", "").lower() in ("1", "true", "yes")
     month_param = request.GET.get("month")
     current = current_month_start()
@@ -618,6 +627,13 @@ def cache_economics(request):
 
     actual_cost = 0.0
     baseline_cost = 0.0
+    # "Investment" is the write premium over plain input (what you paid extra
+    # to put content in the cache); "return" is the read discount off plain
+    # input (what you got back for reading it). roi_multiple = return /
+    # investment, so a non-technical reader can read it as "$X back for
+    # every $1 spent enabling caching" instead of a token-count ratio.
+    investment = 0.0
+    returned = 0.0
     priced_any = False
     for model, tok in buckets.items():
         rate = rates.get(model, {})
@@ -628,13 +644,30 @@ def cache_economics(request):
         uncached = tok["uncached_input_tokens"]
         creation = tok["cache_creation_tokens"]
         read = tok["cache_read_tokens"]
+        cache_creation_rate = rate.get("cache_creation")
+        cache_read_rate = rate.get("cache_read")
         actual_cost += uncached * input_rate
-        actual_cost += creation * rate.get("cache_creation", 0)
-        actual_cost += read * rate.get("cache_read", 0)
+        actual_cost += creation * (cache_creation_rate or 0)
+        actual_cost += read * (cache_read_rate or 0)
         baseline_cost += (uncached + creation + read) * input_rate
+        if cache_creation_rate is not None:
+            investment += creation * max(cache_creation_rate - input_rate, 0)
+        if cache_read_rate is not None:
+            returned += read * max(input_rate - cache_read_rate, 0)
 
     savings = round(baseline_cost - actual_cost, 2) if priced_any else None
     savings_pct = round(savings / baseline_cost * 100, 1) if priced_any and baseline_cost else None
+    roi_multiple = round(returned / investment, 2) if investment else None
+
+    # A deterministic, plain-language verdict for a non-technical reader --
+    # "is this worth it" is a clean number here, not a judgment call, so no
+    # LLM commentary is warranted (unlike CostCommentaryPanel's headline).
+    if total_creation == 0 or not priced_any:
+        verdict = "no_data"
+    elif savings is not None and savings > 0:
+        verdict = "helping"
+    else:
+        verdict = "hurting"
 
     payload = {
         "month": month_start.strftime("%Y-%m"),
@@ -645,6 +678,8 @@ def cache_economics(request):
         "baseline_cost": round(baseline_cost, 2) if priced_any else None,
         "savings": savings,
         "savings_pct": savings_pct,
+        "roi_multiple": roi_multiple,
+        "verdict": verdict,
         "chat_scope_is_app_wide": _chat_scope_is_app_wide(),
         "cost_source_error": usage_err,
     }
