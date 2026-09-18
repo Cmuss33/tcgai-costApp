@@ -24,13 +24,20 @@ def _pct_delta(current, previous):
     return round((current - previous) / previous * 100, 1)
 
 
-def _spend_for(month_start):
+def _spend_for(month_start, rates_resp):
     """(total_usd, [{day, amount}], error) from the Anthropic cost report,
     scoped to the chat surface's own key(s) -- see chat_api_key_ids -- so
     AI Search Curator/narrative/report spend can't inflate cost/conversation
-    against a denominator that only ever counts chat conversations."""
+    against a denominator that only ever counts chat conversations.
+
+    `rates_resp` (see _rates_resp_for) is this month's already-fetched
+    get_model_rates() response, passed straight through to get_cost so it
+    doesn't derive its own -- get_cost needs a whole-org rate to estimate
+    spend either way, and callers of _spend_for also need that same rate
+    for their own proration math, so fetching it once and sharing it avoids
+    hitting cost_report+usage_report a second time for the same month."""
     resp = base_views.llmprovider.get_cost(
-        year=month_start.year, month=month_start.month, key_ids=chat_api_key_ids()
+        year=month_start.year, month=month_start.month, key_ids=chat_api_key_ids(), rates_resp=rates_resp
     )
     if not isinstance(resp, dict) or resp.get("error"):
         err = resp.get("error") if isinstance(resp, dict) else "cost source unavailable"
@@ -77,19 +84,37 @@ def _tokens_for(month_start):
     return total_in, total_out, daily, cache_info, None
 
 
+def _rates_resp_for(month_start):
+    """Raw get_model_rates() response for the month (whole-org) -- never
+    raises, degrading to {"error": ...} on an exception so callers can
+    treat "adapter threw" and "adapter returned an error payload" the same
+    way. Callers that need to tell a real rate failure apart from "nothing
+    priceable this month" (e.g. get_cost, via _spend_for's rates_resp) use
+    this directly; _rates_for below is the error-swallowing convenience
+    wrapper for callers that already have a fallback."""
+    try:
+        return base_views.llmprovider.get_model_rates(year=month_start.year, month=month_start.month)
+    except Exception:
+        return {"error": "rate derivation failed"}
+
+
+def _rates_from_resp(resp):
+    """Unwrap a get_model_rates()-shaped response to its rates dict, or {}
+    on any error -- the pure part of _rates_for's contract, split out so
+    _build_stats/cost_reconciliation can reuse a `resp` they already fetched
+    via _rates_resp_for instead of calling get_model_rates a second time."""
+    if not isinstance(resp, dict) or resp.get("error"):
+        return {}
+    return resp.get("rates") or {}
+
+
 def _rates_for(month_start):
     """This month's effective $/token rate per model, from get_model_rates --
     or {} on any error/exception (a missing rate source must degrade the
     cost/conversation KPI to its unadjusted figure, never break the whole
     dashboard). Whole-org, like get_model_rates itself -- see that
     function's docstring for why it must never be key-scoped."""
-    try:
-        resp = base_views.llmprovider.get_model_rates(year=month_start.year, month=month_start.month)
-    except Exception:
-        return {}
-    if not isinstance(resp, dict) or resp.get("error"):
-        return {}
-    return resp.get("rates") or {}
+    return _rates_from_resp(_rates_resp_for(month_start))
 
 
 def _rate_for(rates, model):
@@ -280,8 +305,17 @@ def _build_stats(month_start):
     previous = prev_month(month_start)
     label = month_start.strftime("%Y-%m")
 
-    spend, spend_daily, cost_err = _spend_for(month_start)
-    prev_spend, _, _ = _spend_for(previous)
+    # Fetched once per month and shared with get_cost (via _spend_for's
+    # rates_resp) below instead of each deriving its own -- get_cost needs
+    # this month's whole-org rate to estimate spend either way, and the
+    # bot-proration step further down needs the same rate again; without
+    # sharing it here, a single monthly_stats request used to make this
+    # exact cost_report+usage_report pair 3x per month (current & previous).
+    rates_resp = _rates_resp_for(month_start)
+    prev_rates_resp = _rates_resp_for(previous)
+
+    spend, spend_daily, cost_err = _spend_for(month_start, rates_resp)
+    prev_spend, _, _ = _spend_for(previous, prev_rates_resp)
     tok_in, tok_out, tok_daily, cache_info, tok_err = _tokens_for(month_start)
     prev_in, prev_out, _, _, _ = _tokens_for(previous)
 
@@ -308,10 +342,12 @@ def _build_stats(month_start):
     # but `convs` above already excludes it -- dividing raw billed spend by
     # a bot-free denominator overstates cost/conversation by roughly the
     # bot's share of logged spend. See _real_spend_for/_bot_spend_share.
-    # Rates are only fetched when there's a spend figure to prorate --
-    # each call hits the admin API.
-    rates = _rates_for(month_start) if spend is not None else {}
-    prev_rates = _rates_for(previous) if prev_spend is not None else {}
+    # Reuses rates_resp/prev_rates_resp fetched above rather than calling
+    # get_model_rates again -- _real_spend_for only touches `rates` at all
+    # when `spend` isn't None, so this is exactly equivalent to the old
+    # "only derive rates when there's a spend figure to prorate" guard.
+    rates = _rates_from_resp(rates_resp)
+    prev_rates = _rates_from_resp(prev_rates_resp)
     real_spend, bot_share = _real_spend_for(spend, month_start, rates)
     prev_real_spend, _prev_bot_share = _real_spend_for(prev_spend, previous, prev_rates)
 
@@ -560,8 +596,12 @@ def cost_reconciliation(request):
         if cached is not None:
             return JsonResponse({**cached, "cached": True})
 
-    spend, _, cost_err = _spend_for(month_start)
-    rates = _rates_for(month_start) if spend is not None else {}
+    # Same one-fetch-per-month sharing as _build_stats above -- get_cost
+    # needs this month's whole-org rate regardless, and _logged_spend_split
+    # below needs the identical rate for its own pricing.
+    rates_resp = _rates_resp_for(month_start)
+    spend, _, cost_err = _spend_for(month_start, rates_resp)
+    rates = _rates_from_resp(rates_resp) if spend is not None else {}
     split = _logged_spend_split(month_start, rates)
     logged_spend = round(split["real"] + split["bot"], 2)
 

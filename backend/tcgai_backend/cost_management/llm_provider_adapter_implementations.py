@@ -63,7 +63,7 @@ def cache_creation_tokens(result):
 
 class AnthropicAdapter(LLMAdapter):
 
-    def get_cost(self, year=None, month=None, key_ids=None):
+    def get_cost(self, year=None, month=None, key_ids=None, rates_resp=None):
         """Estimated $ spend for this app's own tracked keys, this month.
         Scoped to `key_ids` when passed (e.g. chat_api_key_ids(), for a
         surface-specific total); defaults to app_api_key_ids() -- ALL of
@@ -78,12 +78,22 @@ class AnthropicAdapter(LLMAdapter):
         traffic -- see that method's docstring) by this app's own
         reliably-scoped (via usage_report's real api_key_id field) token
         counts -- the same estimation technique stats_views.usage_by_key
-        already uses per individual key."""
+        already uses per individual key.
+
+        `rates_resp` lets a caller that has already fetched get_model_rates
+        for this exact (year, month) pass the raw response straight in,
+        instead of this method deriving its own via a second, identical
+        cost_report+usage_report round trip -- stats_views._build_stats and
+        cost_reconciliation both also need this month's whole-org rates for
+        their own proration math, so without this they'd fetch the same
+        rates twice per request. None (the default) preserves the prior
+        behavior exactly for every other caller."""
         today = datetime.today()
         year = int(year) if year else today.year
         month = int(month) if month else today.month
 
-        rates_resp = self.get_model_rates(year=year, month=month)
+        if rates_resp is None:
+            rates_resp = self.get_model_rates(year=year, month=month)
         if not isinstance(rates_resp, dict) or rates_resp.get("error"):
             return {"error": rates_resp.get("error") if isinstance(rates_resp, dict) else "rate derivation failed"}
         rates = rates_resp.get("rates", {})
