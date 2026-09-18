@@ -5,6 +5,9 @@ import "./HomeView.css";
 const API_URL = import.meta.env.VITE_API_URL;
 const POLL_MS = 4000;
 const MAX_POLLS = 20;
+// stats, insights (first response only -- not each poll), usageByKey,
+// costReconciliation, cacheEconomics
+const TOTAL_LOADERS = 5;
 
 const GAP_LABELS = { catalog: "catalog", policy: "policy", capability: "capability", other: "other" };
 const STATUS_LABELS = { out_of_stock: "out of stock", not_carried: "not carried", unknown: "unknown" };
@@ -575,6 +578,20 @@ function Findings({ view }) {
   );
 }
 
+/* ---------- loading bar ---------- */
+function LoadingBar({ percent }) {
+  return (
+    <>
+      <div className="cr__loadbar" aria-hidden="true">
+        <div className="cr__loadbar-fill" style={{ width: `${percent}%` }} />
+      </div>
+      <div className="cr__loadbar-pct" role="status" aria-live="polite">
+        Loading&hellip; {percent}%
+      </div>
+    </>
+  );
+}
+
 /* ---------- page ---------- */
 function HomeView() {
   const navigate = useNavigate();
@@ -588,6 +605,7 @@ function HomeView() {
   const [netError, setNetError] = useState(false);
   const [pollTimedOut, setPollTimedOut] = useState(false);
   const [selectedMonth, setSelectedMonth] = useState(null);
+  const [loadProgress, setLoadProgress] = useState(0);
   const pollRef = useRef(null);
 
   const loadStats = useCallback(
@@ -605,6 +623,8 @@ function HomeView() {
         setStatsError(false);
       } catch {
         setStatsError(true);
+      } finally {
+        setLoadProgress((p) => p + 1);
       }
     },
     [navigate]
@@ -624,6 +644,8 @@ function HomeView() {
         setUsageByKey(await res.json());
       } catch {
         // Non-critical panel -- the rest of the dashboard still works without it.
+      } finally {
+        setLoadProgress((p) => p + 1);
       }
     },
     [navigate]
@@ -643,6 +665,8 @@ function HomeView() {
         setCostReconciliation(await res.json());
       } catch {
         // Non-critical panel -- the rest of the dashboard still works without it.
+      } finally {
+        setLoadProgress((p) => p + 1);
       }
     },
     [navigate]
@@ -662,6 +686,8 @@ function HomeView() {
         setCacheEconomics(await res.json());
       } catch {
         // Non-critical panel -- the rest of the dashboard still works without it.
+      } finally {
+        setLoadProgress((p) => p + 1);
       }
     },
     [navigate]
@@ -696,26 +722,34 @@ function HomeView() {
         setNetError(true);
       } finally {
         setFirstLoad(false);
+        if (poll === 0) setLoadProgress((p) => p + 1);
       }
     },
     [navigate]
   );
 
   useEffect(() => {
+    // Fired alongside the 5 data loaders below rather than gating them --
+    // each loader already redirects on its own 401/403, so this was a
+    // second, blocking round-trip for no benefit. It only needs to catch
+    // the case where a session is authenticated-but-stale in a way the
+    // data endpoints wouldn't otherwise surface.
     fetch(`${API_URL}/api/cost/auth-check/`, { credentials: "include" })
       .then((res) => res.json())
       .then((data) => {
-        if (!data.authenticated) return navigate("/");
-        loadStats();
-        loadInsights();
-        loadUsageByKey();
-        loadCostReconciliation();
-        loadCacheEconomics();
+        if (!data.authenticated) navigate("/");
       })
       .catch(() => {
-        setNetError(true);
-        setFirstLoad(false);
+        // The 5 loaders below handle their own network-error states.
       });
+
+    setLoadProgress(0);
+    loadStats();
+    loadInsights();
+    loadUsageByKey();
+    loadCostReconciliation();
+    loadCacheEconomics();
+
     return () => clearTimeout(pollRef.current);
   }, [navigate, loadStats, loadInsights, loadUsageByKey, loadCostReconciliation, loadCacheEconomics]);
 
@@ -729,6 +763,7 @@ function HomeView() {
   const pick = (m) => {
     if (!m) return;
     setSelectedMonth(m.value);
+    setLoadProgress(0);
     const arg = m.is_current ? undefined : m.value;
     loadStats(arg);
     loadInsights({ month: arg });
@@ -745,9 +780,13 @@ function HomeView() {
     loadCacheEconomics(arg, true);
   };
 
+  const loadPercent = Math.min(100, Math.round((loadProgress / TOTAL_LOADERS) * 100));
+  const showLoadingBar = loadProgress < TOTAL_LOADERS;
+
   if (firstLoad) {
     return (
       <div className="cr">
+        {showLoadingBar && <LoadingBar percent={loadPercent} />}
         <div className="cr__wrap">
           <div className="cr__center cr__center--tall">
             <div className="cr__spinner" />
@@ -760,6 +799,7 @@ function HomeView() {
   if (netError && !insights) {
     return (
       <div className="cr">
+        {showLoadingBar && <LoadingBar percent={loadPercent} />}
         <div className="cr__wrap">
           <p className="cr__notice">Couldn&rsquo;t reach the server. Try again in a moment.</p>
         </div>
@@ -774,6 +814,7 @@ function HomeView() {
 
   return (
     <div className="cr">
+      {showLoadingBar && <LoadingBar percent={loadPercent} />}
       <div className="cr__wrap">
         <div className="cr__top">
           <div className="cr__brand">

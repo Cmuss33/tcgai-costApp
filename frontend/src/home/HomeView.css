@@ -265,6 +265,26 @@
 }
 @keyframes cr-spin { to { transform: rotate(360deg); } }
 
+/* loading bar */
+.cr__loadbar {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 60;
+  height: 3px; background: transparent;
+}
+.cr__loadbar-fill {
+  height: 100%; width: 0%;
+  background: linear-gradient(90deg, var(--a-spend), var(--a-eval));
+  transition: width 0.25s ease;
+}
+.cr__loadbar-pct {
+  position: fixed; top: 10px; right: 16px; z-index: 60;
+  font-family: var(--font-m); font-size: 11px; color: var(--dim);
+  background: var(--panel-2); border: 1px solid var(--edge);
+  padding: 2px 9px; border-radius: 999px; font-variant-numeric: tabular-nums;
+}
+@media (prefers-reduced-motion: reduce) {
+  .cr__loadbar-fill { transition: none; }
+}
+
 /* svg */
 .cr svg .cr-grid { stroke: currentColor; opacity: 0.1; }
 
