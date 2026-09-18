@@ -344,7 +344,14 @@ function UsageByKeyPanel({ data }) {
 
 /* ---------- prompt cache economics ---------- */
 function CacheEconomicsPanel({ data }) {
-  if (!data || data.cache_creation_tokens == null) return null;
+  // On a fetch/usage-source error, buckets come back empty (0 read / 0
+  // written) same as a genuinely quiet month -- but claiming "not enough
+  // data to tell" would be misleading when the real cause is an upstream
+  // error. Hide the panel instead, matching UsageByKeyPanel/
+  // CostReconciliationPanel's own "hide on error" convention (the
+  // StatsBand notice above already covers "Anthropic's API is having
+  // issues" for the page).
+  if (!data || data.cache_creation_tokens == null || data.cost_source_error) return null;
   const hasCost = data.actual_cost != null && data.baseline_cost != null;
   const verdict = CACHE_VERDICT[data.verdict] ?? CACHE_VERDICT.no_data;
   return (
