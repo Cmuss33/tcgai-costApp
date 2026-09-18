@@ -24,4 +24,5 @@ urlpatterns = [
     path('get_model_rates/', stats_views.model_rates, name='get_model_rates'),
     path('get_usage_by_key/', stats_views.usage_by_key, name='get_usage_by_key'),
     path('cost_reconciliation/', stats_views.cost_reconciliation, name='cost_reconciliation'),
+    path('cache_economics/', stats_views.cache_economics, name='cache_economics'),
 ]

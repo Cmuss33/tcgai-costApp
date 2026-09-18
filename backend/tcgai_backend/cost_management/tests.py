@@ -1973,6 +1973,151 @@ class CostReconciliationEndpointTests(TestCase):
         self.assertEqual(self.client.get("/api/cost/cost_reconciliation/?month=nope").status_code, 400)
 
 
+class CacheEconomicsEndpointTests(TestCase):
+    """Reads-per-write reuse ratio plus estimated $ spent on cached input vs.
+    a baseline of pricing that same input as if none of it were cached --
+    the "no caching at all" comparison, not a different-TTL one. Scoped to
+    chat_api_key_ids() like cost_reconciliation, via get_usage_by_key's
+    per-key by_model breakdown (that adapter method itself stays unscoped)."""
+
+    def setUp(self):
+        cache.clear()
+        self.user = User.objects.create_user(username="owner", password="pw")
+
+    def tearDown(self):
+        cache.clear()
+
+    def _patch_adapter(self, usage_return=None, rates_return=None):
+        get_usage_by_key = MagicMock(return_value=usage_return if usage_return is not None else {"keys": []})
+        get_model_rates = MagicMock(return_value=rates_return if rates_return is not None else {"rates": {}})
+        p = patch.multiple(
+            "cost_management.views.llmprovider",
+            get_usage_by_key=get_usage_by_key,
+            get_model_rates=get_model_rates,
+        )
+        p.start()
+        self.addCleanup(p.stop)
+        return get_usage_by_key, get_model_rates
+
+    def test_requires_login(self):
+        self.assertEqual(self.client.get("/api/cost/cache_economics/").status_code, 302)
+
+    def test_reads_per_write_and_savings_vs_uncached_baseline(self):
+        self._patch_adapter(
+            usage_return={"keys": [{
+                "api_key_id": "apikey_chat", "name": "prod-shopify-chatbot",
+                "input_tokens": 1_000_100, "output_tokens": 0,
+                "by_model": {"claude-haiku-4-5": {
+                    "uncached_input_tokens": 100, "output_tokens": 0,
+                    "cache_creation_tokens": 1_000, "cache_read_tokens": 999_000,
+                }},
+            }]},
+            rates_return={"rates": {"claude-haiku-4-5": {
+                "input": 0.000001, "cache_creation": 0.00000125, "cache_read": 0.0000001,
+            }}},
+        )
+        self.client.force_login(self.user)
+
+        with patch.dict('os.environ', {'ANTHROPIC_CHAT_API_KEY_IDS': 'apikey_chat'}):
+            d = self.client.get("/api/cost/cache_economics/").json()
+
+        self.assertEqual(d["cache_read_tokens"], 999_000)
+        self.assertEqual(d["cache_creation_tokens"], 1_000)
+        self.assertEqual(d["reads_per_write"], 999.0)
+        # actual: 100*0.000001 + 1000*0.00000125 + 999000*0.0000001 = 0.0001 + 0.00125 + 0.0999
+        self.assertEqual(d["actual_cost"], round(0.0001 + 0.00125 + 0.0999, 2))
+        # baseline: all 1_000_100 tokens billed at plain input rate
+        self.assertEqual(d["baseline_cost"], round(1_000_100 * 0.000001, 2))
+        self.assertEqual(d["savings"], round(d["baseline_cost"] - d["actual_cost"], 2))
+
+    def test_key_outside_chat_scope_is_excluded(self):
+        """A key outside chat_api_key_ids() (e.g. AI Search Curator's) must
+        not contribute its cache tokens -- get_usage_by_key itself stays
+        unscoped, so this endpoint must filter it, mirroring usage_by_key's
+        own app_api_key_ids() filter one layer up."""
+        self._patch_adapter(
+            usage_return={"keys": [
+                {"api_key_id": "apikey_chat", "name": "chat",
+                 "input_tokens": 100, "output_tokens": 0,
+                 "by_model": {"m": {"uncached_input_tokens": 0, "output_tokens": 0,
+                                     "cache_creation_tokens": 10, "cache_read_tokens": 90}}},
+                {"api_key_id": "apikey_curator", "name": "ai-search-curator",
+                 "input_tokens": 10_000, "output_tokens": 0,
+                 "by_model": {"m": {"uncached_input_tokens": 0, "output_tokens": 0,
+                                     "cache_creation_tokens": 5_000, "cache_read_tokens": 5_000}}},
+            ]},
+            rates_return={"rates": {"m": {"input": 0.000001, "cache_creation": 0.00000125, "cache_read": 0.0000001}}},
+        )
+        self.client.force_login(self.user)
+
+        with patch.dict('os.environ', {'ANTHROPIC_CHAT_API_KEY_IDS': 'apikey_chat'}):
+            d = self.client.get("/api/cost/cache_economics/").json()
+
+        self.assertEqual(d["cache_creation_tokens"], 10)
+        self.assertEqual(d["cache_read_tokens"], 90)
+
+    def test_no_writes_yields_none_ratio_not_error(self):
+        self._patch_adapter(usage_return={"keys": []})
+        self.client.force_login(self.user)
+        d = self.client.get("/api/cost/cache_economics/").json()
+        self.assertIsNone(d["reads_per_write"])
+        self.assertIsNone(d["actual_cost"])
+        self.assertIsNone(d["savings"])
+
+    def test_missing_rate_for_a_model_contributes_zero_not_an_error(self):
+        self._patch_adapter(
+            usage_return={"keys": [{
+                "api_key_id": "apikey_chat", "name": "chat",
+                "input_tokens": 100, "output_tokens": 0,
+                "by_model": {"some-unpriced-model": {
+                    "uncached_input_tokens": 0, "output_tokens": 0,
+                    "cache_creation_tokens": 10, "cache_read_tokens": 90,
+                }},
+            }]},
+            rates_return={"rates": {}},
+        )
+        self.client.force_login(self.user)
+
+        with patch.dict('os.environ', {'ANTHROPIC_CHAT_API_KEY_IDS': 'apikey_chat'}):
+            d = self.client.get("/api/cost/cache_economics/").json()
+
+        self.assertEqual(d["reads_per_write"], 9.0)  # token ratio survives missing rates
+        self.assertIsNone(d["actual_cost"])
+        self.assertIsNone(d["savings"])
+
+    def test_chat_scope_is_app_wide_when_env_var_unset(self):
+        self._patch_adapter()
+        self.client.force_login(self.user)
+        with patch.dict('os.environ', {}, clear=False):
+            os.environ.pop('ANTHROPIC_CHAT_API_KEY_IDS', None)
+            d = self.client.get("/api/cost/cache_economics/").json()
+        self.assertTrue(d["chat_scope_is_app_wide"])
+
+    def test_usage_source_error_yields_empty_buckets_with_error(self):
+        self._patch_adapter(usage_return={"error": "boom"})
+        self.client.force_login(self.user)
+        d = self.client.get("/api/cost/cache_economics/").json()
+        self.assertEqual(d["cost_source_error"], "boom")
+        self.assertIsNone(d["reads_per_write"])
+
+    def test_caches_and_refresh_bypasses(self):
+        get_usage_by_key, _ = self._patch_adapter()
+        self.client.force_login(self.user)
+
+        self.client.get("/api/cost/cache_economics/")
+        calls_after_first = get_usage_by_key.call_count
+        cached = self.client.get("/api/cost/cache_economics/").json()
+        self.assertTrue(cached["cached"])
+        self.assertEqual(get_usage_by_key.call_count, calls_after_first)
+
+        self.client.get("/api/cost/cache_economics/?refresh=1")
+        self.assertGreater(get_usage_by_key.call_count, calls_after_first)
+
+    def test_invalid_month_is_400(self):
+        self.client.force_login(self.user)
+        self.assertEqual(self.client.get("/api/cost/cache_economics/?month=nope").status_code, 400)
+
+
 class CostCommentaryTests(TestCase):
     """Task D: a standing, grounded "why did cost move" narrative alongside
     the monthly Insights report -- fed real monthly_stats deltas plus a

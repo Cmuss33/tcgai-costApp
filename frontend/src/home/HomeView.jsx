@@ -267,15 +267,6 @@ function StatsBand({ stats }) {
         />
       </div>
 
-      {tk.cache_hit_rate != null && (
-        <p className="cr__note" style={{ margin: "-4px 0 18px" }}>
-          Cache hit rate: {fmtPct(tk.cache_hit_rate)} of input tokens this month were served from
-          Anthropic&rsquo;s prompt cache ({fmtCompact(tk.cache_read)} read / {fmtCompact(tk.cache_creation)} written).
-          Caching reduces cost &mdash; cache reads bill at a discount, cache writes at a premium &mdash; it
-          doesn&rsquo;t make a call free.
-        </p>
-      )}
-
       {convDaily.length > 0 && (
         <div className="cr__panel" style={{ "--accent": "var(--a-convo)" }}>
           <h2>Conversations per day</h2>
@@ -321,6 +312,50 @@ function UsageByKeyPanel({ data }) {
               <td className="cr__st">~{fmtUsd(k.estimated_cost, true)}</td>
             </tr>
           ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/* ---------- prompt cache economics ---------- */
+function CacheEconomicsPanel({ data }) {
+  if (!data || data.cache_creation_tokens == null) return null;
+  const hasCost = data.actual_cost != null && data.baseline_cost != null;
+  return (
+    <div className="cr__panel" style={{ "--accent": "var(--a-tok)" }}>
+      <h2>Prompt caching</h2>
+      <div className="cr__note">
+        Cache reads bill at Anthropic&rsquo;s steep discount; cache writes bill at a premium over
+        plain input. Break-even is under one read per write, so any reuse tends to win &mdash;
+        writing more into the cache without it getting reused doesn&rsquo;t help. The lever is
+        reads per write, not the raw hit-rate number.
+      </div>
+      {data.chat_scope_is_app_wide && (
+        <p className="cr__notice">
+          ANTHROPIC_CHAT_API_KEY_IDS isn&rsquo;t set &mdash; these figures still include AI Search
+          Curator, narrative, and monthly-report spend, not chat traffic alone.
+        </p>
+      )}
+      <table className="cr__want cr__keys">
+        <tbody>
+          <tr>
+            <td className="cr__p">Reads per write</td>
+            <td className="cr__x">
+              {fmtCompact(data.cache_read_tokens)} read / {fmtCompact(data.cache_creation_tokens)} written
+            </td>
+            <td className="cr__st">{data.reads_per_write != null ? `${data.reads_per_write}×` : "—"}</td>
+          </tr>
+          <tr>
+            <td className="cr__p">Cost with caching</td>
+            <td className="cr__x">vs. {fmtUsd(data.baseline_cost, true)} if none of it were cached</td>
+            <td className="cr__st">{hasCost ? fmtUsd(data.actual_cost, true) : "—"}</td>
+          </tr>
+          <tr>
+            <td className="cr__p">Savings from caching</td>
+            <td className="cr__x">{data.savings_pct != null ? `${data.savings_pct}% of baseline` : ""}</td>
+            <td className="cr__st">{hasCost ? fmtUsd(data.savings, true) : "—"}</td>
+          </tr>
         </tbody>
       </table>
     </div>
@@ -517,6 +552,7 @@ function HomeView() {
   const [statsError, setStatsError] = useState(false);
   const [usageByKey, setUsageByKey] = useState(null);
   const [costReconciliation, setCostReconciliation] = useState(null);
+  const [cacheEconomics, setCacheEconomics] = useState(null);
   const [insights, setInsights] = useState(null);
   const [firstLoad, setFirstLoad] = useState(true);
   const [netError, setNetError] = useState(false);
@@ -582,6 +618,25 @@ function HomeView() {
     [navigate]
   );
 
+  const loadCacheEconomics = useCallback(
+    async (month, refresh) => {
+      try {
+        const params = new URLSearchParams();
+        if (month) params.set("month", month);
+        if (refresh) params.set("refresh", "1");
+        const qs = params.toString();
+        const res = await fetch(`${API_URL}/api/cost/cache_economics/${qs ? `?${qs}` : ""}`, {
+          credentials: "include",
+        });
+        if (res.status === 401 || res.status === 403) return navigate("/");
+        setCacheEconomics(await res.json());
+      } catch {
+        // Non-critical panel -- the rest of the dashboard still works without it.
+      }
+    },
+    [navigate]
+  );
+
   const loadInsights = useCallback(
     async ({ month, refresh, poll = 0 } = {}) => {
       setNetError(false);
@@ -625,13 +680,14 @@ function HomeView() {
         loadInsights();
         loadUsageByKey();
         loadCostReconciliation();
+        loadCacheEconomics();
       })
       .catch(() => {
         setNetError(true);
         setFirstLoad(false);
       });
     return () => clearTimeout(pollRef.current);
-  }, [navigate, loadStats, loadInsights, loadUsageByKey, loadCostReconciliation]);
+  }, [navigate, loadStats, loadInsights, loadUsageByKey, loadCostReconciliation, loadCacheEconomics]);
 
   const months = insights?.available_months ?? [];
   const curIdx = Math.max(
@@ -648,6 +704,7 @@ function HomeView() {
     loadInsights({ month: arg });
     loadUsageByKey(arg);
     loadCostReconciliation(arg);
+    loadCacheEconomics(arg);
   };
   const refreshCurrent = () => {
     const arg = shown?.is_current ? undefined : shown?.value;
@@ -655,6 +712,7 @@ function HomeView() {
     loadInsights({ month: arg, refresh: true });
     loadUsageByKey(arg, true);
     loadCostReconciliation(arg, true);
+    loadCacheEconomics(arg, true);
   };
 
   if (firstLoad) {
@@ -726,6 +784,7 @@ function HomeView() {
           <p className="cr__notice">Couldn&rsquo;t load spend &amp; usage. Try Refresh.</p>
         )}
         <StatsBand stats={stats} />
+        <CacheEconomicsPanel data={cacheEconomics} />
         <UsageByKeyPanel data={usageByKey} />
         <CostReconciliationPanel data={costReconciliation} />
         <CostCommentaryPanel data={insights?.cost_commentary} />
