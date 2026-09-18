@@ -1429,7 +1429,12 @@ class MonthlyStatsTests(TestCase):
     def _patch_adapter(self):
         # month M (current) totals 15.0 spend / 3000 in / 700 out; month P totals 10.0 / 800 / 200
         cur, prev = self.this_month.month, self.prev_month.month
-        get_cost = MagicMock(side_effect=lambda year, month, key_ids=None:
+        # rates_resp: _spend_for now passes the month's already-fetched
+        # get_model_rates() response straight through to get_cost (see
+        # AnthropicAdapter.get_cost's rates_resp param) instead of letting
+        # get_cost derive its own -- accepted and ignored here since this
+        # mock's canned response doesn't vary by rate.
+        get_cost = MagicMock(side_effect=lambda year, month, key_ids=None, rates_resp=None:
                              _cost_resp(5.0, 7.0, 3.0) if month == cur else _cost_resp(4.0, 6.0))
         get_tokens = MagicMock(side_effect=lambda year, month, key_ids=None:
                                _tok_resp((1000, 300), (2000, 400)) if month == cur else _tok_resp((800, 200)))
@@ -2599,6 +2604,44 @@ class AppApiKeyScopingTests(TestCase):
         ):
             result = AnthropicAdapter().get_cost(year=2026, month=8)
 
+        self.assertEqual(result["error"], "boom")
+
+
+class GetCostRatesRespReuseTests(TestCase):
+    """get_cost's optional rates_resp param lets a caller that already
+    fetched get_model_rates for this exact month pass it straight in --
+    added because stats_views._build_stats/cost_reconciliation both need
+    this month's whole-org rate for their own proration math regardless of
+    whether get_cost succeeds, and were each triggering a second, identical
+    cost_report+usage_report pair by letting get_cost derive its own on top
+    of that. Must produce the exact same result as the two-call path, using
+    only the one HTTP call get_cost's own estimate legitimately needs."""
+
+    def test_uses_passed_rates_instead_of_deriving_its_own(self):
+        own_usage_resp = MagicMock(status_code=200, json=lambda: {"data": [{"starting_at": "2026-08-01T00:00:00Z", "results": [
+            {"model": "claude-haiku-4-5", "api_key_id": "apikey_target", "uncached_input_tokens": 500_000, "output_tokens": 0},
+        ]}]})
+        rates_resp = {"rates": {"claude-haiku-4-5": {"input": 0.000001}}}
+        from .llm_provider_adapter_implementations import AnthropicAdapter
+        with patch.dict('os.environ', {'ANTHROPIC_APP_API_KEY_IDS': 'apikey_target'}), \
+             patch("cost_management.llm_provider_adapter_implementations.requests.get",
+                   side_effect=[own_usage_resp]) as mock_get:
+            result = AnthropicAdapter().get_cost(year=2026, month=8, rates_resp=rates_resp)
+
+        # Exactly one HTTP call (its own usage_report) -- no cost_report/
+        # usage_report pair for a rate derivation it was handed already.
+        self.assertEqual(mock_get.call_count, 1)
+        self.assertEqual(result["costs"][0]["total_cost"], 0.5)
+
+    def test_propagates_an_error_already_present_on_the_passed_rates_resp(self):
+        """A pre-fetched rates_resp that failed must still surface as a
+        get_cost error, not silently price everything at $0 -- same
+        contract as when get_cost derives the rate itself."""
+        from .llm_provider_adapter_implementations import AnthropicAdapter
+        with patch("cost_management.llm_provider_adapter_implementations.requests.get") as mock_get:
+            result = AnthropicAdapter().get_cost(year=2026, month=8, rates_resp={"error": "boom"})
+
+        mock_get.assert_not_called()
         self.assertEqual(result["error"], "boom")
 
 
