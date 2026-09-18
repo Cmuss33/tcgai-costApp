@@ -3,8 +3,10 @@ from . import views
 from . import investigation_views
 from . import insights_views
 from . import stats_views
+from . import sso
 
 urlpatterns = [
+    path('sso_login/', sso.sso_login, name='sso_login'),
     path('get_cost/', views.get_cost, name='get_cost'),
     path('get_tokens/', views.get_tokens, name='get_cost'),
     path('log_message/', views.log_message, name='log_message'),
