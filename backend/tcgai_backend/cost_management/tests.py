@@ -3424,3 +3424,89 @@ class SsoLoginTests(TestCase):
 
         self.assertEqual(resp.status_code, 302)
         self.assertEqual(resp["Location"], "https://cost.example.com/chats")
+
+
+class FlagProbeChatsTests(TestCase):
+    """ENG-164: the AOP monitor's retired synthetic probe asked the same
+    question every ~6 minutes as a new chat. The chatbot's repeat-message
+    breaker let exactly five an hour through, which flag_automated_chats
+    (more than five an hour) never caught, so they filled the chat summary.
+    flag_probe_chats (and migration 0016) flag them by shape instead."""
+
+    PROBE = "Do you have any Pokemon booster boxes in stock?"
+
+    def setUp(self):
+        from datetime import datetime, timezone as dt_timezone
+        self.after_probe_started = datetime(2026, 9, 20, 12, 0, tzinfo=dt_timezone.utc)
+        self.before_probe_started = datetime(2026, 9, 1, 12, 0, tzinfo=dt_timezone.utc)
+
+    def _chat(self, chat_id, contents, when):
+        chat = Chat.objects.create(chat_id=chat_id, model="claude-haiku-4-5")
+        Chat.objects.filter(pk=chat.pk).update(timestamp=when)
+        for content in contents:
+            msg = Message.objects.create(
+                chat=chat, content=content, llm_formatted_message="{}",
+                returned_content="", llm_formatted_returned_message="{}",
+                tokens_in=0, tokens_out=0, model="claude-haiku-4-5",
+            )
+            Message.objects.filter(pk=msg.pk).update(timestamp=when)
+
+    def flagged(self):
+        return set(Chat.objects.filter(likely_automated=True).values_list("chat_id", flat=True))
+
+    def test_flags_single_turn_probe_chats_including_multi_call_turns(self):
+        self._chat("probe-1", [self.PROBE], self.after_probe_started)
+        # One probe turn logged as two LLM calls (tool use, then the answer).
+        self._chat("probe-2", [self.PROBE, self.PROBE], self.after_probe_started)
+
+        call_command("flag_probe_chats")
+
+        self.assertEqual(self.flagged(), {"probe-1", "probe-2"})
+
+    def test_keeps_a_shopper_who_asked_the_question_and_kept_talking(self):
+        self._chat("shopper", [self.PROBE, "what about Surging Sparks?"], self.after_probe_started)
+
+        call_command("flag_probe_chats")
+
+        self.assertEqual(self.flagged(), set())
+
+    def test_keeps_other_wording_and_chats_from_before_the_probe_existed(self):
+        self._chat("reworded", ["do you have any pokemon booster boxes in stock"], self.after_probe_started)
+        self._chat("early", [self.PROBE], self.before_probe_started)
+
+        call_command("flag_probe_chats")
+
+        self.assertEqual(self.flagged(), set())
+
+    def test_dry_run_changes_nothing(self):
+        self._chat("probe-1", [self.PROBE], self.after_probe_started)
+
+        call_command("flag_probe_chats", "--dry-run")
+
+        self.assertEqual(self.flagged(), set())
+
+    def test_flagged_probe_chats_disappear_from_the_chat_summary(self):
+        self._chat("probe-1", [self.PROBE], self.after_probe_started)
+        self._chat("real-1", ["do you have charizard?"], self.after_probe_started)
+        user = User.objects.create_user(username="owner", password="pw")
+        self.client.force_login(user)
+
+        call_command("flag_probe_chats")
+        response = self.client.get("/api/cost/get_chat_ids/?limit=100")
+
+        self.assertEqual({c["chat_id"] for c in response.json()["results"]}, {"real-1"})
+
+    def test_migration_flags_probe_chats(self):
+        import importlib
+        from django.apps import apps as live_apps
+        migration = importlib.import_module("cost_management.migrations.0016_flag_aop_probe_chats")
+        from cost_management.models import CostMethodologyChange
+        self._chat("probe-1", [self.PROBE], self.after_probe_started)
+
+        migration.flag_probe_chats(live_apps, None)
+        migration.flag_probe_chats(live_apps, None)  # idempotent
+
+        self.assertEqual(self.flagged(), {"probe-1"})
+        self.assertEqual(
+            CostMethodologyChange.objects.filter(date="2026-09-25", category="measurement_fix").count(), 1
+        )
