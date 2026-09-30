@@ -186,23 +186,98 @@ function ChatSummaryView() {
         return;
       }
 
-      setChats((prev) =>
-        prev.map((c) =>
-          c.chat_id === chatId
-            ? {
-                ...c,
-                investigation_status: data.investigation_status || "flagged",
-                github_issue_url: data.github_issue_url ?? c.github_issue_url,
-                linear_issue_url: data.linear_issue_url ?? c.linear_issue_url,
-                flag_error: data.flag_error ?? data.linear_error ?? "",
-              }
-            : c
-        )
-      );
+      setChats((prev) => {
+        const exists = prev.some((c) => c.chat_id === chatId);
+        if (exists) {
+          return prev.map((c) =>
+            c.chat_id === chatId
+              ? {
+                  ...c,
+                  investigation_status: data.investigation_status || "flagged",
+                  github_issue_url: data.github_issue_url ?? c.github_issue_url,
+                  linear_issue_url: data.linear_issue_url ?? c.linear_issue_url,
+                  flag_error: data.flag_error ?? data.linear_error ?? "",
+                }
+              : c
+          );
+        }
+        return [
+          {
+            chat_id: chatId,
+            investigation_status: data.investigation_status || "flagged",
+            github_issue_url: data.github_issue_url,
+            linear_issue_url: data.linear_issue_url,
+            flag_error: data.flag_error ?? data.linear_error ?? "",
+          },
+          ...prev,
+        ];
+      });
       setFlagState(null);
     } catch (err) {
       setFlagState((s) => ({ ...s, pending: false, error: String(err) }));
     }
+  };
+
+  const renderModalInvestigation = (chat, chatId) => {
+    const status = chat?.investigation_status || "unflagged";
+    const links = (
+      <span className="issue-links">
+        {chat?.github_issue_url && (
+          <a href={chat.github_issue_url} target="_blank" rel="noopener noreferrer">
+            GitHub ↗
+          </a>
+        )}
+        {chat?.linear_issue_url && (
+          <a href={chat.linear_issue_url} target="_blank" rel="noopener noreferrer">
+            Linear ↗
+          </a>
+        )}
+      </span>
+    );
+
+    if (status === "unflagged") {
+      return (
+        <button
+          className="modal-flag-button"
+          onClick={() => openFlagModal(chatId)}
+          disabled={loadingMessages}
+        >
+          🚩 Flag
+        </button>
+      );
+    }
+
+    if (status === "resolved") {
+      return (
+        <div className="modal-investigation-status">
+          <span className="badge badge-resolved">Resolved ✓</span>
+          {links}
+        </div>
+      );
+    }
+
+    return (
+      <div className="modal-investigation-status">
+        <span
+          className="badge badge-flagged"
+          title={
+            chat?.flag_error && chat?.linear_issue_url ? chat.flag_error : undefined
+          }
+        >
+          Flagged
+        </span>
+        {chat?.flag_error && !chat?.linear_issue_url ? (
+          <button
+            className="retry-link"
+            title={chat.flag_error}
+            onClick={() => openFlagModal(chatId)}
+          >
+            ⚠ Retry
+          </button>
+        ) : null}
+        {links}
+      </div>
+    );
   };
 
   const renderInvestigationCell = (chat) => {
@@ -488,6 +563,13 @@ function ChatSummaryView() {
               <h2>
                 Chat {selectedChatId}
               </h2>
+              <button
+                className="modal-header-close"
+                onClick={closeModal}
+                aria-label="Close transcript"
+              >
+                ✕
+              </button>
             </div>
 
             {loadingMessages ? (
@@ -706,6 +788,12 @@ function ChatSummaryView() {
             )}
 
             <div className="modal-footer">
+              <div className="modal-footer-actions">
+                {renderModalInvestigation(
+                  chats.find((c) => c.chat_id === selectedChatId),
+                  selectedChatId
+                )}
+              </div>
               <button
                 className="close-modal-button"
                 onClick={closeModal}
