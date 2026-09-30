@@ -208,6 +208,65 @@ function Kpi({ accent, label, value, sub, deltaPct, betterWhen, spark, sparkColo
   );
 }
 
+function CollapsiblePanel({
+  id,
+  title,
+  accent,
+  description,
+  badge,
+  defaultOpen = false,
+  className = "",
+  children,
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+
+  return (
+    <div
+      className={`cr__panel cr__collapsible ${open ? "is-open" : "is-collapsed"} ${className}`}
+      style={{ "--accent": accent }}
+    >
+      <button
+        type="button"
+        className="cr__panel-toggle"
+        onClick={() => setOpen((prev) => !prev)}
+        aria-expanded={open}
+        aria-controls={id}
+      >
+        <div className="cr__panel-header-left">
+          <div className="cr__panel-title-row">
+            <h2>{title}</h2>
+            {badge}
+          </div>
+          {description && <p className="cr__panel-desc">{description}</p>}
+        </div>
+        <div className="cr__panel-chevron">
+          <span className="cr__panel-chevron-label">{open ? "Hide details" : "Show details"}</span>
+          <svg
+            className={`cr__chevron-icon ${open ? "cr__chevron-icon--open" : ""}`}
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <polyline points="6 9 12 15 18 9" />
+          </svg>
+        </div>
+      </button>
+
+      {open && (
+        <div id={id} className="cr__panel-content">
+          {children}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ---------- KPI band + trend ---------- */
 function StatsBand({ stats }) {
   if (!stats) {
@@ -295,8 +354,13 @@ function StatsBand({ stats }) {
       </div>
 
       {convDaily.length > 0 && (
-        <div className="cr__panel" style={{ "--accent": "var(--a-convo)" }}>
-          <h2>Conversations per day</h2>
+        <CollapsiblePanel
+          id="panel-conv-daily"
+          title="Conversations per day"
+          accent="var(--a-convo)"
+          description="See daily customer chat traffic on your store, comparing real shoppers to automated bot tests."
+          badge={<span className="cr__chip flat">{fmtNum(c.total)} chats</span>}
+        >
           <div className="cr__note">
             {fmtNum(c.total)} real conversations this month
             {c.busiest ? ` · busiest ${shortDay(c.busiest.day)} (${c.busiest.count})` : ""}
@@ -311,7 +375,7 @@ function StatsBand({ stats }) {
               <i style={{ background: "#6c7488" }} /> automated / bot
             </span>
           </div>
-        </div>
+        </CollapsiblePanel>
       )}
     </>
   );
@@ -322,8 +386,13 @@ function UsageByKeyPanel({ data }) {
   const keys = data?.keys || [];
   if (!data || keys.length === 0) return null;
   return (
-    <div className="cr__panel" style={{ "--accent": "var(--a-tok)" }}>
-      <h2>Usage by API key</h2>
+    <CollapsiblePanel
+      id="panel-usage-keys"
+      title="Usage by API key"
+      accent="var(--a-tok)"
+      description="Breakdown of AI token activity and estimated costs across each connected service or tool in your store's setup."
+      badge={<span className="cr__chip flat">{keys.length} {keys.length === 1 ? "key" : "keys"}</span>}
+    >
       <div className="cr__note">
         Token usage per Anthropic API key this month, from Anthropic&rsquo;s own usage
         report. Cost is an estimate (tokens &times; this month&rsquo;s blended rate per
@@ -341,7 +410,7 @@ function UsageByKeyPanel({ data }) {
           ))}
         </tbody>
       </table>
-    </div>
+    </CollapsiblePanel>
   );
 }
 
@@ -358,10 +427,14 @@ function CacheEconomicsPanel({ data }) {
   const hasCost = data.actual_cost != null && data.baseline_cost != null;
   const verdict = CACHE_VERDICT[data.verdict] ?? CACHE_VERDICT.no_data;
   return (
-    <div className="cr__panel" style={{ "--accent": "var(--a-tok)" }}>
-      <h2>Prompt caching</h2>
-      <span className={`cr__chip ${verdict.tone}`}>{verdict.label}</span>
-      <p style={{ margin: "8px 0 14px", fontSize: 13, color: "var(--dim)", lineHeight: 1.5 }}>
+    <CollapsiblePanel
+      id="panel-cache-economics"
+      title="Prompt caching"
+      accent="var(--a-tok)"
+      description="Anthropic's memory feature that saves you money on recurring chatbot instructions instead of re-reading them every message."
+      badge={<span className={`cr__chip ${verdict.tone}`}>{verdict.label}</span>}
+    >
+      <p style={{ margin: "4px 0 14px", fontSize: 13, color: "var(--dim)", lineHeight: 1.5 }}>
         {verdict.headline(data)}
       </p>
       {data.chat_scope_is_app_wide && (
@@ -391,7 +464,7 @@ function CacheEconomicsPanel({ data }) {
           </tr>
         </tbody>
       </table>
-    </div>
+    </CollapsiblePanel>
   );
 }
 
@@ -400,8 +473,12 @@ function CostReconciliationPanel({ data }) {
   const pctUnaccounted =
     data.billed_spend > 0 && data.unaccounted != null ? (data.unaccounted / data.billed_spend) * 100 : null;
   return (
-    <div className="cr__panel" style={{ "--accent": "var(--a-cost)" }}>
-      <h2>Billed vs. logged</h2>
+    <CollapsiblePanel
+      id="panel-cost-reconciliation"
+      title="Billed vs. logged"
+      accent="var(--a-cost)"
+      description="Compares your actual Anthropic invoice against the chat conversations saved in this app to ensure there are no unexplained charges."
+    >
       <div className="cr__note">
         Anthropic&rsquo;s billed spend for the chat surface&rsquo;s key(s) this month, compared
         against what this app can actually price from logged Chat/Message token counts.
@@ -436,7 +513,7 @@ function CostReconciliationPanel({ data }) {
           </tr>
         </tbody>
       </table>
-    </div>
+    </CollapsiblePanel>
   );
 }
 
@@ -451,15 +528,22 @@ function CostCommentaryPanel({ data }) {
   }
   const drivers = asList(data.drivers);
   return (
-    <div className="cr__panel cr__cost-commentary" style={{ "--accent": "var(--a-cost)" }}>
-      <h2>Why did cost move?</h2>
+    <CollapsiblePanel
+      id="panel-cost-commentary"
+      title="Why did cost move?"
+      accent="var(--a-cost)"
+      className="cr__cost-commentary"
+      description="Plain-language explanation of what caused your spend to change compared to last month, separating customer volume shifts from system updates."
+      badge={
+        data.assessment && (
+          <span className="cr__badge">{ASSESSMENT_LABELS[data.assessment] ?? data.assessment}</span>
+        )
+      }
+    >
       <div className="cr__note">
         Grounded in this month&rsquo;s real spend/conversation numbers above and a
         maintained changelog of known measurement changes &mdash; never a guess.
       </div>
-      {data.assessment && (
-        <span className="cr__badge">{ASSESSMENT_LABELS[data.assessment] ?? data.assessment}</span>
-      )}
       {data.headline && <p>{data.headline}</p>}
       {drivers.length > 0 && (
         <ul className="cr__drivers">
@@ -472,12 +556,98 @@ function CostCommentaryPanel({ data }) {
           ))}
         </ul>
       )}
-    </div>
+    </CollapsiblePanel>
   );
 }
 
 /* ---------- insight sections ---------- */
 const asList = (v) => (Array.isArray(v) ? v : []);
+
+function ProductDemandPanel({ demand, oneOffs }) {
+  const [filter, setFilter] = useState("all");
+
+  const oosCount = demand.filter((p) => p.status === "out_of_stock").length;
+  const ncCount = demand.filter((p) => p.status === "not_carried").length;
+
+  const filtered = demand.filter((p) => {
+    if (filter === "out_of_stock") return p.status === "out_of_stock";
+    if (filter === "not_carried") return p.status === "not_carried";
+    return true;
+  });
+
+  const maxDemand = Math.max(1, ...demand.map((p) => p.count || 0));
+
+  return (
+    <div className="cr__panel" style={{ marginTop: 0, "--accent": "var(--a-cost)" }}>
+      <h2>Products customers are demanding</h2>
+      <div className="cr__note">
+        Shopper inquiries for items they couldn&rsquo;t purchase.
+      </div>
+
+      <div className="cr__demand-tabs">
+        <button
+          type="button"
+          className={`cr__tab ${filter === "all" ? "active" : ""}`}
+          onClick={() => setFilter("all")}
+        >
+          All ({demand.length})
+        </button>
+        {oosCount > 0 && (
+          <button
+            type="button"
+            className={`cr__tab ${filter === "out_of_stock" ? "active" : ""}`}
+            onClick={() => setFilter("out_of_stock")}
+          >
+            Restock ({oosCount})
+          </button>
+        )}
+        {ncCount > 0 && (
+          <button
+            type="button"
+            className={`cr__tab ${filter === "not_carried" ? "active" : ""}`}
+            onClick={() => setFilter("not_carried")}
+          >
+            New to catalog ({ncCount})
+          </button>
+        )}
+      </div>
+
+      <div className="cr__demand-list">
+        {filtered.map((p) => {
+          const isOos = p.status === "out_of_stock";
+          const isNc = p.status === "not_carried";
+          const actionLabel = isOos ? "Restock" : isNc ? "Add to catalog" : "Review";
+          const actionClass = isOos ? "cr__action--oos" : isNc ? "cr__action--nc" : "cr__action--rev";
+
+          return (
+            <div className="cr__bar-row cr__demand-row" key={p.product}>
+              <div className="cr__demand-header">
+                <span className="cr__nm">{p.product}</span>
+                <span className={`cr__action-badge ${actionClass}`}>{actionLabel}</span>
+              </div>
+              <div className="cr__fig">
+                {p.count} <span>requests</span>
+              </div>
+              <div className="cr__track">
+                <div
+                  className={`cr__fill ${isOos ? "cr__fill--oos" : "cr__fill--nc"}`}
+                  style={{ width: `${Math.round(((p.count || 0) / maxDemand) * 100)}%` }}
+                />
+              </div>
+              <ExampleLinks ids={p.examples} />
+            </div>
+          );
+        })}
+      </div>
+
+      {oneOffs > 0 && (
+        <p className="cr__want-more">
+          + {oneOffs} more products requested once each
+        </p>
+      )}
+    </div>
+  );
+}
 
 function Findings({ view }) {
   const requests = asList(view.top_requests);
@@ -485,6 +655,18 @@ function Findings({ view }) {
   const demand = asList(view.product_demand);
   const recs = asList(view.recommendations);
   const maxReq = Math.max(1, ...requests.map((r) => r.count || 0));
+
+  // Option A: match recommendations to their addressed unmet need
+  const addressedGaps = new Set();
+  const mergedRecs = recs.map((r) => {
+    const matched = gaps.find(
+      (g) => g.gap === r.addresses || (g.gap && r.addresses && g.gap.toLowerCase() === r.addresses.toLowerCase())
+    );
+    if (matched) addressedGaps.add(matched.gap);
+    return { ...r, matchedGap: matched };
+  });
+
+  const remainingGaps = gaps.filter((g) => !addressedGaps.has(g.gap));
 
   return (
     <>
@@ -509,69 +691,63 @@ function Findings({ view }) {
           </div>
         )}
 
-        {gaps.length > 0 && (
-          <div className="cr__panel" style={{ marginTop: 0, "--accent": "var(--a-tok)" }}>
-            <h2>Opportunities to improve</h2>
-            <div className="cr__note">Capabilities worth adding next.</div>
-            {gaps.map((n) => (
-              <div className="cr__gap" data-t={n.gap_type} key={n.gap}>
-                <div className="cr__gh">
-                  <span className="cr__badge">{GAP_LABELS[n.gap_type] ?? n.gap_type}</span>
-                  <span className="cr__cnt">{n.count} chats</span>
-                </div>
-                <h4>{n.gap}</h4>
-                <p>{n.summary}</p>
-                <ExampleLinks ids={n.examples} />
-              </div>
-            ))}
-          </div>
+        {demand.length > 0 && (
+          <ProductDemandPanel demand={demand} oneOffs={view.product_demand_one_offs} />
         )}
       </div>
 
-      {demand.length > 0 && (
-        <div className="cr__panel" style={{ "--accent": "var(--a-cost)" }}>
-          <h2>Products customers are demanding</h2>
-          <div className="cr__note">Worth stocking to capture more sales.</div>
-          <table className="cr__want">
-            <tbody>
-              {demand.map((p) => (
-                <tr key={p.product}>
-                  <td className="cr__p">{p.product}</td>
-                  <td className="cr__x">{p.count}&times;</td>
-                  <td className={`cr__st ${p.status === "not_carried" ? "nc" : ""}`}>
-                    {STATUS_LABELS[p.status] ?? p.status}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          {view.product_demand_one_offs > 0 && (
-            <p className="cr__want-more">
-              + {view.product_demand_one_offs} more products requested once each
-            </p>
-          )}
-        </div>
-      )}
-
-      {recs.length > 0 && (
+      {mergedRecs.length > 0 && (
         <div className="cr__panel" style={{ "--accent": "var(--a-eval)" }}>
           <h2>Where to invest next</h2>
-          <div className="cr__note">This month&rsquo;s highest-impact opportunities, ranked by evidence.</div>
-          {recs.map((r) => (
-            <div className="cr__rec" key={r.title}>
-              <div className="cr__rh">
-                <span className={`cr__prio ${r.impact}`}>{PRIO_LABELS[r.impact] ?? r.impact}</span>
-                <span className="cr__title">{r.title}</span>
-                {r.effort && <span className="cr__effort">· {r.effort}</span>}
+          <div className="cr__note">
+            This month&rsquo;s highest-impact opportunities and recommended actions, ranked by evidence.
+          </div>
+          {mergedRecs.map((r) => {
+            const mg = r.matchedGap;
+            const allExamples = Array.from(new Set([...(r.examples || []), ...(mg?.examples || [])]));
+            return (
+              <div className="cr__rec" key={r.title}>
+                <div className="cr__rh">
+                  <span className={`cr__prio ${r.impact}`}>{PRIO_LABELS[r.impact] ?? r.impact}</span>
+                  <span className="cr__title">{r.title}</span>
+                  {r.effort && <span className="cr__effort">· {r.effort}</span>}
+                </div>
+                <p>{r.detail}</p>
+                {mg && (
+                  <div className="cr__rec-gap" data-t={mg.gap_type}>
+                    <div className="cr__rec-gap-header">
+                      <span className="cr__badge">{GAP_LABELS[mg.gap_type] ?? mg.gap_type}</span>
+                      <span className="cr__rec-gap-title">Shopper gap: {mg.gap}</span>
+                    </div>
+                    {mg.summary && <p className="cr__rec-gap-summary">{mg.summary}</p>}
+                  </div>
+                )}
+                <div className="cr__foot">
+                  {r.evidence_count != null && <span>{r.evidence_count} conversations</span>}
+                  <ExampleLinks ids={allExamples} />
+                </div>
               </div>
-              <p>{r.detail}</p>
-              <div className="cr__foot">
-                {r.addresses && <span className="cr__tie">addresses {r.addresses}</span>}
-                {r.evidence_count != null && <span>{r.evidence_count} conversations</span>}
-                <ExampleLinks ids={r.examples} />
+            );
+          })}
+
+          {remainingGaps.length > 0 && (
+            <div className="cr__other-gaps">
+              <h3 className="cr__other-gaps-title">Other customer gaps identified</h3>
+              <div className="cr__other-gaps-grid">
+                {remainingGaps.map((n) => (
+                  <div className="cr__gap" data-t={n.gap_type} key={n.gap}>
+                    <div className="cr__gh">
+                      <span className="cr__badge">{GAP_LABELS[n.gap_type] ?? n.gap_type}</span>
+                      <span className="cr__cnt">{n.count} chats</span>
+                    </div>
+                    <h4>{n.gap}</h4>
+                    <p>{n.summary}</p>
+                    <ExampleLinks ids={n.examples} />
+                  </div>
+                ))}
               </div>
             </div>
-          ))}
+          )}
         </div>
       )}
     </>
