@@ -14,6 +14,7 @@ urlpatterns = [
     path('get_chat_ids/', views.get_chat_ids, name='get_chat_ids'),
     path('get_messages_by_chat_id/<str:chat_id>/', views.get_messages_by_chat_id, name='get_messages_by_chat_id'),
     path("login/", views.login_view, name="login"),
+    path("logout/", views.logout_view, name="logout"),
     path("auth-check/", views.auth_check, name="auth_check"),
     path('evaluate_chat/', views.evaluate_chat, name="evaluate_chat"),
     path('get_avg_eval_score/', views.get_avg_eval_score, name="get_avg_eval_score"),

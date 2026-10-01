@@ -3633,3 +3633,37 @@ class ApiLoginRequiredTests(TestCase):
         User.objects.create_user("u", password="p")
         self.client.login(username="u", password="p")
         self.assertNotEqual(self.client.get("/api/cost/monthly_stats/").status_code, 401)
+
+
+class LogoutEndpointTests(TestCase):
+    """Tests for the /api/cost/logout/ endpoint."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="testuser", password="secretpassword")
+
+    def test_logout_clears_session_and_returns_success(self):
+        self.client.login(username="testuser", password="secretpassword")
+
+        # Verify authenticated before logout
+        check_before = self.client.get("/api/cost/auth-check/")
+        self.assertTrue(check_before.json()["authenticated"])
+
+        # Perform logout
+        resp = self.client.post("/api/cost/logout/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json(), {"success": True})
+
+        # Verify unauthenticated after logout
+        check_after = self.client.get("/api/cost/auth-check/")
+        self.assertFalse(check_after.json()["authenticated"])
+
+        # Protected endpoints now return 401
+        protected_resp = self.client.get("/api/cost/monthly_stats/")
+        self.assertEqual(protected_resp.status_code, 401)
+        self.assertEqual(protected_resp.json(), {"error": "unauthenticated"})
+
+    def test_logout_when_not_logged_in_is_idempotent(self):
+        resp = self.client.post("/api/cost/logout/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json(), {"success": True})
+
