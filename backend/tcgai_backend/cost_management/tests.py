@@ -1043,7 +1043,7 @@ class InsightsSummaryTests(TestCase):
 
     def test_requires_login(self):
         response = self.client.get("/api/cost/insights_summary/")
-        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.status_code, 401)
 
     @patch("cost_management.insights_views._generate_insights", return_value=dict(CANNED_INSIGHTS))
     def test_generates_and_stores_current_month_snapshot(self, mock_gen):
@@ -1457,7 +1457,7 @@ class MonthlyStatsTests(TestCase):
         return get_cost, get_tokens
 
     def test_requires_login(self):
-        self.assertEqual(self.client.get("/api/cost/monthly_stats/").status_code, 302)
+        self.assertEqual(self.client.get("/api/cost/monthly_stats/").status_code, 401)
 
     def test_totals_and_month_over_month_deltas(self):
         self._patch_adapter()
@@ -1935,7 +1935,7 @@ class CostReconciliationEndpointTests(TestCase):
         return chat
 
     def test_requires_login(self):
-        self.assertEqual(self.client.get("/api/cost/cost_reconciliation/").status_code, 302)
+        self.assertEqual(self.client.get("/api/cost/cost_reconciliation/").status_code, 401)
 
     def test_billed_vs_logged_with_unaccounted_remainder(self):
         self._patch_adapter(spend=15.0)
@@ -2008,7 +2008,7 @@ class CacheEconomicsEndpointTests(TestCase):
         return get_usage_by_key, get_model_rates
 
     def test_requires_login(self):
-        self.assertEqual(self.client.get("/api/cost/cache_economics/").status_code, 302)
+        self.assertEqual(self.client.get("/api/cost/cache_economics/").status_code, 401)
 
     def test_reads_per_write_and_savings_vs_uncached_baseline(self):
         self._patch_adapter(
@@ -3022,7 +3022,7 @@ class UsageByKeyEndpointTests(TestCase):
         return get_usage_by_key, get_model_rates
 
     def test_requires_login(self):
-        self.assertEqual(self.client.get("/api/cost/get_usage_by_key/").status_code, 302)
+        self.assertEqual(self.client.get("/api/cost/get_usage_by_key/").status_code, 401)
 
     def test_combines_tokens_and_rates_into_estimated_cost(self):
         self._patch_adapter(
@@ -3194,7 +3194,7 @@ class ModelRatesEndpointTests(TestCase):
         return get_model_rates
 
     def test_requires_login(self):
-        self.assertEqual(self.client.get("/api/cost/get_model_rates/").status_code, 302)
+        self.assertEqual(self.client.get("/api/cost/get_model_rates/").status_code, 401)
 
     def test_returns_rates_from_adapter(self):
         self._patch_adapter()
@@ -3616,3 +3616,20 @@ class AnthropicDateBoundsAndRateFallbackTests(TestCase):
             rates = _rates_for(current)
             self.assertEqual(rates, {"model-a": {"input": 0.0001, "output": 0.0002}})
 
+
+
+class ApiLoginRequiredTests(TestCase):
+    """Protected API views must answer 401 JSON, not a 302 to /accounts/login/
+    (which doesn't exist here, so fetch() followed it into a misleading 404)."""
+
+    def test_unauthenticated_returns_401_json_without_redirect(self):
+        resp = self.client.get("/api/cost/monthly_stats/")
+        self.assertEqual(resp.status_code, 401)
+        self.assertEqual(resp.json(), {"error": "unauthenticated"})
+        self.assertNotIn("Location", resp)
+
+    def test_authenticated_passes_through(self):
+        from django.contrib.auth.models import User
+        User.objects.create_user("u", password="p")
+        self.client.login(username="u", password="p")
+        self.assertNotEqual(self.client.get("/api/cost/monthly_stats/").status_code, 401)

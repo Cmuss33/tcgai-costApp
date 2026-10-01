@@ -29,7 +29,7 @@ function ProductCard({ product }) {
 }
 
 function ChatSummaryView() {
-  const API_URL = import.meta.env.VITE_API_URL;
+  const API_URL = import.meta.env.VITE_API_URL ?? "";
 
   const navigate = useNavigate();
 

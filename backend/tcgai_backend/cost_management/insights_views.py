@@ -3,7 +3,7 @@ import threading
 from datetime import timedelta
 
 from django.conf import settings
-from django.contrib.auth.decorators import login_required
+from .api_auth import api_login_required
 from django.core.cache import cache
 from django.http import JsonResponse
 from django.utils import timezone
@@ -472,7 +472,7 @@ def _finalize(payload, month_start, cached=False):
     return JsonResponse(body)
 
 
-@login_required
+@api_login_required
 def insights_summary(request):
     refresh = request.GET.get("refresh", "").lower() in ("1", "true", "yes")
     month_param = request.GET.get("month")

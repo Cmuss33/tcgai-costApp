@@ -2,7 +2,7 @@
 import calendar
 import os
 
-from django.contrib.auth.decorators import login_required
+from .api_auth import api_login_required
 from django.core.cache import cache
 from django.db.models import Avg, Count, Sum
 from django.db.models.functions import TruncDate
@@ -446,7 +446,7 @@ def _build_stats(month_start):
     }
 
 
-@login_required
+@api_login_required
 def monthly_stats(request):
     refresh = request.GET.get("refresh", "").lower() in ("1", "true", "yes")
     month_param = request.GET.get("month")
@@ -470,7 +470,7 @@ def monthly_stats(request):
     return JsonResponse(payload)
 
 
-@login_required
+@api_login_required
 def model_rates(request):
     """Effective $/token rate per model this month, straight from Anthropic's
     own billing data (see AnthropicAdapter.get_model_rates) - not a hardcoded
@@ -497,7 +497,7 @@ def model_rates(request):
     return JsonResponse(payload)
 
 
-@login_required
+@api_login_required
 def usage_by_key(request):
     """Per-API-key token usage + an estimated $ cost this month, combining
     AnthropicAdapter.get_usage_by_key (real per-key token counts) with
@@ -577,7 +577,7 @@ def usage_by_key(request):
     return JsonResponse(payload)
 
 
-@login_required
+@api_login_required
 def cost_reconciliation(request):
     """Billed Anthropic spend (chat-key-scoped -- the same numerator cost_pc
     uses) vs. this month's summed per-chat/per-message LOGGED token
@@ -632,7 +632,7 @@ def cost_reconciliation(request):
     return JsonResponse(payload)
 
 
-@login_required
+@api_login_required
 def cache_economics(request):
     """Prompt-cache economics for the chat surface this month: a reads-per-
     write reuse ratio (a plain token-count ratio, so it degrades gracefully

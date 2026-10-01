@@ -12,12 +12,12 @@ from django.db.models import Avg, Count, IntegerField, Sum, Value
 from django.db.models.functions import Coalesce, TruncDate
 from django.utils.timezone import now
 from datetime import timedelta
-from django.contrib.auth.decorators import login_required
+from .api_auth import api_login_required
 from .month_utils import real_chats
 
 llmprovider = AnthropicAdapter()
 
-@login_required
+@api_login_required
 @csrf_exempt
 @require_http_methods(["POST"])
 def evaluate_chat(request):
@@ -60,14 +60,14 @@ def evaluate_chat(request):
 
     return JsonResponse({"eval_percentage": eval_percentage})
 
-@login_required
+@api_login_required
 def get_cost(request):
     year = request.GET.get("year")
     month = request.GET.get("month")
     response = llmprovider.get_cost(year=year, month=month)
     return JsonResponse(response, safe=False)
 
-@login_required
+@api_login_required
 def get_tokens(request):
     year = request.GET.get("year")
     month = request.GET.get("month")
@@ -157,7 +157,7 @@ def log_message(request):
     except Exception as e:
         return JsonResponse({'status': 'error', 'message': str(e)}, status=400)
 
-@login_required
+@api_login_required
 def get_messages(request):
     try:
         chats = Chat.objects.all()
@@ -173,7 +173,7 @@ def get_messages(request):
     except Exception as e:
         return JsonResponse({'status': 'error', 'message': str(e)}, status=400)
 
-@login_required
+@api_login_required
 def get_chat_ids(request):
     try:
         limit = int(request.GET.get("limit", 10))
@@ -226,7 +226,7 @@ def get_chat_ids(request):
     except Exception as e:
         return JsonResponse({'status': 'error', 'message': str(e)}, status=400)
 
-@login_required
+@api_login_required
 def get_messages_by_chat_id(request, chat_id):
     try:
         chat = Chat.objects.get(chat_id=chat_id)
@@ -270,7 +270,7 @@ def get_period_start(period: str):
     else:  # default 30 days
         return 30
 
-@login_required
+@api_login_required
 def get_avg_eval_score(request):
     try:
         period = request.GET.get("period", "30_days")
@@ -292,7 +292,7 @@ def get_avg_eval_score(request):
     except Exception as e:
         return JsonResponse({'status': 'error', 'message': str(e)}, status=400)
 
-@login_required
+@api_login_required
 def get_avg_tokens_in(request):
     try:
         period = request.GET.get("period", "30_days")
@@ -314,7 +314,7 @@ def get_avg_tokens_in(request):
     except Exception as e:
         return JsonResponse({'status': 'error', 'message': str(e)}, status=400)
 
-@login_required
+@api_login_required
 def get_avg_tokens_out(request):
     try:
         period = request.GET.get("period", "30_days")
@@ -336,7 +336,7 @@ def get_avg_tokens_out(request):
     except Exception as e:
         return JsonResponse({'status': 'error', 'message': str(e)}, status=400)
 
-@login_required
+@api_login_required
 def get_avg_conversations_per_day(request):
     try:
         period = request.GET.get("period", "30_days")
