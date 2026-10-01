@@ -61,6 +61,31 @@ def cache_creation_tokens(result):
     return creation.get('ephemeral_5m_input_tokens', 0) + creation.get('ephemeral_1h_input_tokens', 0)
 
 
+def _today_date():
+    try:
+        from django.utils import timezone
+        return timezone.now().date()
+    except Exception:
+        return datetime.utcnow().date()
+
+
+def _is_day_one_date_range_error(status_code, text, year=None, month=None):
+    """Detect Anthropic's 400 'Invalid date range: ending date must be after starting date'
+    error that occurs on day 1 of the month when starting_at is today's start date
+    and no daily reporting buckets have closed yet."""
+    if status_code != 400:
+        return False
+    msg = text or ""
+    if "ending date must be after starting date" in msg or "Invalid date range" in msg:
+        return True
+    today = _today_date()
+    y = int(year) if year else today.year
+    m = int(month) if month else today.month
+    if today.day == 1 and y == today.year and m == today.month:
+        return True
+    return False
+
+
 def _month_bounds(year=None, month=None):
     """(year, month, starting_at, ending_at) for the requested calendar month.
     Anthropic's /v1/organizations/cost_report and /v1/organizations/usage_report
@@ -70,7 +95,7 @@ def _month_bounds(year=None, month=None):
     to reject the request with 400 'Invalid date range: ending date must be after
     starting date'. Explicitly bounding to the next month's 1st avoids this edge
     case and cleanly scopes reports to exactly that calendar month."""
-    today = datetime.today()
+    today = _today_date()
     y = int(year) if year else today.year
     m = int(month) if month else today.month
 
@@ -114,9 +139,9 @@ class AnthropicAdapter(LLMAdapter):
 
         if rates_resp is None:
             rates_resp = self.get_model_rates(year=year, month=month)
-            if isinstance(rates_resp, dict) and not rates_resp.get("error") and not rates_resp.get("rates"):
+            if isinstance(rates_resp, dict) and (rates_resp.get("error") or not rates_resp.get("rates")):
                 # If current month has no billed lines yet (e.g. day 1), fall back to previous month's rates
-                today = datetime.today()
+                today = _today_date()
                 if year == today.year and month == today.month:
                     prev_y, prev_m = (year - 1, 12) if month == 1 else (year, month - 1)
                     rates_resp = self.get_model_rates(year=prev_y, month=prev_m)
@@ -136,6 +161,8 @@ class AnthropicAdapter(LLMAdapter):
             headers=headers,
         )
         if response.status_code != 200:
+            if _is_day_one_date_range_error(response.status_code, response.text, year, month):
+                return {"costs": [], "monthly_average_cost": 0.0}
             return {"error": response.text}
 
         daily_costs = []
@@ -226,6 +253,16 @@ class AnthropicAdapter(LLMAdapter):
                 "test_tokens": usage_data,
             }
         else:
+            if _is_day_one_date_range_error(response.status_code, response.text, year, month):
+                return {
+                    "tokens": [],
+                    "cache": {
+                        "creation_tokens": 0,
+                        "read_tokens": 0,
+                        "hit_rate": None,
+                    },
+                    "test_tokens": {"data": []},
+                }
             return {"error": response.text}
 
     def get_model_rates(self, year=None, month=None):
@@ -253,6 +290,9 @@ class AnthropicAdapter(LLMAdapter):
             headers=headers,
         )
         if cost_response.status_code != 200:
+            if _is_day_one_date_range_error(cost_response.status_code, cost_response.text, year, month):
+                prev_y, prev_m = (year - 1, 12) if month == 1 else (year, month - 1)
+                return self.get_model_rates(year=prev_y, month=prev_m)
             return {"error": cost_response.text}
 
         usage_params = {"starting_at": starting_at, "ending_at": ending_at, "group_by[]": "model", "limit": 31}
@@ -262,6 +302,9 @@ class AnthropicAdapter(LLMAdapter):
             headers=headers,
         )
         if usage_response.status_code != 200:
+            if _is_day_one_date_range_error(usage_response.status_code, usage_response.text, year, month):
+                prev_y, prev_m = (year - 1, 12) if month == 1 else (year, month - 1)
+                return self.get_model_rates(year=prev_y, month=prev_m)
             return {"error": usage_response.text}
 
         # ENG-148: cache_creation/cache_read get their own rates too, not
@@ -374,6 +417,8 @@ class AnthropicAdapter(LLMAdapter):
             headers=headers,
         )
         if usage_response.status_code != 200:
+            if _is_day_one_date_range_error(usage_response.status_code, usage_response.text, year, month):
+                return {"keys": []}
             return {"error": usage_response.text}
 
         totals = {}  # api_key_id -> {model: {uncached_input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens}}
