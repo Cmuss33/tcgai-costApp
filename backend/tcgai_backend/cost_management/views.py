@@ -4,7 +4,7 @@ from .models import Chat, Message
 from django.views.decorators.http import require_http_methods
 from django.views.decorators.csrf import csrf_exempt
 import json
-from django.contrib.auth import authenticate, login
+from django.contrib.auth import authenticate, login, logout
 import anthropic
 import os
 from django.db import transaction
@@ -258,6 +258,12 @@ def auth_check(request):
     return JsonResponse({
         "authenticated": request.user.is_authenticated
     })
+
+@csrf_exempt
+def logout_view(request):
+    """Logs out the user and clears the session."""
+    logout(request)
+    return JsonResponse({"success": True})
 
 # HELPER FUNCTION, DON'T LIMIT ACCESS
 def get_period_start(period: str):
