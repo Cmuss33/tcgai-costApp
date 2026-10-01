@@ -3,7 +3,7 @@ import logging
 import re
 
 from django.conf import settings
-from django.contrib.auth.decorators import login_required
+from .api_auth import api_login_required
 from django.db import transaction
 from django.http import JsonResponse
 from django.utils.timezone import now
@@ -120,7 +120,7 @@ def _persist_flag(chat, reason, username, flag_time, gh_ref, linear_ref, flag_er
         ])
 
 
-@login_required
+@api_login_required
 @csrf_exempt
 @require_http_methods(["POST"])
 def flag_chat(request):

@@ -6,6 +6,12 @@ services:
     buildCommand: npm install && npm run build
     staticPublishPath: dist
     routes:
+      # Proxy the API through this origin so the session cookie is first-party
+      # (a cross-subdomain SameSite=None cookie is blocked by third-party-cookie
+      # blocking). Must stay above the SPA catch-all. VITE_API_URL must be unset.
+      - type: rewrite
+        source: /api/*
+        destination: https://tcgai-costapp-24lh.onrender.com/api/*
       - type: rewrite
         source: /*
         destination: /index.html
