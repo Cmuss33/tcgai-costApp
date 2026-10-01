@@ -61,6 +61,28 @@ def cache_creation_tokens(result):
     return creation.get('ephemeral_5m_input_tokens', 0) + creation.get('ephemeral_1h_input_tokens', 0)
 
 
+def _month_bounds(year=None, month=None):
+    """(year, month, starting_at, ending_at) for the requested calendar month.
+    Anthropic's /v1/organizations/cost_report and /v1/organizations/usage_report
+    require ending_at > starting_at (RFC 3339 timestamps). When ending_at is
+    omitted, Anthropic's server defaults to now() snapped to the start of the day in
+    UTC -- on the 1st day of the month, starting_at == ending_at, causing Anthropic
+    to reject the request with 400 'Invalid date range: ending date must be after
+    starting date'. Explicitly bounding to the next month's 1st avoids this edge
+    case and cleanly scopes reports to exactly that calendar month."""
+    today = datetime.today()
+    y = int(year) if year else today.year
+    m = int(month) if month else today.month
+
+    starting_at = f"{y}-{m:02d}-01T00:00:00Z"
+    if m == 12:
+        end_y, end_m = y + 1, 1
+    else:
+        end_y, end_m = y, m + 1
+    ending_at = f"{end_y}-{end_m:02d}-01T00:00:00Z"
+    return y, m, starting_at, ending_at
+
+
 class AnthropicAdapter(LLMAdapter):
 
     def get_cost(self, year=None, month=None, key_ids=None, rates_resp=None):
@@ -88,17 +110,20 @@ class AnthropicAdapter(LLMAdapter):
         their own proration math, so without this they'd fetch the same
         rates twice per request. None (the default) preserves the prior
         behavior exactly for every other caller."""
-        today = datetime.today()
-        year = int(year) if year else today.year
-        month = int(month) if month else today.month
+        year, month, starting_at, ending_at = _month_bounds(year, month)
 
         if rates_resp is None:
             rates_resp = self.get_model_rates(year=year, month=month)
+            if isinstance(rates_resp, dict) and not rates_resp.get("error") and not rates_resp.get("rates"):
+                # If current month has no billed lines yet (e.g. day 1), fall back to previous month's rates
+                today = datetime.today()
+                if year == today.year and month == today.month:
+                    prev_y, prev_m = (year - 1, 12) if month == 1 else (year, month - 1)
+                    rates_resp = self.get_model_rates(year=prev_y, month=prev_m)
         if not isinstance(rates_resp, dict) or rates_resp.get("error"):
             return {"error": rates_resp.get("error") if isinstance(rates_resp, dict) else "rate derivation failed"}
         rates = rates_resp.get("rates", {})
 
-        starting_at = f"{year}-{month:02d}-01T00:00:00Z"
         app_key_ids = key_ids if key_ids is not None else app_api_key_ids()
         headers = {
             "anthropic-version": "2023-06-01",
@@ -107,7 +132,7 @@ class AnthropicAdapter(LLMAdapter):
         }
         response = requests.get(
             "https://api.anthropic.com/v1/organizations/usage_report/messages",
-            params={"starting_at": starting_at, "group_by[]": ["model", "api_key_id"], "limit": 31},
+            params={"starting_at": starting_at, "ending_at": ending_at, "group_by[]": ["model", "api_key_id"], "limit": 31},
             headers=headers,
         )
         if response.status_code != 200:
@@ -136,12 +161,7 @@ class AnthropicAdapter(LLMAdapter):
         return {"costs": daily_costs, "monthly_average_cost": monthly_average_cost}
         
     def get_tokens(self, year=None, month=None, key_ids=None):
-         # Determine year and month
-        today = datetime.today()
-        year = int(year) if year else today.year
-        month = int(month) if month else today.month
-
-        starting_at = f"{year}-{month:02d}-01T00:00:00Z"
+        year, month, starting_at, ending_at = _month_bounds(year, month)
         app_key_ids = key_ids if key_ids is not None else app_api_key_ids()
 
         headers = {
@@ -159,6 +179,7 @@ class AnthropicAdapter(LLMAdapter):
         # to just the chat surface -- see chat_api_key_ids).
         params = {
             "starting_at": starting_at,
+            "ending_at": ending_at,
             "group_by[]": "api_key_id",
             "limit": 31
         }
@@ -211,11 +232,7 @@ class AnthropicAdapter(LLMAdapter):
         """Effective $/token rate per model for the month, derived from Anthropic's
         own cost_report (billed amounts) and usage_report/messages (real token
         counts) - i.e. what Anthropic actually charged, not a hardcoded price list."""
-        today = datetime.today()
-        year = int(year) if year else today.year
-        month = int(month) if month else today.month
-
-        starting_at = f"{year}-{month:02d}-01T00:00:00Z"
+        year, month, starting_at, ending_at = _month_bounds(year, month)
         headers = {
             "anthropic-version": "2023-06-01",
             "content-type": "application/json",
@@ -232,13 +249,13 @@ class AnthropicAdapter(LLMAdapter):
         # and WholeOrgScopingTests.test_get_model_rates_stays_accurate_across_a_key_rotation.
         cost_response = requests.get(
             "https://api.anthropic.com/v1/organizations/cost_report",
-            params={"starting_at": starting_at, "group_by[]": "description", "limit": 31},
+            params={"starting_at": starting_at, "ending_at": ending_at, "group_by[]": "description", "limit": 31},
             headers=headers,
         )
         if cost_response.status_code != 200:
             return {"error": cost_response.text}
 
-        usage_params = {"starting_at": starting_at, "group_by[]": "model", "limit": 31}
+        usage_params = {"starting_at": starting_at, "ending_at": ending_at, "group_by[]": "model", "limit": 31}
         usage_response = requests.get(
             "https://api.anthropic.com/v1/organizations/usage_report/messages",
             params=usage_params,
@@ -333,11 +350,7 @@ class AnthropicAdapter(LLMAdapter):
         total (uncached + both cache directions, ENG-148) -- matching
         get_tokens' definition -- not just the uncached slice.
         """
-        today = datetime.today()
-        year = int(year) if year else today.year
-        month = int(month) if month else today.month
-
-        starting_at = f"{year}-{month:02d}-01T00:00:00Z"
+        year, month, starting_at, ending_at = _month_bounds(year, month)
 
         headers = {
             "anthropic-version": "2023-06-01",
@@ -350,6 +363,7 @@ class AnthropicAdapter(LLMAdapter):
         # filter itself down to only the known production keys.
         usage_params = {
             "starting_at": starting_at,
+            "ending_at": ending_at,
             "group_by[]": ["api_key_id", "model"],
             "limit": 31,
         }
