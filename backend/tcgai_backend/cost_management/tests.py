@@ -3510,3 +3510,109 @@ class FlagProbeChatsTests(TestCase):
         self.assertEqual(
             CostMethodologyChange.objects.filter(date="2026-09-25", category="measurement_fix").count(), 1
         )
+
+
+class AnthropicDateBoundsAndRateFallbackTests(TestCase):
+    """Verifies that all Anthropic API queries explicitly specify ending_at > starting_at
+    (preventing the 400 Invalid date range error on the 1st of the month), and that
+    day-1 rate derivation falls back to the previous month's established rates."""
+
+    def test_month_bounds_normal_month(self):
+        from .llm_provider_adapter_implementations import _month_bounds
+        y, m, start, end = _month_bounds(2026, 10)
+        self.assertEqual(y, 2026)
+        self.assertEqual(m, 10)
+        self.assertEqual(start, "2026-10-01T00:00:00Z")
+        self.assertEqual(end, "2026-11-01T00:00:00Z")
+        self.assertGreater(end, start)
+
+    def test_month_bounds_december_rollover(self):
+        from .llm_provider_adapter_implementations import _month_bounds
+        y, m, start, end = _month_bounds(2026, 12)
+        self.assertEqual(y, 2026)
+        self.assertEqual(m, 12)
+        self.assertEqual(start, "2026-12-01T00:00:00Z")
+        self.assertEqual(end, "2027-01-01T00:00:00Z")
+        self.assertGreater(end, start)
+
+    def test_adapter_calls_include_ending_at(self):
+        from .llm_provider_adapter_implementations import AnthropicAdapter
+        adapter = AnthropicAdapter()
+        mock_resp = MagicMock(status_code=200, json=lambda: {"data": []})
+
+        # Test get_tokens
+        with patch("cost_management.llm_provider_adapter_implementations.requests.get", return_value=mock_resp) as mock_get:
+            adapter.get_tokens(year=2026, month=10)
+            params = mock_get.call_args.kwargs["params"]
+            self.assertIn("starting_at", params)
+            self.assertIn("ending_at", params)
+            self.assertGreater(params["ending_at"], params["starting_at"])
+
+        # Test get_model_rates (hits cost_report and usage_report)
+        with patch("cost_management.llm_provider_adapter_implementations.requests.get", return_value=mock_resp) as mock_get:
+            adapter.get_model_rates(year=2026, month=10)
+            self.assertEqual(mock_get.call_count, 2)
+            for call in mock_get.call_args_list:
+                params = call.kwargs["params"]
+                self.assertIn("starting_at", params)
+                self.assertIn("ending_at", params)
+                self.assertGreater(params["ending_at"], params["starting_at"])
+
+        # Test get_usage_by_key
+        with patch("cost_management.llm_provider_adapter_implementations.requests.get", return_value=mock_resp) as mock_get:
+            adapter.get_usage_by_key(year=2026, month=10)
+            usage_params = mock_get.call_args_list[0].kwargs["params"]
+            self.assertIn("starting_at", usage_params)
+            self.assertIn("ending_at", usage_params)
+            self.assertGreater(usage_params["ending_at"], usage_params["starting_at"])
+
+        # Test get_cost (with mocked rates)
+        rates_resp = {"rates": {"m": {"input": 0.001, "output": 0.002}}}
+        with patch("cost_management.llm_provider_adapter_implementations.requests.get", return_value=mock_resp) as mock_get:
+            adapter.get_cost(year=2026, month=10, rates_resp=rates_resp)
+            params = mock_get.call_args.kwargs["params"]
+            self.assertIn("starting_at", params)
+            self.assertIn("ending_at", params)
+            self.assertGreater(params["ending_at"], params["starting_at"])
+
+    def test_get_cost_falls_back_to_prev_month_rates_on_day_one(self):
+        from .llm_provider_adapter_implementations import AnthropicAdapter
+        from datetime import datetime
+        today = datetime.today()
+        adapter = AnthropicAdapter()
+
+        usage_resp = MagicMock(status_code=200, json=lambda: {"data": [{
+            "starting_at": f"{today.year}-{today.month:02d}-01T00:00:00Z",
+            "results": [{"model": "haiku", "uncached_input_tokens": 1000, "output_tokens": 500}],
+        }]})
+
+        prev_y, prev_m = (today.year - 1, 12) if today.month == 1 else (today.year, today.month - 1)
+        fallback_rates = {"rates": {"haiku": {"input": 0.001, "output": 0.002, "cache_creation": 0, "cache_read": 0}}}
+
+        def mock_rates(year=None, month=None):
+            if year == today.year and month == today.month:
+                return {"rates": {}}
+            return fallback_rates
+
+        with patch.object(adapter, "get_model_rates", side_effect=mock_rates), \
+             patch("cost_management.llm_provider_adapter_implementations.requests.get", return_value=usage_resp):
+            result = adapter.get_cost(year=today.year, month=today.month)
+
+        # 1000 * 0.001 + 500 * 0.002 = 1.0 + 1.0 = 2.0
+        self.assertEqual(result["costs"][0]["total_cost"], 2.0)
+
+    def test_stats_views_rates_for_falls_back_to_prev_month(self):
+        from .stats_views import _rates_for
+        from .month_utils import current_month_start, prev_month
+        current = current_month_start()
+        prev = prev_month(current)
+
+        def mock_rates_resp(month_start):
+            if month_start == current:
+                return {"rates": {}}
+            return {"rates": {"model-a": {"input": 0.0001, "output": 0.0002}}}
+
+        with patch("cost_management.stats_views._rates_resp_for", side_effect=mock_rates_resp):
+            rates = _rates_for(current)
+            self.assertEqual(rates, {"model-a": {"input": 0.0001, "output": 0.0002}})
+

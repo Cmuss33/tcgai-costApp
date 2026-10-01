@@ -113,8 +113,16 @@ def _rates_for(month_start):
     or {} on any error/exception (a missing rate source must degrade the
     cost/conversation KPI to its unadjusted figure, never break the whole
     dashboard). Whole-org, like get_model_rates itself -- see that
-    function's docstring for why it must never be key-scoped."""
-    return _rates_from_resp(_rates_resp_for(month_start))
+    function's docstring for why it must never be key-scoped.
+
+    On day 1 of the month, Anthropic's daily cost_report hasn't closed yet,
+    so current month rates may be empty while token usage has already begun.
+    If current month rates are empty, falls back to the previous month's
+    rates so token usage is immediately priceable."""
+    rates = _rates_from_resp(_rates_resp_for(month_start))
+    if not rates and month_start == current_month_start():
+        rates = _rates_from_resp(_rates_resp_for(prev_month(month_start)))
+    return rates
 
 
 def _rate_for(rates, model):
@@ -313,6 +321,8 @@ def _build_stats(month_start):
     # exact cost_report+usage_report pair 3x per month (current & previous).
     rates_resp = _rates_resp_for(month_start)
     prev_rates_resp = _rates_resp_for(previous)
+    if is_current and not rates_resp.get("error") and not rates_resp.get("rates") and prev_rates_resp.get("rates"):
+        rates_resp = prev_rates_resp
 
     spend, spend_daily, cost_err = _spend_for(month_start, rates_resp)
     prev_spend, _, _ = _spend_for(previous, prev_rates_resp)
@@ -533,8 +543,7 @@ def usage_by_key(request):
         cache.set(key, payload, CURRENT_TTL if month_start == current else PAST_TTL)
         return JsonResponse(payload)
 
-    rates_resp = base_views.llmprovider.get_model_rates(year=month_start.year, month=month_start.month)
-    rates = rates_resp.get("rates", {}) if isinstance(rates_resp, dict) else {}
+    rates = _rates_for(month_start)
 
     allowed_ids = set(app_api_key_ids())
     raw_keys = usage_resp.get("keys", [])
@@ -600,6 +609,10 @@ def cost_reconciliation(request):
     # needs this month's whole-org rate regardless, and _logged_spend_split
     # below needs the identical rate for its own pricing.
     rates_resp = _rates_resp_for(month_start)
+    if month_start == current and not rates_resp.get("error") and not rates_resp.get("rates"):
+        prev_rates_resp = _rates_resp_for(prev_month(month_start))
+        if prev_rates_resp.get("rates"):
+            rates_resp = prev_rates_resp
     spend, _, cost_err = _spend_for(month_start, rates_resp)
     rates = _rates_from_resp(rates_resp) if spend is not None else {}
     split = _logged_spend_split(month_start, rates)
