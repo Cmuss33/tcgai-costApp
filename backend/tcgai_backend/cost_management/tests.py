@@ -3616,6 +3616,109 @@ class AnthropicDateBoundsAndRateFallbackTests(TestCase):
             rates = _rates_for(current)
             self.assertEqual(rates, {"model-a": {"input": 0.0001, "output": 0.0002}})
 
+    def test_get_model_rates_falls_back_on_date_range_error(self):
+        from .llm_provider_adapter_implementations import AnthropicAdapter
+        adapter = AnthropicAdapter()
+        date_err_resp = MagicMock(
+            status_code=400,
+            text='{"type":"error","error":{"type":"invalid_request_error","message":"Invalid date range: ending date must be after starting date"}}'
+        )
+        prev_cost_resp = MagicMock(status_code=200, json=lambda: {
+            "data": [{
+                "starting_at": "2026-09-01T00:00:00Z",
+                "results": [{"model": "haiku", "cost_type": "tokens", "token_type": "uncached_input_tokens", "amount": 100}]
+            }]
+        })
+        prev_usage_resp = MagicMock(status_code=200, json=lambda: {
+            "data": [{
+                "starting_at": "2026-09-01T00:00:00Z",
+                "results": [{"model": "haiku", "uncached_input_tokens": 100000}]
+            }]
+        })
+
+        def mock_get(url, params=None, headers=None):
+            # For 2026-10 (current month on day 1), return 400 Invalid date range
+            if params and "2026-10-01" in params.get("starting_at", ""):
+                return date_err_resp
+            # For 2026-09 (fallback), return valid responses
+            if "cost_report" in url:
+                return prev_cost_resp
+            return prev_usage_resp
+
+        with patch("cost_management.llm_provider_adapter_implementations.requests.get", side_effect=mock_get):
+            result = adapter.get_model_rates(year=2026, month=10)
+            self.assertIn("rates", result)
+            self.assertIn("haiku", result["rates"])
+            self.assertAlmostEqual(result["rates"]["haiku"]["input"], 0.00001)
+
+    def test_get_tokens_handles_date_range_error(self):
+        from .llm_provider_adapter_implementations import AnthropicAdapter
+        adapter = AnthropicAdapter()
+        date_err_resp = MagicMock(
+            status_code=400,
+            text='{"type":"error","error":{"type":"invalid_request_error","message":"Invalid date range: ending date must be after starting date"}}'
+        )
+
+        with patch("cost_management.llm_provider_adapter_implementations.requests.get", return_value=date_err_resp):
+            result = adapter.get_tokens(year=2026, month=10)
+            self.assertEqual(result["tokens"], [])
+            self.assertEqual(result["cache"]["creation_tokens"], 0)
+            self.assertEqual(result["cache"]["read_tokens"], 0)
+            self.assertIsNone(result["cache"]["hit_rate"])
+            self.assertNotIn("error", result)
+
+    def test_get_cost_handles_date_range_error(self):
+        from .llm_provider_adapter_implementations import AnthropicAdapter
+        adapter = AnthropicAdapter()
+        date_err_resp = MagicMock(
+            status_code=400,
+            text='{"type":"error","error":{"type":"invalid_request_error","message":"Invalid date range: ending date must be after starting date"}}'
+        )
+        fallback_rates = {"rates": {"haiku": {"input": 0.001, "output": 0.002}}}
+
+        with patch.object(adapter, "get_model_rates", return_value=fallback_rates), \
+             patch("cost_management.llm_provider_adapter_implementations.requests.get", return_value=date_err_resp):
+            result = adapter.get_cost(year=2026, month=10)
+            self.assertEqual(result["costs"], [])
+            self.assertEqual(result["monthly_average_cost"], 0.0)
+            self.assertNotIn("error", result)
+
+    def test_get_usage_by_key_handles_date_range_error(self):
+        from .llm_provider_adapter_implementations import AnthropicAdapter
+        adapter = AnthropicAdapter()
+        date_err_resp = MagicMock(
+            status_code=400,
+            text='{"type":"error","error":{"type":"invalid_request_error","message":"Invalid date range: ending date must be after starting date"}}'
+        )
+
+        with patch("cost_management.llm_provider_adapter_implementations.requests.get", return_value=date_err_resp):
+            result = adapter.get_usage_by_key(year=2026, month=10)
+            self.assertEqual(result["keys"], [])
+            self.assertNotIn("error", result)
+
+    def test_build_stats_falls_back_when_current_month_rates_error(self):
+        from .stats_views import _build_stats
+        from .month_utils import current_month_start, prev_month
+        current = current_month_start()
+        prev = prev_month(current)
+
+        def mock_rates_resp(month_start):
+            if month_start == current:
+                return {"error": '{"type":"error","error":{"type":"invalid_request_error","message":"Invalid date range: ending date must be after starting date"}}'}
+            return {"rates": {"haiku": {"input": 0.001, "output": 0.002}}}
+
+        def mock_spend(month_start, rates_resp):
+            return 0.0, [], None
+
+        def mock_tokens(month_start):
+            return 0, 0, [], {"creation_tokens": 0, "read_tokens": 0, "hit_rate": None}, None
+
+        with patch("cost_management.stats_views._rates_resp_for", side_effect=mock_rates_resp), \
+             patch("cost_management.stats_views._spend_for", side_effect=mock_spend), \
+             patch("cost_management.stats_views._tokens_for", side_effect=mock_tokens):
+            stats = _build_stats(current)
+            self.assertIsNone(stats["cost_source_error"])
+
 
 
 class ApiLoginRequiredTests(TestCase):

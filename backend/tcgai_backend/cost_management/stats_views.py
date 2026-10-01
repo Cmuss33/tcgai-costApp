@@ -321,7 +321,7 @@ def _build_stats(month_start):
     # exact cost_report+usage_report pair 3x per month (current & previous).
     rates_resp = _rates_resp_for(month_start)
     prev_rates_resp = _rates_resp_for(previous)
-    if is_current and not rates_resp.get("error") and not rates_resp.get("rates") and prev_rates_resp.get("rates"):
+    if is_current and (rates_resp.get("error") or not rates_resp.get("rates")) and prev_rates_resp.get("rates"):
         rates_resp = prev_rates_resp
 
     spend, spend_daily, cost_err = _spend_for(month_start, rates_resp)
@@ -609,7 +609,7 @@ def cost_reconciliation(request):
     # needs this month's whole-org rate regardless, and _logged_spend_split
     # below needs the identical rate for its own pricing.
     rates_resp = _rates_resp_for(month_start)
-    if month_start == current and not rates_resp.get("error") and not rates_resp.get("rates"):
+    if month_start == current and (rates_resp.get("error") or not rates_resp.get("rates")):
         prev_rates_resp = _rates_resp_for(prev_month(month_start))
         if prev_rates_resp.get("rates"):
             rates_resp = prev_rates_resp
