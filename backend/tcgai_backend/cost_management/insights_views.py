@@ -3,13 +3,14 @@ import threading
 from datetime import timedelta
 
 from django.conf import settings
+from django.db.models import Prefetch
 from .api_auth import api_login_required
 from django.core.cache import cache
 from django.http import JsonResponse
 from django.utils import timezone
 
 from .cost_commentary import cost_commentary_for
-from .models import Chat, InsightsSnapshot
+from .models import Chat, InsightsSnapshot, Message
 from .month_utils import (
     conversation_count as _conversation_count,
     current_month_start as _current_month_start,
@@ -143,11 +144,30 @@ REPORT_INSIGHTS_TOOL = {
     },
 }
 
-_RUNTIME_ONLY_KEYS = ("cached", "available_months", "stale", "generating", "regenerating")
+_RUNTIME_ONLY_KEYS = ("cached", "available_months", "stale", "generating", "regenerating", "progress")
 
 
 def _lock_key(month_start):
     return f"insights_summary:generating:{month_start:%Y-%m}"
+
+
+def _progress_key(month_start):
+    return f"insights_summary:progress:{month_start:%Y-%m}"
+
+
+def _set_progress(month_start, percent, stage):
+    cache.set(_progress_key(month_start), {"percent": percent, "stage": stage}, timeout=LOCK_TIMEOUT)
+
+
+def _get_progress(month_start):
+    return cache.get(_progress_key(month_start)) or {
+        "percent": 10,
+        "stage": "Loading conversation transcripts...",
+    }
+
+
+def _clear_progress(month_start):
+    cache.delete(_progress_key(month_start))
 
 
 def _format_products_shown(products_shown):
@@ -357,15 +377,26 @@ def _build_payload(month_start):
     if total < MIN_CONVERSATIONS:
         return {"insufficient_data": True, "conversations_analyzed": total, "month": label}
 
-    chats = list(all_chats[:MAX_CONVERSATIONS])
+    _set_progress(month_start, 15, "Loading conversations from database...")
+
+    chats = list(
+        all_chats.prefetch_related(
+            Prefetch("message_set", queryset=Message.objects.order_by("timestamp"))
+        )[:MAX_CONVERSATIONS]
+    )
+
+    _set_progress(month_start, 25, f"Compiling transcripts for {len(chats)} conversations...")
+
     transcripts = []
     with_customer_text = 0
     for chat in chats:
-        messages = list(chat.message_set.order_by("timestamp"))
+        messages = list(chat.message_set.all())
         text, had_customer_text = _build_transcript(chat.chat_id, messages)
         transcripts.append(text)
         if had_customer_text:
             with_customer_text += 1
+
+    _set_progress(month_start, 45, f"Analyzing {len(chats)} conversations with Claude...")
 
     core = None
     last_exc = None
@@ -396,6 +427,8 @@ def _build_payload(month_start):
             "stale": snap.payload if snap else None,
             "month": label,
         }
+
+    _set_progress(month_start, 90, "Finalizing report findings and recommendations...")
 
     return {
         **core,
@@ -440,6 +473,7 @@ def _generate_and_store(month_start, is_current):
         return payload
     finally:
         cache.delete(_lock_key(month_start))
+        _clear_progress(month_start)
 
 
 def _kick_generation(month_start, is_current):
@@ -506,7 +540,7 @@ def insights_summary(request):
                 return _finalize(inline, parsed)
             if snapshot is not None:
                 return _finalize({**snapshot.payload, "regenerating": True}, parsed)
-            return _finalize({"generating": True}, parsed)
+            return _finalize({"generating": True, "progress": _get_progress(parsed)}, parsed)
 
     # Current month.
     if not refresh:
@@ -522,4 +556,4 @@ def insights_summary(request):
     if snapshot is not None:
         # Serve the last saved result now; a refresh is running in the background.
         return _finalize({**snapshot.payload, "regenerating": True}, current_start)
-    return _finalize({"generating": True}, current_start)
+    return _finalize({"generating": True, "progress": _get_progress(current_start)}, current_start)

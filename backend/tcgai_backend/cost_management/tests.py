@@ -1395,6 +1395,32 @@ class InsightsSummaryTests(TestCase):
         )
         self.assertEqual(data["recommendations"][0]["examples"], ["conv-3"])
 
+    @override_settings(TESTING=False)
+    @patch("cost_management.insights_views.threading.Thread")
+    def test_first_ever_load_returns_generating_flag_with_progress(self, mock_thread):
+        self._make_conversations(6)
+        self.client.force_login(self.user)
+
+        data = self.client.get("/api/cost/insights_summary/").json()
+
+        self.assertTrue(data["generating"])
+        self.assertIn("progress", data)
+        self.assertIn("percent", data["progress"])
+        self.assertIn("stage", data["progress"])
+
+    @patch("cost_management.insights_views._generate_insights", return_value=dict(CANNED_INSIGHTS))
+    def test_generate_insights_management_command(self, mock_gen):
+        from django.core.management import call_command
+        from cost_management.models import InsightsSnapshot
+        self._make_conversations(6, with_customer_text=2)
+
+        call_command("generate_insights")
+
+        first_of_month = _now().date().replace(day=1)
+        snap = InsightsSnapshot.objects.get(month=first_of_month)
+        self.assertEqual(snap.conversations_analyzed, 6)
+        self.assertEqual(snap.payload["headline"], CANNED_INSIGHTS["headline"])
+
 
 def _cost_resp(*totals):
     return {"costs": [{"day": f"2026-08-{i + 1:02d}", "total_cost": t} for i, t in enumerate(totals)]}

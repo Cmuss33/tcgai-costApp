@@ -3,8 +3,8 @@ import { useNavigate, Link } from "react-router-dom";
 import "./HomeView.css";
 
 const API_URL = import.meta.env.VITE_API_URL ?? "";
-const POLL_MS = 4000;
-const MAX_POLLS = 20;
+const POLL_MS = 2500;
+const MAX_POLLS = 35;
 // stats, insights (first response only -- not each poll), usageByKey,
 // costReconciliation, cacheEconomics
 const TOTAL_LOADERS = 5;
@@ -768,6 +768,56 @@ function LoadingBar({ percent }) {
   );
 }
 
+/* ---------- generation progress card ---------- */
+function GenerationProgressCard({ progress, isCurrent }) {
+  const [elapsed, setElapsed] = useState(0);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setElapsed((prev) => prev + 1);
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const backendPct = progress?.percent ?? 10;
+  // Estimate smooth progress creeping towards 95% if Claude is taking ~40s
+  const timeBasedPct = Math.min(95, Math.round(10 + (elapsed / 45) * 85));
+  const displayPct = Math.max(backendPct, timeBasedPct);
+  const stageText = progress?.stage || "Analyzing conversations with Claude Sonnet…";
+
+  return (
+    <div className="cr__gen-card" role="region" aria-label="Analysis in progress">
+      <div className="cr__gen-header">
+        <div className="cr__gen-titles">
+          <h3>Analyzing {isCurrent ? "this" : "that"} month&rsquo;s conversations</h3>
+          <p>Synthesizing topics, catalog gaps, and AI recommendations</p>
+        </div>
+        <div className="cr__gen-pct" aria-live="polite">
+          {displayPct}%
+        </div>
+      </div>
+
+      <div className="cr__gen-bar" aria-hidden="true">
+        <div className="cr__gen-bar-fill" style={{ width: `${displayPct}%` }} />
+      </div>
+
+      <div className="cr__gen-footer">
+        <div className="cr__gen-stage">
+          <span className="cr__gen-pulse" aria-hidden="true" />
+          <span>{stageText}</span>
+        </div>
+        <div className="cr__gen-timer">
+          {elapsed}s elapsed &middot; typically ~35&ndash;45s
+        </div>
+      </div>
+
+      <p className="cr__gen-note">
+        This deep synthesis runs once per month. All findings and customer quotes are saved permanently once complete.
+      </p>
+    </div>
+  );
+}
+
 /* ---------- page ---------- */
 function HomeView() {
   const navigate = useNavigate();
@@ -1041,17 +1091,16 @@ function HomeView() {
         )}
 
         {generatingFresh && !pollTimedOut && (
-          <div className="cr__center cr__center--tall">
-            <div className="cr__spinner" />
-            <p>Analyzing {isCurrent ? "this" : "that"} month&rsquo;s conversations…</p>
-            <p className="cr__muted">This runs once per month and can take a minute.</p>
-          </div>
+          <GenerationProgressCard progress={insights?.progress} isCurrent={isCurrent} />
         )}
 
         {pollTimedOut && (
-          <p className="cr__notice">
-            Still working on it — this is taking longer than usual. Use Refresh in a moment.
-          </p>
+          <div className="cr__notice" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "10px" }}>
+            <span>Still working on it &mdash; this is taking longer than usual.</span>
+            <button className="cr__refresh" style={{ margin: 0, padding: "4px 12px", fontSize: "0.82rem" }} onClick={refreshCurrent}>
+              Retry now
+            </button>
+          </div>
         )}
 
         {insights?.error && (
