@@ -486,6 +486,33 @@ class GetChatIdsInvestigationFieldsTests(TestCase):
         row = next(r for r in res.json()["results"] if r["chat_id"] == "chat-only-hi")
         self.assertEqual(row["preview"], "hi there")
 
+    def test_get_chat_ids_excludes_pre_june_2026_conversations(self):
+        import datetime
+        from django.utils import timezone
+        # Legacy/pre-prod chat before June 1, 2026
+        c_old = Chat.objects.create(chat_id="chat-may-2026", model="claude-haiku-4-5", evaluation_score=50)
+        Chat.objects.filter(pk=c_old.pk).update(timestamp=timezone.make_aware(datetime.datetime(2026, 5, 31, 23, 59, 59)))
+
+        # Chat on or after June 1, 2026
+        c_new = Chat.objects.create(chat_id="chat-june-2026", model="claude-haiku-4-5", evaluation_score=90)
+        Chat.objects.filter(pk=c_new.pk).update(timestamp=timezone.make_aware(datetime.datetime(2026, 6, 1, 0, 0, 0)))
+
+        res = self.client.get("/api/cost/get_chat_ids/")
+        data = res.json()
+
+        result_ids = [c["chat_id"] for c in data["results"]]
+        self.assertIn("chat-june-2026", result_ids)
+        self.assertNotIn("chat-may-2026", result_ids)
+        self.assertEqual(data["total"], 1)
+
+        # All-up KPIs should only aggregate June 1, 2026 onwards (so avg_score is 90, not 70)
+        kpis = data["kpis"]
+        self.assertEqual(kpis["audited_count"], 1)
+        self.assertEqual(kpis["avg_score"], 90.0)
+        self.assertEqual(kpis["needs_attention_count"], 0)
+        self.assertEqual(kpis["total_conversations"], 1)
+
+
 
 
 def _fake_response(status_code, json_body=None, text=""):
@@ -4094,6 +4121,27 @@ class AutoAuditAndBatchEvaluationTests(TestCase):
         self.assertEqual(data["status"], "success")
         self.assertEqual(data["audited_count"], 2)
         self.assertIn("estimated_cost_usd", data)
+
+    @patch("cost_management.views.score_single_chat")
+    def test_batch_evaluate_excludes_pre_june_2026_conversations(self, mock_score):
+        mock_score.return_value = 90
+        import datetime
+        from django.utils import timezone
+        c_old = Chat.objects.create(chat_id="batch-old", model="claude-haiku-4-5")
+        Chat.objects.filter(pk=c_old.pk).update(timestamp=timezone.make_aware(datetime.datetime(2026, 5, 31, 23, 59, 59)))
+        c_new = Chat.objects.create(chat_id="batch-new", model="claude-haiku-4-5")
+        Chat.objects.filter(pk=c_new.pk).update(timestamp=timezone.make_aware(datetime.datetime(2026, 6, 1, 12, 0, 0)))
+
+        resp = self.client.post(
+            "/api/cost/batch_evaluate/",
+            data=json.dumps({"limit": 10}),
+            content_type="application/json"
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["audited_count"], 1)
+        self.assertEqual(data["results"][0]["chat_id"], "batch-new")
+
 
     def test_batch_evaluate_unauthenticated(self):
         self.client.logout()
