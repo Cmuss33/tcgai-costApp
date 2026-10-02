@@ -644,7 +644,7 @@ function TrustScorecardHero({ stats }) {
             ⚠️ <strong>{lowScoreCount} conversation{lowScoreCount === 1 ? "" : "s"}</strong> scored below 75% accuracy this month. Review them to identify missing product aliases or policy gaps.
           </span>
           <Link to="/chats?filter=needs_attention" className="cr__triage-btn">
-            Inspect Low Scores &rarr;
+            Review Low Scores &rarr;
           </Link>
         </div>
       ) : (

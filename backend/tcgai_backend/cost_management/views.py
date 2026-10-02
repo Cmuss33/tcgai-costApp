@@ -17,6 +17,105 @@ from .month_utils import real_chats
 
 llmprovider = AnthropicAdapter()
 
+import re
+import random
+import threading
+from concurrent.futures import ThreadPoolExecutor
+
+DAILY_AUTO_AUDIT_CAP = 30  # Safety budget cap (~$0.01/day or ~$0.30/month)
+
+
+def score_single_chat(chat):
+    """Evaluates a single Chat instance using Claude Haiku and saves evaluation_score.
+    Returns the integer score (1-100) or None on failure."""
+    messages = Message.objects.filter(chat=chat).order_by("timestamp")
+    if not messages.exists():
+        return None
+
+    conversation_text = ""
+    for msg in messages:
+        conversation_text += f"\nUser: {msg.content}\nAssistant: {msg.returned_content}\n"
+
+    prompt = f"""
+    Evaluate the following conversation and assign a numeric accuracy score (1-100) for the assistant's responses. Respond with only the number.
+    If the assistant's answer is related to the question, regardless of if it is positive or negative (for example, not having required item in stock or not being able to return an item) give 100. 
+    If it is not related, or the assistant doesn't know the answer, give a lower number. 
+    Do NOT include any text or explanation.
+
+    Conversation:
+    {conversation_text}
+    """
+    api_key = os.environ.get('ANTHROPIC_API_KEY')
+    if not api_key:
+        return None
+
+    try:
+        client = anthropic.Anthropic(api_key=api_key)
+        message = client.messages.create(
+            model="claude-haiku-4-5",
+            max_tokens=1024,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = message.content[0].text.strip()
+        match = re.search(r'\d+', text)
+        if not match:
+            return None
+        score = int(match.group())
+        score = max(1, min(100, score))
+        chat.evaluation_score = score
+        chat.save(update_fields=['evaluation_score'])
+        return score
+    except Exception as e:
+        print(f"[score_single_chat] Error evaluating {chat.chat_id}: {e}")
+        return None
+
+
+def should_auto_audit_chat(chat, products_shown=None):
+    """Determines whether a chat qualifies for smart auto-audit within cost boundaries."""
+    # 0. Must have Anthropic API key configured
+    if not os.environ.get('ANTHROPIC_API_KEY'):
+        return False
+
+    # 1. Never audit bots or shadowtest
+    if chat.likely_automated or "shadowtest" in chat.chat_id.lower():
+        return False
+
+    # 2. Skip if already scored
+    if chat.evaluation_score is not None:
+        return False
+
+    # 3. Check daily budget cap
+    today_start = now().replace(hour=0, minute=0, second=0, microsecond=0)
+    today_scored_count = Chat.objects.filter(
+        timestamp__gte=today_start,
+        evaluation_score__isnull=False
+    ).count()
+    if today_scored_count >= DAILY_AUTO_AUDIT_CAP:
+        return False
+
+    # 4. Check high-value indicators
+    has_products = bool(
+        products_shown and isinstance(products_shown, dict) and (
+            products_shown.get('primary') or products_shown.get('complementary')
+        )
+    )
+    has_oos = False
+    if products_shown and isinstance(products_shown, dict):
+        ps_str = json.dumps(products_shown)
+        if '"available": false' in ps_str or '"available":false' in ps_str:
+            has_oos = True
+
+    msg_count = Message.objects.filter(chat=chat).count()
+    is_multi_turn = msg_count >= 2
+
+    # High-value triggers: product recommendations, out of stock, multi-turn
+    if has_products or has_oos or is_multi_turn:
+        return True
+
+    # 10% random sample for baseline coverage on single-turn simple inquiries
+    return random.random() < 0.10
+
+
 @api_login_required
 @csrf_exempt
 @require_http_methods(["POST"])
@@ -29,36 +128,56 @@ def evaluate_chat(request):
     except Chat.DoesNotExist:
         return JsonResponse({"error": "Chat not found"}, status=404)
 
-    messages = Message.objects.filter(chat=chat).order_by("timestamp")
-    if not messages.exists():
-        return JsonResponse({"error": "No messages found for this chat"}, status=400)
-    
-    conversation_text = ""
-    for msg in messages:
-        conversation_text += f"\nUser: {msg.content}\nAssistant: {msg.returned_content}\n"
+    score = score_single_chat(chat)
+    if score is None:
+        return JsonResponse({"error": "Failed to evaluate chat or no messages found"}, status=400)
 
-    
-    prompt = f"""
-    Evaluate the following conversation and assign a numeric accuracy score (1-100) for the assistant's responses. Respond with only the number.
-    If the assistant's answer is related to the question, regardless of if it is positive or negative (for example, not having required item in stock or not being able to return an item) give 100. 
-    If it is not related, or the assistant doesn't know the answer, give a lower number. 
-    Do NOT include any text or explanation.
+    return JsonResponse({"eval_percentage": score})
 
-    Conversation:
-    {conversation_text}
-    """
-    message = anthropic.Anthropic(api_key=os.environ.get('ANTHROPIC_API_KEY')).messages.create(
-        model="claude-haiku-4-5",
-        max_tokens=1024,
-        messages=[{"role": "user", "content": prompt}],
-        )
-    
-    eval_percentage = message.content[0].text
 
-    chat.evaluation_score = eval_percentage
-    chat.save(update_fields=['evaluation_score'])
+@api_login_required
+@csrf_exempt
+@require_http_methods(["POST"])
+def batch_evaluate(request):
+    """Audits up to `limit` unaudited real shopper conversations in parallel."""
+    try:
+        data = json.loads(request.body.decode('utf-8') or "{}") if request.body else {}
+        limit = min(int(data.get("limit", 25)), 50)
 
-    return JsonResponse({"eval_percentage": eval_percentage})
+        unaudited_qs = real_chats(
+            Chat.objects.filter(evaluation_score__isnull=True)
+        ).order_by('-timestamp')[:limit]
+
+        chats_to_audit = list(unaudited_qs)
+        if not chats_to_audit:
+            return JsonResponse({
+                "status": "success",
+                "audited_count": 0,
+                "results": [],
+                "message": "No unaudited conversations found."
+            })
+
+        results = []
+        with ThreadPoolExecutor(max_workers=min(5, len(chats_to_audit))) as executor:
+            future_to_chat = {executor.submit(score_single_chat, c): c for c in chats_to_audit}
+            for future in future_to_chat:
+                c = future_to_chat[future]
+                try:
+                    score = future.result()
+                    if score is not None:
+                        results.append({"chat_id": c.chat_id, "score": score})
+                except Exception as e:
+                    print(f"[batch_evaluate] Error auditing {c.chat_id}: {e}")
+
+        estimated_cost = round(len(results) * 0.00035, 4)
+        return JsonResponse({
+            "status": "success",
+            "audited_count": len(results),
+            "results": results,
+            "estimated_cost_usd": estimated_cost
+        })
+    except Exception as e:
+        return JsonResponse({"status": "error", "message": str(e)}, status=400)
 
 @api_login_required
 def get_cost(request):
@@ -106,10 +225,15 @@ def log_message(request):
         # tool-use turn separately, sometimes within the same second) can't
         # race on the tokens_in/tokens_out increment below and silently drop
         # one side's update.
+        is_shadowtest = bool(chat_id and "shadowtest" in chat_id.lower())
+
         with transaction.atomic():
             chat, created = Chat.objects.select_for_update().get_or_create(
-                chat_id=chat_id, defaults={"model": model}
+                chat_id=chat_id, defaults={"model": model, "likely_automated": is_shadowtest}
             )
+            if not created and is_shadowtest and not chat.likely_automated:
+                chat.likely_automated = True
+                chat.save(update_fields=['likely_automated'])
 
             Message.objects.create(
                 chat=chat,
@@ -153,6 +277,26 @@ def log_message(request):
 
             chat.save(update_fields=['tokens_in', 'tokens_out', 'intent'])
 
+        # Smart Auto-Audit: triggers evaluation in background thread if eligible
+        # Runs asynchronously after transaction commits with zero impact on shopper latency
+        if should_auto_audit_chat(chat, products_shown=products_shown):
+            def _launch_audit(c_pk):
+                def _async_audit():
+                    try:
+                        from django.db import connection
+                        connection.close()
+                        c = Chat.objects.get(pk=c_pk)
+                        score_single_chat(c)
+                    except Exception as ex:
+                        print(f"[auto_audit] Background audit failed for {c_pk}: {ex}")
+                    finally:
+                        from django.db import connection
+                        connection.close()
+
+                threading.Thread(target=_async_audit, daemon=True).start()
+
+            transaction.on_commit(lambda: _launch_audit(chat.pk))
+
         return JsonResponse({'status': 'success'})
     except Exception as e:
         return JsonResponse({'status': 'error', 'message': str(e)}, status=400)
@@ -160,7 +304,7 @@ def log_message(request):
 @api_login_required
 def get_messages(request):
     try:
-        chats = Chat.objects.all()
+        chats = real_chats(Chat.objects.all())
         result = []
         for chat in chats:
             messages = Message.objects.filter(chat=chat).order_by('-timestamp')
@@ -316,8 +460,7 @@ def get_avg_eval_score(request):
         start_date = now() - timedelta(days=num_days)
 
         daily_counts = (
-            Chat.objects
-            .filter(timestamp__gte=start_date)
+            real_chats(Chat.objects.filter(timestamp__gte=start_date))
             .annotate(day=TruncDate('timestamp'))
             .values('day')
             .annotate(avg_day_score=Avg('evaluation_score'))
@@ -338,8 +481,7 @@ def get_avg_tokens_in(request):
         start_date = now() - timedelta(days=num_days)
 
         daily_counts = (
-            Chat.objects
-            .filter(timestamp__gte=start_date)
+            real_chats(Chat.objects.filter(timestamp__gte=start_date))
             .annotate(day=TruncDate('timestamp'))
             .values('day')
             .annotate(tok_in=Avg('tokens_in'))
@@ -360,8 +502,7 @@ def get_avg_tokens_out(request):
         start_date = now() - timedelta(days=num_days)
 
         daily_counts = (
-            Chat.objects
-            .filter(timestamp__gte=start_date)
+            real_chats(Chat.objects.filter(timestamp__gte=start_date))
             .annotate(day=TruncDate('timestamp'))
             .values('day')
             .annotate(tok_out=Avg('tokens_out'))
@@ -382,8 +523,7 @@ def get_avg_conversations_per_day(request):
         start_date = now() - timedelta(days=num_days)
 
         daily_counts = (
-            Chat.objects
-            .filter(timestamp__gte=start_date)
+            real_chats(Chat.objects.filter(timestamp__gte=start_date))
             .annotate(day=TruncDate('timestamp'))
             .values('day')
             .annotate(count=Count('chat_id'))

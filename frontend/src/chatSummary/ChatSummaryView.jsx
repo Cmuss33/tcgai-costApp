@@ -56,6 +56,8 @@ function ChatSummaryView() {
   const [hasNext, setHasNext] = useState(false);
 
   const [modelRates, setModelRates] = useState({});
+  const [batchAuditing, setBatchAuditing] = useState(false);
+  const [batchBanner, setBatchBanner] = useState(null);
 
   // Real $/token rates derived from Anthropic's own billing data for this
   // month (see pricing.js) - fetched once, not recomputed per chat.
@@ -168,6 +170,52 @@ function ChatSummaryView() {
         ...prev,
         [chatId]: false,
       }));
+    }
+  };
+
+  const handleBatchAudit = async () => {
+    if (batchAuditing) return;
+    setBatchAuditing(true);
+    setBatchBanner(null);
+
+    try {
+      const res = await fetch(`${API_URL}/api/cost/batch_evaluate/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ limit: 25 }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setBatchBanner({
+          type: "error",
+          message: data.error || data.message || `Audit failed (${res.status})`,
+        });
+        return;
+      }
+
+      if (data.audited_count === 0) {
+        setBatchBanner({
+          type: "info",
+          message: "All conversations are already audited! No pending chats to evaluate.",
+        });
+        return;
+      }
+
+      const newScores = {};
+      data.results.forEach((r) => {
+        newScores[r.chat_id] = r.score;
+      });
+      setAccuracy((prev) => ({ ...prev, ...newScores }));
+
+      setBatchBanner({
+        type: "success",
+        message: `⚡ Successfully auto-evaluated ${data.audited_count} conversations (Est. cost: $${data.estimated_cost_usd} USD)! Store Accuracy Rating updated.`,
+      });
+    } catch (err) {
+      setBatchBanner({ type: "error", message: String(err) });
+    } finally {
+      setBatchAuditing(false);
     }
   };
 
@@ -446,7 +494,7 @@ function ChatSummaryView() {
           <div className="inspector-titles">
             <h1><span>🔬</span> Quality &amp; Trust Inspector</h1>
             <p>
-              Audit individual shopper conversations, inspect AI accuracy rubric scores,
+              Audit individual shopper conversations, review AI accuracy scores,
               and flag inventory, pricing, or tournament legality discrepancies directly to engineering.
             </p>
           </div>
@@ -503,6 +551,28 @@ function ChatSummaryView() {
             </button>
           </div>
 
+          <div className="inspector-actions">
+            <button
+              type="button"
+              className="inspector-batch-btn"
+              onClick={handleBatchAudit}
+              disabled={batchAuditing}
+              title="Audit the latest 25 unaudited chats (~$0.01)"
+            >
+              {batchAuditing ? (
+                <>
+                  <span className="spinner" style={{ width: 13, height: 13, marginRight: 6 }} />
+                  Auditing 25 chats...
+                </>
+              ) : (
+                <>
+                  <span>⚡ Batch Audit 25</span>
+                  <span className="batch-cost-pill">~$0.01</span>
+                </>
+              )}
+            </button>
+          </div>
+
           <div className="inspector-search-wrap">
             <span className="inspector-search-icon">🔍</span>
             <input
@@ -514,12 +584,26 @@ function ChatSummaryView() {
             />
           </div>
         </div>
+
+        {batchBanner && (
+          <div className={`batch-audit-banner batch-audit-banner--${batchBanner.type}`}>
+            <span>{batchBanner.message}</span>
+            <button
+              type="button"
+              className="batch-audit-banner-close"
+              onClick={() => setBatchBanner(null)}
+              aria-label="Close message"
+            >
+              ✕
+            </button>
+          </div>
+        )}
       </div>
 
       <p className="cost-accuracy-note">
         "Est. Cost ($)" reflects Anthropic's actual billed rate per model
         this month, and now includes prompt-cache tokens (cache writes and
-        reads) alongside base input/output. Click any row to audit the full transcript.
+        reads) alongside base input/output. Click any Chat ID to view conversation details.
       </p>
 
       <table className="chat-summary-table">
@@ -528,12 +612,11 @@ function ChatSummaryView() {
             <th>Chat ID</th>
             <th>Date</th>
             <th>Customer Inquiry</th>
-            <th>Accuracy Eval</th>
+            <th>AI Accuracy Score</th>
             <th>Products</th>
             <th>Est. Cost ($)</th>
             <th>Model</th>
             <th>Investigation</th>
-            <th>Audit</th>
           </tr>
         </thead>
 
@@ -613,16 +696,6 @@ function ChatSummaryView() {
               <td style={{ fontSize: "12px", color: "#9ca3af" }}>{chat.model}</td>
 
               <td>{renderInvestigationCell(chat)}</td>
-
-              <td>
-                <button
-                  type="button"
-                  className="modal-re-eval-btn"
-                  onClick={() => openChatModal(chat.chat_id)}
-                >
-                  Inspect &rarr;
-                </button>
-              </td>
             </tr>
           ))}
         </tbody>

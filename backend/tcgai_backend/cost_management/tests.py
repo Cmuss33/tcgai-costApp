@@ -3838,3 +3838,194 @@ class LogoutEndpointTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json(), {"success": True})
 
+
+class ShadowtestTrafficExclusionTests(TestCase):
+    """Verifies that any chats containing 'shadowtest' in their chat_id
+    are fully excluded from metrics, conversation counts, get_chat_ids,
+    and are automatically flagged as likely_automated."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="owner", password="pw")
+        self.client.force_login(self.user)
+
+    def test_real_chats_excludes_shadowtest_chat_ids(self):
+        from .month_utils import real_chats
+        c_real = Chat.objects.create(chat_id="customer-1", model="claude-haiku-4-5")
+        Chat.objects.create(chat_id="bot-probe", model="claude-haiku-4-5", likely_automated=True)
+        Chat.objects.create(chat_id="conv-shadowtest-01", model="claude-haiku-4-5", likely_automated=False)
+        Chat.objects.create(chat_id="ShadowTest_Upper", model="claude-haiku-4-5", likely_automated=False)
+
+        visible = list(real_chats(Chat.objects.all()).values_list("chat_id", flat=True))
+        self.assertEqual(visible, [c_real.chat_id])
+
+    def test_log_message_auto_flags_shadowtest(self):
+        payload = make_log_message_payload("eval-shadowtest-77")
+        resp = self.client.post(
+            "/api/cost/log_message/",
+            data=json.dumps(payload),
+            content_type="application/json"
+        )
+        self.assertEqual(resp.status_code, 200)
+        chat = Chat.objects.get(chat_id="eval-shadowtest-77")
+        self.assertTrue(chat.likely_automated)
+
+    def test_get_chat_ids_excludes_shadowtest(self):
+        Chat.objects.create(chat_id="real-shopper", model="claude-haiku-4-5")
+        Chat.objects.create(chat_id="qa-shadowtest-1", model="claude-haiku-4-5")
+        Chat.objects.create(chat_id="qa-shadowtest-2", model="claude-haiku-4-5", likely_automated=True)
+
+        resp = self.client.get("/api/cost/get_chat_ids/?limit=50")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        ids = [c["chat_id"] for c in data["results"]]
+        self.assertEqual(ids, ["real-shopper"])
+
+    def test_get_avg_metrics_exclude_shadowtest(self):
+        # Real chat with score 100 and 200 tokens
+        Chat.objects.create(
+            chat_id="real-shopper-eval",
+            model="claude-haiku-4-5",
+            evaluation_score=100,
+            tokens_in=200,
+            tokens_out=100,
+        )
+        # Shadowtest chat with score 10 and 50,000 tokens
+        Chat.objects.create(
+            chat_id="batch-shadowtest-run",
+            model="claude-haiku-4-5",
+            evaluation_score=10,
+            tokens_in=50000,
+            tokens_out=50000,
+        )
+
+        resp_eval = self.client.get("/api/cost/get_avg_eval_score/?period=daily")
+        self.assertEqual(resp_eval.status_code, 200)
+        self.assertEqual(resp_eval.json()["average_eval_score"], 100.0)
+
+        resp_tok_in = self.client.get("/api/cost/get_avg_tokens_in/?period=daily")
+        self.assertEqual(resp_tok_in.status_code, 200)
+        self.assertEqual(resp_tok_in.json()["average_tokens_in"], 200.0)
+
+        resp_tok_out = self.client.get("/api/cost/get_avg_tokens_out/?period=daily")
+        self.assertEqual(resp_tok_out.status_code, 200)
+        self.assertEqual(resp_tok_out.json()["average_tokens_out"], 100.0)
+
+    def test_migration_0017_flags_existing_shadowtest_chats(self):
+        import importlib
+        migration_mod = importlib.import_module("cost_management.migrations.0017_flag_shadowtest_chats")
+        flag_shadowtest_chats = migration_mod.flag_shadowtest_chats
+        from django.apps import apps
+
+        chat = Chat.objects.create(
+            chat_id="historical-shadowtest-data",
+            model="claude-haiku-4-5",
+            likely_automated=False
+        )
+        self.assertFalse(Chat.objects.get(chat_id=chat.chat_id).likely_automated)
+
+        flag_shadowtest_chats(apps, None)
+        self.assertTrue(Chat.objects.get(chat_id=chat.chat_id).likely_automated)
+
+
+class AutoAuditAndBatchEvaluationTests(TestCase):
+    """Verifies smart auto-audit filtering, batch evaluation endpoint,
+    and the auto_audit_chats management command."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="auditor", password="pw")
+        self.client.force_login(self.user)
+
+    @patch("anthropic.Anthropic")
+    def test_score_single_chat_success(self, mock_anthropic_class):
+        from .views import score_single_chat
+        mock_client = MagicMock()
+        mock_anthropic_class.return_value = mock_client
+        mock_resp = MagicMock()
+        mock_resp.content = [MagicMock(text="92")]
+        mock_client.messages.create.return_value = mock_resp
+
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}):
+            chat = Chat.objects.create(chat_id="test-score-1", model="claude-haiku-4-5")
+            Message.objects.create(
+                chat=chat,
+                content="Do you have Charizard?",
+                returned_content="Yes we do!",
+                tokens_in=50,
+                tokens_out=20,
+                model="claude-haiku-4-5",
+            )
+
+            score = score_single_chat(chat)
+            self.assertEqual(score, 92)
+            chat.refresh_from_db()
+            self.assertEqual(chat.evaluation_score, 92)
+
+    def test_should_auto_audit_chat_filtering(self):
+        from .views import should_auto_audit_chat
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}):
+            # Bot should not be audited
+            c_bot = Chat.objects.create(chat_id="bot-test", model="claude-haiku-4-5", likely_automated=True)
+            self.assertFalse(should_auto_audit_chat(c_bot))
+
+            # Shadowtest should not be audited
+            c_shadow = Chat.objects.create(chat_id="conv-shadowtest-9", model="claude-haiku-4-5")
+            self.assertFalse(should_auto_audit_chat(c_shadow))
+
+            # Already scored should not be audited
+            c_scored = Chat.objects.create(chat_id="real-scored", model="claude-haiku-4-5", evaluation_score=90)
+            self.assertFalse(should_auto_audit_chat(c_scored))
+
+            # Real chat with products shown qualifies
+            c_prod = Chat.objects.create(chat_id="real-prod", model="claude-haiku-4-5")
+            self.assertTrue(should_auto_audit_chat(c_prod, products_shown={"primary": [{"name": "Charizard"}]}))
+
+    @patch("cost_management.views.score_single_chat")
+    def test_batch_evaluate_endpoint(self, mock_score):
+        mock_score.return_value = 95
+        c1 = Chat.objects.create(chat_id="batch-c1", model="claude-haiku-4-5")
+        c2 = Chat.objects.create(chat_id="batch-c2", model="claude-haiku-4-5")
+        Message.objects.create(chat=c1, content="q1", returned_content="a1", tokens_in=10, tokens_out=10, model="claude-haiku-4-5")
+        Message.objects.create(chat=c2, content="q2", returned_content="a2", tokens_in=10, tokens_out=10, model="claude-haiku-4-5")
+
+        resp = self.client.post(
+            "/api/cost/batch_evaluate/",
+            data=json.dumps({"limit": 10}),
+            content_type="application/json"
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["status"], "success")
+        self.assertEqual(data["audited_count"], 2)
+        self.assertIn("estimated_cost_usd", data)
+
+    def test_batch_evaluate_unauthenticated(self):
+        self.client.logout()
+        resp = self.client.post("/api/cost/batch_evaluate/", data="{}", content_type="application/json")
+        self.assertEqual(resp.status_code, 401)
+
+    def test_batch_evaluate_zero_unaudited(self):
+        Chat.objects.create(chat_id="already-scored", model="claude-haiku-4-5", evaluation_score=98)
+        resp = self.client.post("/api/cost/batch_evaluate/", data="{}", content_type="application/json")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["status"], "success")
+        self.assertEqual(data["audited_count"], 0)
+        self.assertEqual(data["results"], [])
+
+    def test_should_auto_audit_respects_daily_cap(self):
+        from .views import should_auto_audit_chat, DAILY_AUTO_AUDIT_CAP
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}):
+            # Create 30 chats scored today
+            for i in range(DAILY_AUTO_AUDIT_CAP):
+                Chat.objects.create(
+                    chat_id=f"cap-chat-{i}",
+                    model="claude-haiku-4-5",
+                    evaluation_score=95
+                )
+
+            # New chat arrives
+            c_new = Chat.objects.create(chat_id="new-chat-over-cap", model="claude-haiku-4-5")
+            self.assertFalse(should_auto_audit_chat(c_new, products_shown={"primary": [{"name": "Pikachu"}]}))
+
+
+
