@@ -957,6 +957,68 @@ function DevOpsAccordion({ stats, cacheEconomics, usageByKey, costReconciliation
   );
 }
 
+/* ---------- circular progress with centered percentage ---------- */
+function CircularProgress({ percent, size = 76, strokeWidth = 5.5, label }) {
+  const isDeterminate = typeof percent === "number" && !isNaN(percent);
+  const clampedPct = isDeterminate ? Math.max(0, Math.min(100, Math.round(percent))) : 0;
+  const radius = (size - strokeWidth) / 2;
+  const circumference = 2 * Math.PI * radius;
+  const strokeDashoffset = isDeterminate
+    ? circumference - (clampedPct / 100) * circumference
+    : circumference * 0.25;
+
+  return (
+    <div
+      className={`cr__circle-progress ${!isDeterminate ? "is-indeterminate" : ""}`}
+      style={{ width: size, height: size }}
+      role="progressbar"
+      aria-valuenow={isDeterminate ? clampedPct : undefined}
+      aria-valuemin="0"
+      aria-valuemax="100"
+    >
+      <svg
+        className="cr__circle-svg"
+        width={size}
+        height={size}
+        viewBox={`0 0 ${size} ${size}`}
+      >
+        <defs>
+          <linearGradient id="crCircleGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stopColor="var(--a-spend, #6a9bff)" />
+            <stop offset="100%" stopColor="var(--a-eval, #2fe0a6)" />
+          </linearGradient>
+        </defs>
+        <circle
+          className="cr__circle-bg"
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          strokeWidth={strokeWidth}
+        />
+        <circle
+          className="cr__circle-bar"
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          strokeWidth={strokeWidth}
+          strokeDasharray={circumference}
+          strokeDashoffset={strokeDashoffset}
+          strokeLinecap="round"
+          transform={`rotate(-90 ${size / 2} ${size / 2})`}
+        />
+      </svg>
+      <div className="cr__circle-inner">
+        {isDeterminate ? (
+          <span className="cr__circle-pct">{clampedPct}%</span>
+        ) : (
+          <div className="cr__spinner" style={{ width: size * 0.4, height: size * 0.4 }} />
+        )}
+        {label && <span className="cr__circle-label">{label}</span>}
+      </div>
+    </div>
+  );
+}
+
 /* ---------- loading bar ---------- */
 function LoadingBar({ percent }) {
   return (
@@ -1189,8 +1251,12 @@ function HomeView() {
   );
   const shown = months[curIdx];
 
+  const loadPercent = Math.min(100, Math.round((loadProgress / TOTAL_LOADERS) * 100));
+  const showLoadingBar = loadProgress < TOTAL_LOADERS;
+  const isMonthLoading = !firstLoad && loadProgress < TOTAL_LOADERS;
+
   const pick = (m) => {
-    if (!m) return;
+    if (!m || isMonthLoading) return;
     setSelectedMonth(m.value);
     setLoadProgress(0);
     const arg = m.is_current ? undefined : m.value;
@@ -1201,7 +1267,9 @@ function HomeView() {
     loadCacheEconomics(arg);
   };
   const refreshCurrent = () => {
+    if (isMonthLoading) return;
     const arg = shown?.is_current ? undefined : shown?.value;
+    setLoadProgress(0);
     loadStats(arg, true);
     loadInsights({ month: arg, refresh: true });
     loadUsageByKey(arg, true);
@@ -1209,16 +1277,16 @@ function HomeView() {
     loadCacheEconomics(arg, true);
   };
 
-  const loadPercent = Math.min(100, Math.round((loadProgress / TOTAL_LOADERS) * 100));
-  const showLoadingBar = loadProgress < TOTAL_LOADERS;
-
   if (firstLoad) {
     return (
       <div className="cr">
         {showLoadingBar && <LoadingBar percent={loadPercent} />}
         <div className="cr__wrap">
           <div className="cr__center cr__center--tall">
-            <div className="cr__spinner" />
+            <CircularProgress percent={loadPercent} size={88} strokeWidth={6.5} />
+            <p className="cr__muted" style={{ marginTop: 14 }}>
+              Loading command centre&hellip; {loadPercent}%
+            </p>
           </div>
         </div>
       </div>
@@ -1253,23 +1321,47 @@ function HomeView() {
             <button
               aria-label="Previous month"
               onClick={() => pick(months[curIdx + 1])}
-              disabled={curIdx >= months.length - 1}
+              disabled={isMonthLoading || curIdx >= months.length - 1}
             >
               &#9664;
             </button>
             <div>
               <div className="cr__mn">{shown?.label ?? "…"}</div>
-              <div className="cr__mm">{shown?.is_current ? "IN PROGRESS" : " "}</div>
+              <div className={`cr__mm ${isMonthLoading ? "is-loading" : ""}`}>
+                {isMonthLoading
+                  ? `UPDATING… ${loadPercent}%`
+                  : shown?.is_current
+                  ? "IN PROGRESS"
+                  : " "}
+              </div>
             </div>
             <button
               aria-label="Next month"
               onClick={() => pick(months[curIdx - 1])}
-              disabled={curIdx <= 0}
+              disabled={isMonthLoading || curIdx <= 0}
             >
               &#9654;
             </button>
           </div>
         </div>
+
+        {/* In-viewport header loadbar for mobile and desktop visibility */}
+        {isMonthLoading && (
+          <div className="cr__header-loadbar" aria-hidden="true">
+            <div className="cr__header-loadbar-fill" style={{ width: `${loadPercent}%` }} />
+          </div>
+        )}
+
+        <div className={`cr__body ${isMonthLoading ? "is-updating" : ""}`}>
+          {isMonthLoading && (
+            <div className="cr__updating-hud" role="status" aria-live="polite">
+              <CircularProgress percent={loadPercent} size={64} strokeWidth={5.5} />
+              <div className="cr__updating-text">
+                <div className="cr__updating-title">Updating to {shown?.label || "selected month"}…</div>
+                <div className="cr__updating-sub">Refreshing spend, usage &amp; AI insights ({loadPercent}%)</div>
+              </div>
+            </div>
+          )}
 
         {iview?.headline && (
           <div className="cr__lede">
@@ -1357,9 +1449,10 @@ function HomeView() {
         )}
 
         <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "20px" }}>
-          <button className="cr__refresh" onClick={refreshCurrent}>
+          <button className="cr__refresh" onClick={refreshCurrent} disabled={isMonthLoading}>
             Refresh
           </button>
+        </div>
         </div>
       </div>
     </div>
