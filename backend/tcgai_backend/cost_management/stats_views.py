@@ -44,6 +44,11 @@ def _spend_for(month_start, rates_resp):
     spend either way, and callers of _spend_for also need that same rate
     for their own proration math, so fetching it once and sharing it avoids
     hitting cost_report+usage_report a second time for the same month."""
+    key = f"spend_for:{month_start:%Y-%m}"
+    cached = cache.get(key)
+    if cached is not None and cached[0] is not None and not cached[2]:
+        return cached
+
     resp = base_views.llmprovider.get_cost(
         year=month_start.year, month=month_start.month, key_ids=chat_api_key_ids(), rates_resp=rates_resp
     )
@@ -56,7 +61,10 @@ def _spend_for(month_start, rates_resp):
         {"day": c.get("day"), "amount": round(float(c.get("total_cost") or 0), 2)}
         for c in costs
     ]
-    return total, daily, None
+    result = (total, daily, None)
+    current = current_month_start()
+    cache.set(key, result, CURRENT_TTL if month_start == current else PAST_TTL)
+    return result
 
 
 def _tokens_for(month_start):
@@ -69,6 +77,11 @@ def _tokens_for(month_start):
     or an error response), so callers never need a None-check of their own.
     Scoped to the chat surface's own key(s) -- see chat_api_key_ids -- to
     stay consistent with _spend_for above."""
+    key = f"tokens_for:{month_start:%Y-%m}"
+    cached = cache.get(key)
+    if cached is not None and cached[0] is not None and not cached[4]:
+        return cached
+
     resp = base_views.llmprovider.get_tokens(
         year=month_start.year, month=month_start.month, key_ids=chat_api_key_ids()
     )
@@ -89,7 +102,10 @@ def _tokens_for(month_start):
         "read_tokens": cache_info.get("read_tokens", 0),
         "hit_rate": cache_info.get("hit_rate"),
     }
-    return total_in, total_out, daily, cache_info, None
+    result = (total_in, total_out, daily, cache_info, None)
+    current = current_month_start()
+    cache.set(key, result, CURRENT_TTL if month_start == current else PAST_TTL)
+    return result
 
 
 def _rates_resp_for(month_start):
@@ -100,10 +116,38 @@ def _rates_resp_for(month_start):
     priceable this month" (e.g. get_cost, via _spend_for's rates_resp) use
     this directly; _rates_for below is the error-swallowing convenience
     wrapper for callers that already have a fallback."""
+    key = f"model_rates:{month_start:%Y-%m}"
+    cached = cache.get(key)
+    if cached is not None and not cached.get("error") and cached.get("rates"):
+        return cached
     try:
-        return base_views.llmprovider.get_model_rates(year=month_start.year, month=month_start.month)
+        resp = base_views.llmprovider.get_model_rates(year=month_start.year, month=month_start.month)
     except Exception:
         return {"error": "rate derivation failed"}
+
+    if isinstance(resp, dict) and not resp.get("error") and resp.get("rates"):
+        current = current_month_start()
+        cache.set(key, resp, CURRENT_TTL if month_start == current else PAST_TTL)
+    return resp
+
+
+def _raw_usage_by_key(month_start):
+    """Raw get_usage_by_key() response for the month, shared between
+    usage_by_key and _chat_cache_buckets so the same upstream usage_report
+    and /api_keys calls are not made twice in parallel."""
+    key = f"raw_usage_by_key:{month_start:%Y-%m}"
+    cached = cache.get(key)
+    if cached is not None and not cached.get("error") and "keys" in cached:
+        return cached
+    try:
+        resp = base_views.llmprovider.get_usage_by_key(year=month_start.year, month=month_start.month)
+    except Exception:
+        return {"error": "usage source unavailable"}
+
+    if isinstance(resp, dict) and not resp.get("error") and "keys" in resp:
+        current = current_month_start()
+        cache.set(key, resp, CURRENT_TTL if month_start == current else PAST_TTL)
+    return resp
 
 
 def _rates_from_resp(resp):
@@ -247,7 +291,7 @@ def _chat_cache_buckets(month_start):
     via _rates_for, rates), so an exact dict lookup is correct here --
     unlike _rate_for's prefix match, which exists only to bridge our own
     dated Chat.model strings against Anthropic's shorter rate keys."""
-    resp = base_views.llmprovider.get_usage_by_key(year=month_start.year, month=month_start.month)
+    resp = _raw_usage_by_key(month_start)
     if not isinstance(resp, dict) or resp.get("error"):
         err = resp.get("error") if isinstance(resp, dict) else "usage source unavailable"
         return {}, err
@@ -671,12 +715,15 @@ def monthly_stats(request):
 
     if month_param == "lifetime":
         key = "monthly_stats:lifetime"
-        if not refresh:
+        if refresh:
+            cache.delete(key)
+        else:
             cached = cache.get(key)
             if cached is not None:
                 return JsonResponse({**cached, "cached": True})
         payload = _build_lifetime_stats()
-        cache.set(key, payload, CURRENT_TTL)
+        if not payload.get("cost_source_error") and not payload.get("error"):
+            cache.set(key, payload, CURRENT_TTL)
         return JsonResponse(payload)
 
     current = current_month_start()
@@ -689,13 +736,20 @@ def monthly_stats(request):
         month_start = parsed
 
     key = f"monthly_stats:{month_start:%Y-%m}"
-    if not refresh:
+    if refresh:
+        cache.delete(key)
+        cache.delete(f"model_rates:{month_start:%Y-%m}")
+        cache.delete(f"spend_for:{month_start:%Y-%m}")
+        cache.delete(f"tokens_for:{month_start:%Y-%m}")
+        cache.delete(f"raw_usage_by_key:{month_start:%Y-%m}")
+    else:
         cached = cache.get(key)
         if cached is not None:
             return JsonResponse({**cached, "cached": True})
 
     payload = _build_stats(month_start)
-    cache.set(key, payload, CURRENT_TTL if month_start == current else PAST_TTL)
+    if not payload.get("cost_source_error") and not payload.get("error"):
+        cache.set(key, payload, CURRENT_TTL if month_start == current else PAST_TTL)
     return JsonResponse(payload)
 
 
@@ -716,13 +770,14 @@ def model_rates(request):
         month_start = parsed
 
     key = f"model_rates:{month_start:%Y-%m}"
-    if not refresh:
+    if refresh:
+        cache.delete(key)
+    else:
         cached = cache.get(key)
         if cached is not None:
             return JsonResponse({**cached, "cached": True})
 
-    payload = base_views.llmprovider.get_model_rates(year=month_start.year, month=month_start.month)
-    cache.set(key, payload, CURRENT_TTL if month_start == current else PAST_TTL)
+    payload = _rates_resp_for(month_start)
     return JsonResponse(payload)
 
 
@@ -825,16 +880,18 @@ def usage_by_key(request):
         month_start = parsed
 
     key = f"usage_by_key:{month_start:%Y-%m}"
-    if not refresh:
+    if refresh:
+        cache.delete(key)
+        cache.delete(f"raw_usage_by_key:{month_start:%Y-%m}")
+    else:
         cached = cache.get(key)
         if cached is not None:
             return JsonResponse({**cached, "cached": True})
 
-    usage_resp = base_views.llmprovider.get_usage_by_key(year=month_start.year, month=month_start.month)
+    usage_resp = _raw_usage_by_key(month_start)
     if not isinstance(usage_resp, dict) or usage_resp.get("error"):
         err = usage_resp.get("error") if isinstance(usage_resp, dict) else "usage source unavailable"
         payload = {"keys": [], "workspace_id": None, "estimated": True, "error": err}
-        cache.set(key, payload, CURRENT_TTL if month_start == current else PAST_TTL)
         return JsonResponse(payload)
 
     rates = _rates_for(month_start)
@@ -887,7 +944,9 @@ def cost_reconciliation(request):
 
     if month_param == "lifetime":
         key = "cost_reconciliation:lifetime"
-        if not refresh:
+        if refresh:
+            cache.delete(key)
+        else:
             cached = cache.get(key)
             if cached is not None:
                 return JsonResponse({**cached, "cached": True})
@@ -929,7 +988,8 @@ def cost_reconciliation(request):
             "chat_scope_is_app_wide": _chat_scope_is_app_wide(),
             "cost_source_error": cost_err,
         }
-        cache.set(key, payload, CURRENT_TTL)
+        if not cost_err:
+            cache.set(key, payload, CURRENT_TTL)
         return JsonResponse(payload)
 
     current = current_month_start()
@@ -942,7 +1002,11 @@ def cost_reconciliation(request):
         month_start = parsed
 
     key = f"cost_reconciliation:{month_start:%Y-%m}"
-    if not refresh:
+    if refresh:
+        cache.delete(key)
+        cache.delete(f"spend_for:{month_start:%Y-%m}")
+        cache.delete(f"model_rates:{month_start:%Y-%m}")
+    else:
         cached = cache.get(key)
         if cached is not None:
             return JsonResponse({**cached, "cached": True})
@@ -970,7 +1034,8 @@ def cost_reconciliation(request):
         "chat_scope_is_app_wide": _chat_scope_is_app_wide(),
         "cost_source_error": cost_err,
     }
-    cache.set(key, payload, CURRENT_TTL if month_start == current else PAST_TTL)
+    if not cost_err:
+        cache.set(key, payload, CURRENT_TTL if month_start == current else PAST_TTL)
     return JsonResponse(payload)
 
 
@@ -1001,7 +1066,9 @@ def cache_economics(request):
 
     if month_param == "lifetime":
         key = "cache_economics:lifetime"
-        if not refresh:
+        if refresh:
+            cache.delete(key)
+        else:
             cached = cache.get(key)
             if cached is not None:
                 return JsonResponse({**cached, "cached": True})
@@ -1070,7 +1137,8 @@ def cache_economics(request):
             "chat_scope_is_app_wide": _chat_scope_is_app_wide(),
             "cost_source_error": usage_err,
         }
-        cache.set(key, payload, CURRENT_TTL)
+        if not usage_err:
+            cache.set(key, payload, CURRENT_TTL)
         return JsonResponse(payload)
 
     current = current_month_start()
@@ -1083,7 +1151,11 @@ def cache_economics(request):
         month_start = parsed
 
     key = f"cache_economics:{month_start:%Y-%m}"
-    if not refresh:
+    if refresh:
+        cache.delete(key)
+        cache.delete(f"raw_usage_by_key:{month_start:%Y-%m}")
+        cache.delete(f"model_rates:{month_start:%Y-%m}")
+    else:
         cached = cache.get(key)
         if cached is not None:
             return JsonResponse({**cached, "cached": True})
@@ -1153,5 +1225,6 @@ def cache_economics(request):
         "chat_scope_is_app_wide": _chat_scope_is_app_wide(),
         "cost_source_error": usage_err,
     }
-    cache.set(key, payload, CURRENT_TTL if month_start == current else PAST_TTL)
+    if not usage_err:
+        cache.set(key, payload, CURRENT_TTL if month_start == current else PAST_TTL)
     return JsonResponse(payload)

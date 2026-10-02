@@ -1,8 +1,13 @@
 from .api_clients import LLMAdapter
 import requests
 import os
+import random
+import time
+import logging
 from dotenv import load_dotenv
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 
@@ -108,6 +113,55 @@ def _month_bounds(year=None, month=None):
     return y, m, starting_at, ending_at
 
 
+def _anthropic_get(url, params=None, headers=None, max_retries=3, sleep_fn=time.sleep):
+    """requests.get wrapper with automatic retry on HTTP 429 (rate limit) and 529 (overloaded).
+    Respects Anthropic's 'retry-after' or 'retry-after-ms' headers when present."""
+    last_response = None
+    for attempt in range(max_retries + 1):
+        try:
+            response = requests.get(url, params=params, headers=headers)
+        except requests.exceptions.RequestException:
+            if attempt == max_retries:
+                raise
+            sleep_fn(1.0 * (attempt + 1))
+            continue
+
+        if response.status_code not in (429, 529):
+            return response
+
+        last_response = response
+        if attempt == max_retries:
+            break
+
+        # Check for Retry-After header
+        retry_header = response.headers.get("retry-after") or response.headers.get("Retry-After")
+        retry_ms_header = response.headers.get("retry-after-ms") or response.headers.get("Retry-After-Ms")
+        if retry_header:
+            try:
+                sleep_sec = float(retry_header)
+            except (ValueError, TypeError):
+                sleep_sec = 1.5 * (2 ** attempt)
+        elif retry_ms_header:
+            try:
+                sleep_sec = float(retry_ms_header) / 1000.0
+            except (ValueError, TypeError):
+                sleep_sec = 1.5 * (2 ** attempt)
+        else:
+            sleep_sec = 1.5 * (2 ** attempt)
+
+        # Anthropic best practice: honor Retry-After header up to a safe max (e.g. 30s).
+        # Add randomized jitter (+ uniform(0.1, 0.4)s) to desynchronize concurrent requests.
+        jitter = random.uniform(0.1, 0.4)
+        sleep_sec = min(max(sleep_sec, 0.5), 30.0) + jitter
+        logger.warning(
+            "[AnthropicAdapter] Hit %d on %s, retrying in %.2fs (attempt %d/%d)",
+            response.status_code, url, sleep_sec, attempt + 1, max_retries
+        )
+        sleep_fn(sleep_sec)
+
+    return last_response
+
+
 class AnthropicAdapter(LLMAdapter):
 
     def get_cost(self, year=None, month=None, key_ids=None, rates_resp=None):
@@ -155,7 +209,7 @@ class AnthropicAdapter(LLMAdapter):
             "content-type": "application/json",
             "x-api-key": os.environ.get('ANTHROPIC_ADMIN_KEY')
         }
-        response = requests.get(
+        response = _anthropic_get(
             "https://api.anthropic.com/v1/organizations/usage_report/messages",
             params={"starting_at": starting_at, "ending_at": ending_at, "group_by[]": ["model", "api_key_id"], "limit": 31},
             headers=headers,
@@ -211,7 +265,7 @@ class AnthropicAdapter(LLMAdapter):
             "limit": 31
         }
 
-        response = requests.get(url, params=params, headers=headers)
+        response = _anthropic_get(url, params=params, headers=headers)
 
         if response.status_code == 200:
             usage_data = response.json()
@@ -284,7 +338,7 @@ class AnthropicAdapter(LLMAdapter):
         # ids was retracted 2026-09-16 after it inflated one chat's estimated
         # cost ~1500x right after a key rotation -- see get_tokens' comment
         # and WholeOrgScopingTests.test_get_model_rates_stays_accurate_across_a_key_rotation.
-        cost_response = requests.get(
+        cost_response = _anthropic_get(
             "https://api.anthropic.com/v1/organizations/cost_report",
             params={"starting_at": starting_at, "ending_at": ending_at, "group_by[]": "description", "limit": 31},
             headers=headers,
@@ -296,7 +350,7 @@ class AnthropicAdapter(LLMAdapter):
             return {"error": cost_response.text}
 
         usage_params = {"starting_at": starting_at, "ending_at": ending_at, "group_by[]": "model", "limit": 31}
-        usage_response = requests.get(
+        usage_response = _anthropic_get(
             "https://api.anthropic.com/v1/organizations/usage_report/messages",
             params=usage_params,
             headers=headers,
@@ -411,7 +465,7 @@ class AnthropicAdapter(LLMAdapter):
             "limit": 31,
         }
 
-        usage_response = requests.get(
+        usage_response = _anthropic_get(
             "https://api.anthropic.com/v1/organizations/usage_report/messages",
             params=usage_params,
             headers=headers,
@@ -445,7 +499,7 @@ class AnthropicAdapter(LLMAdapter):
         # raw ids as names rather than erroring the whole response.
         names = {}
         try:
-            names_response = requests.get(
+            names_response = _anthropic_get(
                 "https://api.anthropic.com/v1/organizations/api_keys",
                 params={"limit": 100},
                 headers=headers,

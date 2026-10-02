@@ -41,6 +41,30 @@ const fmtCompact = (n) => {
 };
 const fmtPct = (n) => (n == null ? "—" : `${Math.round(n * 100)}%`);
 
+const formatCostSourceError = (error) => {
+  if (!error) return "";
+  if (typeof error === "string") {
+    const trimmed = error.trim();
+    if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (parsed?.error?.type === "rate_limit_error" || parsed?.type === "error") {
+          return parsed.error?.message || "Anthropic rate limit reached. Retrying automatically…";
+        }
+        if (parsed?.error?.message) {
+          return parsed.error.message;
+        }
+      } catch {
+        // Fall back to original string
+      }
+    }
+    if (error.includes("rate_limit_error") || error.includes("rate limit")) {
+      return "Anthropic rate limit reached. Retrying in a few moments…";
+    }
+  }
+  return String(error);
+};
+
 const CACHE_VERDICT = {
   helping: {
     tone: "good",
@@ -268,7 +292,7 @@ function CollapsiblePanel({
 }
 
 /* ---------- KPI band + trend ---------- */
-function StatsBand({ stats, isLifetime }) {
+function StatsBand({ stats, isLifetime, onRetryStats }) {
   if (!stats) {
     return (
       <div className="cr__center">
@@ -290,10 +314,31 @@ function StatsBand({ stats, isLifetime }) {
   return (
     <>
       {stats.cost_source_error && (
-        <p className="cr__notice">
-          Spend and token figures are unavailable right now ({stats.cost_source_error}).
-          The rest of the page is current.
-        </p>
+        <div
+          className="cr__notice"
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            flexWrap: "wrap",
+            gap: "8px",
+          }}
+        >
+          <span>
+            Spend and token figures are unavailable right now (
+            {formatCostSourceError(stats.cost_source_error)}). The rest of the page is current.
+          </span>
+          {onRetryStats && (
+            <button
+              type="button"
+              className="cr__refresh"
+              style={{ margin: 0, padding: "3px 10px", fontSize: "0.8rem" }}
+              onClick={onRetryStats}
+            >
+              Retry
+            </button>
+          )}
+        </div>
       )}
 
       <div className="cr__kpis">
@@ -937,7 +982,7 @@ function RecommendationsSection({ recs, gaps, requests, isLifetime }) {
   );
 }
 
-function DevOpsAccordion({ stats, cacheEconomics, usageByKey, costReconciliation, costCommentary, isLifetime }) {
+function DevOpsAccordion({ stats, cacheEconomics, usageByKey, costReconciliation, costCommentary, isLifetime, onRetryStats }) {
   const [open, setOpen] = useState(false);
 
   return (
@@ -959,7 +1004,7 @@ function DevOpsAccordion({ stats, cacheEconomics, usageByKey, costReconciliation
 
       {open && (
         <div className="cr__devops-content">
-          <StatsBand stats={stats} isLifetime={isLifetime} />
+          <StatsBand stats={stats} isLifetime={isLifetime} onRetryStats={onRetryStats} />
           <CacheEconomicsPanel data={cacheEconomics} isLifetime={isLifetime} />
           <UsageByKeyPanel data={usageByKey} isLifetime={isLifetime} />
           <CostReconciliationPanel data={costReconciliation} isLifetime={isLifetime} />
@@ -1252,6 +1297,18 @@ function HomeView() {
     [navigate]
   );
 
+  const loadDashboardData = useCallback(
+    async (arg, refresh = false) => {
+      setLoadProgress(0);
+      loadInsights({ month: arg, refresh });
+      await loadStats(arg, refresh);
+      loadUsageByKey(arg, refresh);
+      loadCostReconciliation(arg, refresh);
+      loadCacheEconomics(arg, refresh);
+    },
+    [loadStats, loadInsights, loadUsageByKey, loadCostReconciliation, loadCacheEconomics]
+  );
+
   useEffect(() => {
     fetch(`${API_URL}/api/cost/auth-check/`, { credentials: "include" })
       .then((res) => res.json())
@@ -1264,14 +1321,10 @@ function HomeView() {
 
     setLoadProgress(0);
     const initialArg = isInitialLifetime ? "lifetime" : searchParams.get("month") || undefined;
-    loadStats(initialArg);
-    loadInsights({ month: initialArg });
-    loadUsageByKey(initialArg);
-    loadCostReconciliation(initialArg);
-    loadCacheEconomics(initialArg);
+    loadDashboardData(initialArg);
 
     return () => clearTimeout(pollRef.current);
-  }, [navigate, loadStats, loadInsights, loadUsageByKey, loadCostReconciliation, loadCacheEconomics]);
+  }, [navigate, isInitialLifetime, searchParams, loadDashboardData]);
 
   const months = insights?.available_months ?? [];
   const curIdx = Math.max(
@@ -1294,30 +1347,40 @@ function HomeView() {
     }
   }, [isMonthLoading]);
 
+  const handleRetryStats = useCallback(() => {
+    const arg = isLifetime ? "lifetime" : shown?.is_current ? undefined : shown?.value;
+    loadStats(arg, true);
+  }, [isLifetime, shown, loadStats]);
+
+  // Auto-retry once if stats hit a transient rate limit error
+  const retryStatsTimeoutRef = useRef(null);
+  useEffect(() => {
+    if (stats?.cost_source_error) {
+      const errStr = String(stats.cost_source_error);
+      if (errStr.includes("rate_limit") || errStr.includes("rate limit")) {
+        clearTimeout(retryStatsTimeoutRef.current);
+        retryStatsTimeoutRef.current = setTimeout(() => {
+          handleRetryStats();
+        }, 3500);
+      }
+    }
+    return () => clearTimeout(retryStatsTimeoutRef.current);
+  }, [stats?.cost_source_error, handleRetryStats]);
+
   const pick = (m) => {
     if (!m || isMonthLoading) return;
     setSelectedMonth(m.value);
     setLastMonthlyMonth(m.value);
-    setLoadProgress(0);
     const arg = m.is_current ? undefined : m.value;
     setSearchParams(arg ? { month: arg } : {});
-    loadStats(arg);
-    loadInsights({ month: arg });
-    loadUsageByKey(arg);
-    loadCostReconciliation(arg);
-    loadCacheEconomics(arg);
+    loadDashboardData(arg);
   };
 
   const switchToLifetime = () => {
     if (isLifetime || isMonthLoading) return;
     setSelectedMonth("lifetime");
     setSearchParams({ range: "lifetime" });
-    setLoadProgress(0);
-    loadStats("lifetime");
-    loadInsights({ month: "lifetime" });
-    loadUsageByKey("lifetime");
-    loadCostReconciliation("lifetime");
-    loadCacheEconomics("lifetime");
+    loadDashboardData("lifetime");
   };
 
   const switchToMonthly = (targetMonth) => {
@@ -1328,23 +1391,13 @@ function HomeView() {
     setSelectedMonth(m?.value ?? null);
     if (m?.value) setLastMonthlyMonth(m.value);
     setSearchParams(mVal ? { month: mVal } : {});
-    setLoadProgress(0);
-    loadStats(mVal);
-    loadInsights({ month: mVal });
-    loadUsageByKey(mVal);
-    loadCostReconciliation(mVal);
-    loadCacheEconomics(mVal);
+    loadDashboardData(mVal);
   };
 
   const refreshCurrent = () => {
     if (isMonthLoading) return;
     const arg = isLifetime ? "lifetime" : shown?.is_current ? undefined : shown?.value;
-    setLoadProgress(0);
-    loadStats(arg, true);
-    loadInsights({ month: arg, refresh: true });
-    loadUsageByKey(arg, true);
-    loadCostReconciliation(arg, true);
-    loadCacheEconomics(arg, true);
+    loadDashboardData(arg, true);
   };
 
   if (firstLoad) {
@@ -1564,6 +1617,7 @@ function HomeView() {
             costReconciliation={costReconciliation}
             costCommentary={insights?.cost_commentary}
             isLifetime={isLifetime}
+            onRetryStats={handleRetryStats}
           />
 
           {showFindings && (
