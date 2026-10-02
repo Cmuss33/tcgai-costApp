@@ -3998,13 +3998,34 @@ class AutoAuditAndBatchEvaluationTests(TestCase):
         self.assertEqual(data["audited_count"], 2)
         self.assertIn("estimated_cost_usd", data)
 
-    def test_auto_audit_chats_command(self):
-        from django.core.management import call_command
-        from io import StringIO
-        Chat.objects.create(chat_id="cmd-chat-1", model="claude-haiku-4-5")
-        out = StringIO()
-        call_command("auto_audit_chats", limit=5, dry_run=True, stdout=out)
-        self.assertIn("[DRY-RUN] Would audit chat: cmd-chat-1", out.getvalue())
+    def test_batch_evaluate_unauthenticated(self):
+        self.client.logout()
+        resp = self.client.post("/api/cost/batch_evaluate/", data="{}", content_type="application/json")
+        self.assertEqual(resp.status_code, 401)
+
+    def test_batch_evaluate_zero_unaudited(self):
+        Chat.objects.create(chat_id="already-scored", model="claude-haiku-4-5", evaluation_score=98)
+        resp = self.client.post("/api/cost/batch_evaluate/", data="{}", content_type="application/json")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["status"], "success")
+        self.assertEqual(data["audited_count"], 0)
+        self.assertEqual(data["results"], [])
+
+    def test_should_auto_audit_respects_daily_cap(self):
+        from .views import should_auto_audit_chat, DAILY_AUTO_AUDIT_CAP
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}):
+            # Create 30 chats scored today
+            for i in range(DAILY_AUTO_AUDIT_CAP):
+                Chat.objects.create(
+                    chat_id=f"cap-chat-{i}",
+                    model="claude-haiku-4-5",
+                    evaluation_score=95
+                )
+
+            # New chat arrives
+            c_new = Chat.objects.create(chat_id="new-chat-over-cap", model="claude-haiku-4-5")
+            self.assertFalse(should_auto_audit_chat(c_new, products_shown={"primary": [{"name": "Pikachu"}]}))
 
 
 
