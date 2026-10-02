@@ -1255,6 +1255,16 @@ function HomeView() {
   const showLoadingBar = loadProgress < TOTAL_LOADERS;
   const isMonthLoading = !firstLoad && loadProgress < TOTAL_LOADERS;
 
+  // Safety watchdog: ensure UI never remains locked if a network call hangs indefinitely
+  useEffect(() => {
+    if (isMonthLoading) {
+      const timer = setTimeout(() => {
+        setLoadProgress(TOTAL_LOADERS);
+      }, 8000);
+      return () => clearTimeout(timer);
+    }
+  }, [isMonthLoading]);
+
   const pick = (m) => {
     if (!m || isMonthLoading) return;
     setSelectedMonth(m.value);
