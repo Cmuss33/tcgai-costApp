@@ -3838,3 +3838,92 @@ class LogoutEndpointTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json(), {"success": True})
 
+
+class ShadowtestTrafficExclusionTests(TestCase):
+    """Verifies that any chats containing 'shadowtest' in their chat_id
+    are fully excluded from metrics, conversation counts, get_chat_ids,
+    and are automatically flagged as likely_automated."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="owner", password="pw")
+        self.client.force_login(self.user)
+
+    def test_real_chats_excludes_shadowtest_chat_ids(self):
+        from .month_utils import real_chats
+        c_real = Chat.objects.create(chat_id="customer-1", model="claude-haiku-4-5")
+        Chat.objects.create(chat_id="bot-probe", model="claude-haiku-4-5", likely_automated=True)
+        Chat.objects.create(chat_id="conv-shadowtest-01", model="claude-haiku-4-5", likely_automated=False)
+        Chat.objects.create(chat_id="ShadowTest_Upper", model="claude-haiku-4-5", likely_automated=False)
+
+        visible = list(real_chats(Chat.objects.all()).values_list("chat_id", flat=True))
+        self.assertEqual(visible, [c_real.chat_id])
+
+    def test_log_message_auto_flags_shadowtest(self):
+        payload = make_log_message_payload("eval-shadowtest-77")
+        resp = self.client.post(
+            "/api/cost/log_message/",
+            data=json.dumps(payload),
+            content_type="application/json"
+        )
+        self.assertEqual(resp.status_code, 200)
+        chat = Chat.objects.get(chat_id="eval-shadowtest-77")
+        self.assertTrue(chat.likely_automated)
+
+    def test_get_chat_ids_excludes_shadowtest(self):
+        Chat.objects.create(chat_id="real-shopper", model="claude-haiku-4-5")
+        Chat.objects.create(chat_id="qa-shadowtest-1", model="claude-haiku-4-5")
+        Chat.objects.create(chat_id="qa-shadowtest-2", model="claude-haiku-4-5", likely_automated=True)
+
+        resp = self.client.get("/api/cost/get_chat_ids/?limit=50")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        ids = [c["chat_id"] for c in data["results"]]
+        self.assertEqual(ids, ["real-shopper"])
+
+    def test_get_avg_metrics_exclude_shadowtest(self):
+        # Real chat with score 100 and 200 tokens
+        Chat.objects.create(
+            chat_id="real-shopper-eval",
+            model="claude-haiku-4-5",
+            evaluation_score=100,
+            tokens_in=200,
+            tokens_out=100,
+        )
+        # Shadowtest chat with score 10 and 50,000 tokens
+        Chat.objects.create(
+            chat_id="batch-shadowtest-run",
+            model="claude-haiku-4-5",
+            evaluation_score=10,
+            tokens_in=50000,
+            tokens_out=50000,
+        )
+
+        resp_eval = self.client.get("/api/cost/get_avg_eval_score/?period=daily")
+        self.assertEqual(resp_eval.status_code, 200)
+        self.assertEqual(resp_eval.json()["average_eval_score"], 100.0)
+
+        resp_tok_in = self.client.get("/api/cost/get_avg_tokens_in/?period=daily")
+        self.assertEqual(resp_tok_in.status_code, 200)
+        self.assertEqual(resp_tok_in.json()["average_tokens_in"], 200.0)
+
+        resp_tok_out = self.client.get("/api/cost/get_avg_tokens_out/?period=daily")
+        self.assertEqual(resp_tok_out.status_code, 200)
+        self.assertEqual(resp_tok_out.json()["average_tokens_out"], 100.0)
+
+    def test_migration_0017_flags_existing_shadowtest_chats(self):
+        import importlib
+        migration_mod = importlib.import_module("cost_management.migrations.0017_flag_shadowtest_chats")
+        flag_shadowtest_chats = migration_mod.flag_shadowtest_chats
+        from django.apps import apps
+
+        chat = Chat.objects.create(
+            chat_id="historical-shadowtest-data",
+            model="claude-haiku-4-5",
+            likely_automated=False
+        )
+        self.assertFalse(Chat.objects.get(chat_id=chat.chat_id).likely_automated)
+
+        flag_shadowtest_chats(apps, None)
+        self.assertTrue(Chat.objects.get(chat_id=chat.chat_id).likely_automated)
+
+

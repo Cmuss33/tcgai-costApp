@@ -106,10 +106,15 @@ def log_message(request):
         # tool-use turn separately, sometimes within the same second) can't
         # race on the tokens_in/tokens_out increment below and silently drop
         # one side's update.
+        is_shadowtest = bool(chat_id and "shadowtest" in chat_id.lower())
+
         with transaction.atomic():
             chat, created = Chat.objects.select_for_update().get_or_create(
-                chat_id=chat_id, defaults={"model": model}
+                chat_id=chat_id, defaults={"model": model, "likely_automated": is_shadowtest}
             )
+            if not created and is_shadowtest and not chat.likely_automated:
+                chat.likely_automated = True
+                chat.save(update_fields=['likely_automated'])
 
             Message.objects.create(
                 chat=chat,
@@ -160,7 +165,7 @@ def log_message(request):
 @api_login_required
 def get_messages(request):
     try:
-        chats = Chat.objects.all()
+        chats = real_chats(Chat.objects.all())
         result = []
         for chat in chats:
             messages = Message.objects.filter(chat=chat).order_by('-timestamp')
@@ -316,8 +321,7 @@ def get_avg_eval_score(request):
         start_date = now() - timedelta(days=num_days)
 
         daily_counts = (
-            Chat.objects
-            .filter(timestamp__gte=start_date)
+            real_chats(Chat.objects.filter(timestamp__gte=start_date))
             .annotate(day=TruncDate('timestamp'))
             .values('day')
             .annotate(avg_day_score=Avg('evaluation_score'))
@@ -338,8 +342,7 @@ def get_avg_tokens_in(request):
         start_date = now() - timedelta(days=num_days)
 
         daily_counts = (
-            Chat.objects
-            .filter(timestamp__gte=start_date)
+            real_chats(Chat.objects.filter(timestamp__gte=start_date))
             .annotate(day=TruncDate('timestamp'))
             .values('day')
             .annotate(tok_in=Avg('tokens_in'))
@@ -360,8 +363,7 @@ def get_avg_tokens_out(request):
         start_date = now() - timedelta(days=num_days)
 
         daily_counts = (
-            Chat.objects
-            .filter(timestamp__gte=start_date)
+            real_chats(Chat.objects.filter(timestamp__gte=start_date))
             .annotate(day=TruncDate('timestamp'))
             .values('day')
             .annotate(tok_out=Avg('tokens_out'))
@@ -382,8 +384,7 @@ def get_avg_conversations_per_day(request):
         start_date = now() - timedelta(days=num_days)
 
         daily_counts = (
-            Chat.objects
-            .filter(timestamp__gte=start_date)
+            real_chats(Chat.objects.filter(timestamp__gte=start_date))
             .annotate(day=TruncDate('timestamp'))
             .values('day')
             .annotate(count=Count('chat_id'))

@@ -528,12 +528,12 @@ function ChatSummaryView() {
             <th>Chat ID</th>
             <th>Date</th>
             <th>Customer Inquiry</th>
-            <th>Accuracy Eval</th>
+            <th>AI Accuracy Score</th>
             <th>Products</th>
             <th>Est. Cost ($)</th>
             <th>Model</th>
             <th>Investigation</th>
-            <th>Audit</th>
+            <th>Transcript</th>
           </tr>
         </thead>
 
@@ -620,7 +620,7 @@ function ChatSummaryView() {
                   className="modal-re-eval-btn"
                   onClick={() => openChatModal(chat.chat_id)}
                 >
-                  Inspect &rarr;
+                  View Transcript 👁️
                 </button>
               </td>
             </tr>

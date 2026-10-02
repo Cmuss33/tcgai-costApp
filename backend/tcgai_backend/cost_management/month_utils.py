@@ -45,14 +45,12 @@ def month_iter(first, last):
 
 
 def real_chats(qs):
-    """Excludes automated/bot traffic (ENG-149/150) from a Chat queryset. A
-    scripted caller pinging the live chat endpoint with the same message on a
-    schedule (a fresh chat_id each time) is not a real conversation -- letting
-    it through corrupts both the conversation count and the AI-generated
-    monthly insights, which sample the most-recent chats and can get crowded
-    out entirely by a high-frequency bot. See models.py's Chat.likely_automated
-    and the flag_automated_chats management command that sets it."""
-    return qs.filter(likely_automated=False)
+    """Excludes automated/bot traffic (ENG-149/150) and test traffic (chat_ids
+    containing 'shadowtest') from a Chat queryset. Neither represents genuine
+    shopper demand -- letting them through corrupts conversation counts,
+    cost-per-conversation proration, average accuracy evaluation scores, and
+    AI monthly insights. See models.py's Chat.likely_automated."""
+    return qs.filter(likely_automated=False).exclude(chat_id__icontains="shadowtest")
 
 
 def conversation_count(month_start):
