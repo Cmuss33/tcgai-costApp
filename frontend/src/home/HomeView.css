@@ -39,6 +39,12 @@
   gap: 20px; flex-wrap: wrap;
   padding-bottom: 22px; margin-bottom: 24px; border-bottom: 1px solid var(--edge);
 }
+.cr__brand-wrap {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  flex-wrap: wrap;
+}
 .cr__brand { font-family: var(--font-d); font-weight: 800; font-size: 19px; }
 .cr__brand span {
   background: linear-gradient(90deg, var(--a-spend), var(--a-eval));
@@ -48,6 +54,49 @@
   display: block; font-family: var(--font-m); font-size: 10.5px; letter-spacing: 0.16em;
   color: var(--faint); font-weight: 400; margin-top: 2px;
 }
+
+/* View mode segmented toggle (Monthly vs Lifetime) */
+.cr__view-toggle {
+  display: inline-flex;
+  align-items: center;
+  background: var(--panel-2);
+  border: 1px solid var(--edge);
+  border-radius: 10px;
+  padding: 3px;
+  gap: 4px;
+}
+.cr__toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  color: var(--dim);
+  font-family: var(--font-m);
+  font-size: 12px;
+  font-weight: 500;
+  padding: 6px 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+}
+.cr__toggle-btn:hover:not(:disabled) {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.04);
+}
+.cr__toggle-btn.is-active {
+  background: linear-gradient(135deg, rgba(106, 155, 255, 0.22), rgba(47, 224, 166, 0.16));
+  border-color: rgba(106, 155, 255, 0.45);
+  color: var(--text);
+  font-weight: 600;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+}
+.cr__toggle-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .cr__stepper { display: flex; align-items: center; gap: 12px; }
 .cr__stepper button {
   font-family: var(--font-m); font-size: 14px; color: var(--text); background: var(--panel-2);
@@ -71,6 +120,22 @@
 @keyframes cr-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.5; }
+}
+
+/* Stepper lifetime pill */
+.cr__stepper--lifetime {
+  border: 1px solid rgba(47, 224, 166, 0.35);
+  border-radius: 10px;
+  background: linear-gradient(135deg, rgba(47, 224, 166, 0.08), rgba(106, 155, 255, 0.08));
+  padding: 6px 16px;
+}
+.cr__lifetime-pill {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.cr__lifetime-icon {
+  font-size: 18px;
 }
 
 /* lede */

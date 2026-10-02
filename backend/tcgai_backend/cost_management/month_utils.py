@@ -1,13 +1,20 @@
-"""Calendar-month helpers shared by the insights and stats views."""
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone as dt_timezone
 
 from django.utils import timezone
 
 from .models import Chat
 
+CONVERSATION_START_DATE = datetime(2026, 6, 1, 0, 0, 0, tzinfo=dt_timezone.utc)
+
 
 def current_month_start():
     return timezone.now().date().replace(day=1)
+
+
+def lifetime_months():
+    """Yield all months (first-of-month dates) from June 1, 2026 to current_month_start()."""
+    start = CONVERSATION_START_DATE.date().replace(day=1)
+    return list(month_iter(start, current_month_start()))
 
 
 def parse_month_param(value):

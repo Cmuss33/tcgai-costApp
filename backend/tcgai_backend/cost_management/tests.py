@@ -1917,6 +1917,120 @@ class MonthlyStatsCacheHitRateTests(TestCase):
         self.assertEqual(d["tokens"]["cache_read"], 0)
 
 
+class MonthlyStatsLifetimeTests(TestCase):
+    def setUp(self):
+        from datetime import datetime
+        from django.utils import timezone
+        cache.clear()
+        self.user = User.objects.create_user(username="owner", password="pw")
+        self.client.force_login(self.user)
+        self.jun_2026 = timezone.make_aware(datetime(2026, 6, 15, 12, 0, 0))
+        self.jul_2026 = timezone.make_aware(datetime(2026, 7, 10, 12, 0, 0))
+        self.pre_june = timezone.make_aware(datetime(2026, 5, 20, 12, 0, 0))
+
+    def tearDown(self):
+        cache.clear()
+
+    def _patch_adapter(self, spend=10.0, tokens=(1000, 300)):
+        get_cost = MagicMock(return_value=_cost_resp(spend))
+        get_tokens = MagicMock(return_value=_tok_resp(tokens, cache={"creation_tokens": 100, "read_tokens": 400}))
+        get_model_rates = MagicMock(return_value={"rates": {"claude-haiku-4-5": {"input": 1e-6, "output": 5e-6}}})
+        get_usage_by_key = MagicMock(return_value={
+            "keys": [
+                {
+                    "api_key_id": "key_1",
+                    "name": "Chatbot Key",
+                    "input_tokens": 500,
+                    "output_tokens": 150,
+                    "by_model": {"claude-haiku-4-5": {"uncached_input_tokens": 500, "output_tokens": 150}}
+                }
+            ],
+            "workspace_id": "ws_123"
+        })
+        p = patch.multiple(
+            "cost_management.views.llmprovider",
+            get_cost=get_cost,
+            get_tokens=get_tokens,
+            get_model_rates=get_model_rates,
+            get_usage_by_key=get_usage_by_key,
+        )
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_monthly_stats_lifetime_aggregates_and_excludes_pre_june(self):
+        self._patch_adapter()
+
+        # Chat before June 1, 2026 - must be excluded
+        c_old = Chat.objects.create(chat_id="chat-old", model="claude-haiku-4-5", evaluation_score=40)
+        Chat.objects.filter(pk=c_old.pk).update(timestamp=self.pre_june)
+
+        # Chat in June 2026
+        c_jun = Chat.objects.create(chat_id="chat-jun", model="claude-haiku-4-5", evaluation_score=90)
+        Chat.objects.filter(pk=c_jun.pk).update(timestamp=self.jun_2026)
+
+        # Chat in July 2026
+        c_jul = Chat.objects.create(chat_id="chat-jul", model="claude-haiku-4-5", evaluation_score=100)
+        Chat.objects.filter(pk=c_jul.pk).update(timestamp=self.jul_2026)
+
+        resp = self.client.get("/api/cost/monthly_stats/?month=lifetime")
+        self.assertEqual(resp.status_code, 200)
+        d = resp.json()
+
+        self.assertTrue(d.get("is_lifetime"))
+        self.assertEqual(d["conversations"]["total"], 2)  # only jun and jul
+        self.assertEqual(d["eval_score"]["avg"], 95.0)    # (90 + 100) / 2
+        self.assertEqual(d["eval_score"]["scored"], 2)
+        self.assertEqual(d["low_score_count"], 0)
+        self.assertGreater(d["spend"]["total"], 0)
+        self.assertGreater(d["tokens"]["input"], 0)
+
+    def test_usage_by_key_lifetime(self):
+        self._patch_adapter()
+        resp = self.client.get("/api/cost/get_usage_by_key/?month=lifetime")
+        self.assertEqual(resp.status_code, 200)
+        d = resp.json()
+        self.assertTrue(d.get("is_lifetime"))
+        self.assertTrue(len(d.get("keys", [])) >= 1)
+        self.assertEqual(d["keys"][0]["api_key_id"], "key_1")
+
+    def test_cost_reconciliation_lifetime(self):
+        self._patch_adapter()
+        resp = self.client.get("/api/cost/cost_reconciliation/?month=lifetime")
+        self.assertEqual(resp.status_code, 200)
+        d = resp.json()
+        self.assertTrue(d.get("is_lifetime"))
+        self.assertIsNotNone(d.get("billed_spend"))
+
+    def test_cache_economics_lifetime(self):
+        self._patch_adapter()
+        resp = self.client.get("/api/cost/cache_economics/?month=lifetime")
+        self.assertEqual(resp.status_code, 200)
+        d = resp.json()
+        self.assertTrue(d.get("is_lifetime"))
+        self.assertIn("verdict", d)
+
+    def test_insights_summary_lifetime(self):
+        from datetime import datetime
+        from .models import InsightsSnapshot
+        # Create a snapshot in June 2026
+        InsightsSnapshot.objects.create(
+            month=datetime(2026, 6, 1).date(),
+            payload={
+                "product_demand": [{"product": "Charizard ex", "count": 5, "status": "out_of_stock", "examples": ["chat-1"]}],
+                "top_requests": [{"topic": "Order status", "count": 10, "examples": ["chat-1"]}],
+                "unmet_needs": [{"gap": "Return policy", "gap_type": "policy", "count": 3, "summary": "Unclear terms", "examples": ["chat-1"]}],
+                "recommendations": [{"title": "Clarify returns", "impact": "high", "effort": "low", "detail": "Add return policy FAQ", "evidence_count": 3}],
+            },
+            conversations_analyzed=10
+        )
+        resp = self.client.get("/api/cost/insights_summary/?month=lifetime")
+        self.assertEqual(resp.status_code, 200)
+        d = resp.json()
+        self.assertTrue(d.get("is_lifetime"))
+        self.assertTrue(len(d.get("product_demand", [])) >= 1)
+        self.assertEqual(d["product_demand"][0]["product"], "Charizard ex")
+
+
 class RateForHelperTests(TestCase):
     """_rate_for mirrors the frontend's getModelRate (chatSummary/pricing.js)
     -- longest-prefix match, since Chat/Message `model` values carry a dated

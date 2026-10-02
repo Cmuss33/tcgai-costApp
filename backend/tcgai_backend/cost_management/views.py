@@ -14,7 +14,7 @@ from django.db.models.functions import Coalesce, TruncDate
 from django.utils.timezone import now
 from datetime import datetime, timedelta, timezone as dt_timezone
 from .api_auth import api_login_required
-from .month_utils import real_chats
+from .month_utils import CONVERSATION_START_DATE, real_chats
 
 llmprovider = AnthropicAdapter()
 
@@ -24,7 +24,6 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 
 DAILY_AUTO_AUDIT_CAP = 30  # Safety budget cap (~$0.01/day or ~$0.30/month)
-CONVERSATION_START_DATE = datetime(2026, 6, 1, 0, 0, 0, tzinfo=dt_timezone.utc)
 
 
 GREETING_REGEX = re.compile(

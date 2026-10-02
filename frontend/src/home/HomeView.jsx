@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from "react";
-import { useNavigate, Link } from "react-router-dom";
+import { useNavigate, Link, useSearchParams } from "react-router-dom";
 import "./HomeView.css";
 
 const API_URL = import.meta.env.VITE_API_URL ?? "";
@@ -268,7 +268,7 @@ function CollapsiblePanel({
 }
 
 /* ---------- KPI band + trend ---------- */
-function StatsBand({ stats }) {
+function StatsBand({ stats, isLifetime }) {
   if (!stats) {
     return (
       <div className="cr__center">
@@ -302,7 +302,9 @@ function StatsBand({ stats }) {
           label="Anthropic spend"
           value={fmtUsd(s.total)}
           sub={
-            s.projected_month_end != null
+            isLifetime
+              ? "cumulative spend since June 1, 2026"
+              : s.projected_month_end != null
               ? `${fmtUsd(s.projected_month_end)} projected month-end`
               : `vs ${fmtUsd(s.prev_total)} last month`
           }
@@ -315,7 +317,11 @@ function StatsBand({ stats }) {
           accent="--a-convo"
           label="Conversations"
           value={fmtNum(c.total)}
-          sub={`${c.per_day_avg} / day average`}
+          sub={
+            isLifetime
+              ? `${c.per_day_avg} / day avg since June 1, 2026`
+              : `${c.per_day_avg} / day average`
+          }
           deltaPct={c.delta_pct}
           betterWhen="up"
           spark={convDaily.map((d) => d.count)}
@@ -356,13 +362,17 @@ function StatsBand({ stats }) {
       {convDaily.length > 0 && (
         <CollapsiblePanel
           id="panel-conv-daily"
-          title="Conversations per day"
+          title={isLifetime ? "Conversations timeline" : "Conversations per day"}
           accent="var(--a-convo)"
-          description="See daily customer chat traffic on your store, comparing real shoppers to automated bot tests."
+          description={
+            isLifetime
+              ? "See daily customer chat traffic on your store since June 1, 2026, comparing real shoppers to automated bot tests."
+              : "See daily customer chat traffic on your store, comparing real shoppers to automated bot tests."
+          }
           badge={<span className="cr__chip flat">{fmtNum(c.total)} chats</span>}
         >
           <div className="cr__note">
-            {fmtNum(c.total)} real conversations this month
+            {fmtNum(c.total)} real conversations {isLifetime ? "since June 1, 2026" : "this month"}
             {c.busiest ? ` · busiest ${shortDay(c.busiest.day)} (${c.busiest.count})` : ""}
             {botTotal > 0 ? ` · ${fmtNum(botTotal)} automated/bot excluded from those totals` : ""}
           </div>
@@ -382,7 +392,7 @@ function StatsBand({ stats }) {
 }
 
 /* ---------- per-key usage ---------- */
-function UsageByKeyPanel({ data }) {
+function UsageByKeyPanel({ data, isLifetime }) {
   const keys = data?.keys || [];
   if (!data || keys.length === 0) return null;
   return (
@@ -390,13 +400,12 @@ function UsageByKeyPanel({ data }) {
       id="panel-usage-keys"
       title="Usage by API key"
       accent="var(--a-tok)"
-      description="Breakdown of AI token activity and estimated costs across each connected service or tool in your store's setup."
+      description={`Breakdown of AI token activity and estimated costs across each connected service or tool in your store's setup ${isLifetime ? "since June 1, 2026." : "this month."}`}
       badge={<span className="cr__chip flat">{keys.length} {keys.length === 1 ? "key" : "keys"}</span>}
     >
       <div className="cr__note">
-        Token usage per Anthropic API key this month, from Anthropic&rsquo;s own usage
-        report. Cost is an estimate (tokens &times; this month&rsquo;s blended rate per
-        model) &mdash; Anthropic&rsquo;s cost report can&rsquo;t break down by individual
+        Token usage per Anthropic API key {isLifetime ? "since June 1, 2026" : "this month"}, from Anthropic&rsquo;s own usage
+        report. Cost is an estimate (tokens &times; {isLifetime ? "blended rates" : "this month&rsquo;s blended rate per model"}) &mdash; Anthropic&rsquo;s cost report can&rsquo;t break down by individual
         key, only by workspace.
       </div>
       <table className="cr__want cr__keys">
@@ -415,7 +424,7 @@ function UsageByKeyPanel({ data }) {
 }
 
 /* ---------- prompt cache economics ---------- */
-function CacheEconomicsPanel({ data }) {
+function CacheEconomicsPanel({ data, isLifetime }) {
   // On a fetch/usage-source error, buckets come back empty (0 read / 0
   // written) same as a genuinely quiet month -- but claiming "not enough
   // data to tell" would be misleading when the real cause is an upstream
@@ -431,7 +440,7 @@ function CacheEconomicsPanel({ data }) {
       id="panel-cache-economics"
       title="Prompt caching"
       accent="var(--a-tok)"
-      description="Anthropic's memory feature that saves you money on recurring chatbot instructions instead of re-reading them every message."
+      description={`Anthropic's memory feature that saves you money on recurring chatbot instructions ${isLifetime ? "since June 1, 2026" : "this month"} instead of re-reading them every message.`}
       badge={<span className={`cr__chip ${verdict.tone}`}>{verdict.label}</span>}
     >
       <p style={{ margin: "4px 0 14px", fontSize: 13, color: "var(--dim)", lineHeight: 1.5 }}>
@@ -468,7 +477,7 @@ function CacheEconomicsPanel({ data }) {
   );
 }
 
-function CostReconciliationPanel({ data }) {
+function CostReconciliationPanel({ data, isLifetime }) {
   if (!data || data.billed_spend == null) return null;
   const pctUnaccounted =
     data.billed_spend > 0 && data.unaccounted != null ? (data.unaccounted / data.billed_spend) * 100 : null;
@@ -480,7 +489,7 @@ function CostReconciliationPanel({ data }) {
       description="Compares your actual Anthropic invoice against the chat conversations saved in this app to ensure there are no unexplained charges."
     >
       <div className="cr__note">
-        Anthropic&rsquo;s billed spend for the chat surface&rsquo;s key(s) this month, compared
+        Anthropic&rsquo;s billed spend for the chat surface&rsquo;s key(s) {isLifetime ? "since June 1, 2026" : "this month"}, compared
         against what this app can actually price from logged Chat/Message token counts.
         The gap is spend with no matching logged call &mdash; rejected probes, failed
         requests, or calls this app never received.
@@ -564,7 +573,7 @@ function CostCommentaryPanel({ data }) {
 const asList = (v) => (Array.isArray(v) ? v : []);
 
 /* ---------- Store Command Center Heroes ---------- */
-function TrustScorecardHero({ stats }) {
+function TrustScorecardHero({ stats, isLifetime }) {
   const evalAvg = stats?.eval_score?.avg;
   const scoredCount = stats?.eval_score?.scored || 0;
   const lowScoreCount = stats?.low_score_count || 0;
@@ -641,7 +650,7 @@ function TrustScorecardHero({ stats }) {
       {lowScoreCount > 0 ? (
         <div className="cr__triage-alert cr__triage-alert--warning">
           <span>
-            ⚠️ <strong>{lowScoreCount} conversation{lowScoreCount === 1 ? "" : "s"}</strong> scored below 75% accuracy this month. Review them to identify missing product aliases or policy gaps.
+            ⚠️ <strong>{lowScoreCount} conversation{lowScoreCount === 1 ? "" : "s"}</strong> scored below 75% accuracy {isLifetime ? "since June 1, 2026" : "this month"}. Review them to identify missing product aliases or policy gaps.
           </span>
           <Link to="/chats?filter=needs_attention" className="cr__triage-btn">
             Review Low Scores &rarr;
@@ -661,7 +670,7 @@ function TrustScorecardHero({ stats }) {
   );
 }
 
-function LaborSavingsHero({ stats }) {
+function LaborSavingsHero({ stats, isLifetime }) {
   if (!stats) return null;
   const s = stats.spend || {};
   const pc = stats.per_conversation || {};
@@ -706,7 +715,9 @@ function LaborSavingsHero({ stats }) {
           </div>
           <div className="cr__labor-val cr__labor-val--savings">+{netSavings}</div>
           <div className="cr__labor-sub">
-            Direct labor dollars saved for your store this month
+            {isLifetime
+              ? "Direct labor dollars saved for your store since June 1, 2026"
+              : "Direct labor dollars saved for your store this month"}
           </div>
         </div>
 
@@ -725,7 +736,7 @@ function LaborSavingsHero({ stats }) {
   );
 }
 
-function DemandRadarHero({ demand, oneOffs }) {
+function DemandRadarHero({ demand, oneOffs, isLifetime }) {
   const oosItems = (demand || []).filter((p) => p.status === "out_of_stock");
   const ncItems = (demand || []).filter((p) => p.status !== "out_of_stock");
   const maxDemand = Math.max(1, ...(demand || []).map((p) => p.count || 0));
@@ -742,7 +753,7 @@ function DemandRadarHero({ demand, oneOffs }) {
               <span>🔥</span> High-Demand Restock Radar
             </h3>
             <div className="cr__demand-box-desc">
-              Out-of-stock items collectors repeatedly asked for this month
+              Out-of-stock items collectors repeatedly asked for {isLifetime ? "since June 1, 2026" : "this month"}
             </div>
           </div>
           <span className="cr__action-badge cr__action--oos">
@@ -752,7 +763,7 @@ function DemandRadarHero({ demand, oneOffs }) {
 
         {oosItems.length === 0 ? (
           <p className="cr__muted" style={{ padding: "16px 0", fontSize: "13px" }}>
-            No out-of-stock inquiry spikes recorded this month.
+            No out-of-stock inquiry spikes recorded {isLifetime ? "since June 1, 2026" : "this month"}.
           </p>
         ) : (
           <div className="cr__demand-list">
@@ -786,7 +797,7 @@ function DemandRadarHero({ demand, oneOffs }) {
               <span>💡</span> Catalog Expansion Opportunities
             </h3>
             <div className="cr__demand-box-desc">
-              Cards, sets, and accessories requested that your store doesn&rsquo;t carry yet
+              Cards, sets, and accessories requested {isLifetime ? "since June 1, 2026" : "this month"} that your store doesn&rsquo;t carry yet
             </div>
           </div>
           <span className="cr__action-badge cr__action--nc">
@@ -796,7 +807,7 @@ function DemandRadarHero({ demand, oneOffs }) {
 
         {ncItems.length === 0 ? (
           <p className="cr__muted" style={{ padding: "16px 0", fontSize: "13px" }}>
-            No uncataloged item requests recorded this month.
+            No uncataloged item requests recorded {isLifetime ? "since June 1, 2026" : "this month"}.
           </p>
         ) : (
           <div className="cr__demand-list">
@@ -825,7 +836,7 @@ function DemandRadarHero({ demand, oneOffs }) {
   );
 }
 
-function RecommendationsSection({ recs, gaps, requests }) {
+function RecommendationsSection({ recs, gaps, requests, isLifetime }) {
   const reqList = asList(requests);
   const gapList = asList(gaps);
   const recList = asList(recs);
@@ -847,7 +858,9 @@ function RecommendationsSection({ recs, gaps, requests }) {
       {reqList.length > 0 && (
         <div className="cr__panel" style={{ marginTop: 0, marginBottom: "20px", "--accent": "var(--a-convo)" }}>
           <h2>Top shopper topics &amp; questions</h2>
-          <div className="cr__note">What collectors asked the assistant most frequently this month.</div>
+          <div className="cr__note">
+            What collectors asked the assistant most frequently {isLifetime ? "since June 1, 2026" : "this month"}.
+          </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "12px", marginTop: "12px" }}>
             {reqList.map((r) => (
               <div className="cr__bar-row" key={r.topic} style={{ margin: 0 }}>
@@ -924,7 +937,7 @@ function RecommendationsSection({ recs, gaps, requests }) {
   );
 }
 
-function DevOpsAccordion({ stats, cacheEconomics, usageByKey, costReconciliation, costCommentary }) {
+function DevOpsAccordion({ stats, cacheEconomics, usageByKey, costReconciliation, costCommentary, isLifetime }) {
   const [open, setOpen] = useState(false);
 
   return (
@@ -946,11 +959,11 @@ function DevOpsAccordion({ stats, cacheEconomics, usageByKey, costReconciliation
 
       {open && (
         <div className="cr__devops-content">
-          <StatsBand stats={stats} />
-          <CacheEconomicsPanel data={cacheEconomics} />
-          <UsageByKeyPanel data={usageByKey} />
-          <CostReconciliationPanel data={costReconciliation} />
-          <CostCommentaryPanel data={costCommentary} />
+          <StatsBand stats={stats} isLifetime={isLifetime} />
+          <CacheEconomicsPanel data={cacheEconomics} isLifetime={isLifetime} />
+          <UsageByKeyPanel data={usageByKey} isLifetime={isLifetime} />
+          <CostReconciliationPanel data={costReconciliation} isLifetime={isLifetime} />
+          {!isLifetime && <CostCommentaryPanel data={costCommentary} />}
         </div>
       )}
     </div>
@@ -1034,7 +1047,7 @@ function LoadingBar({ percent }) {
 }
 
 /* ---------- generation progress card ---------- */
-function GenerationProgressCard({ progress, isCurrent }) {
+function GenerationProgressCard({ progress, isCurrent, isLifetime }) {
   const [elapsed, setElapsed] = useState(0);
 
   useEffect(() => {
@@ -1054,7 +1067,9 @@ function GenerationProgressCard({ progress, isCurrent }) {
     <div className="cr__gen-card" role="region" aria-label="Analysis in progress">
       <div className="cr__gen-header">
         <div className="cr__gen-titles">
-          <h3>Analyzing {isCurrent ? "this" : "that"} month&rsquo;s conversations</h3>
+          <h3>
+            Analyzing {isLifetime ? "all lifetime" : isCurrent ? "this" : "that"} month&rsquo;s conversations
+          </h3>
           <p>Synthesizing topics, catalog gaps, and AI recommendations</p>
         </div>
         <div className="cr__gen-pct" aria-live="polite">
@@ -1077,7 +1092,9 @@ function GenerationProgressCard({ progress, isCurrent }) {
       </div>
 
       <p className="cr__gen-note">
-        This deep synthesis runs once per month. All findings and customer quotes are saved permanently once complete.
+        {isLifetime
+          ? "Lifetime findings aggregate verified findings across all months since June 1, 2026."
+          : "This deep synthesis runs once per month. All findings and customer quotes are saved permanently once complete."}
       </p>
     </div>
   );
@@ -1086,6 +1103,10 @@ function GenerationProgressCard({ progress, isCurrent }) {
 /* ---------- page ---------- */
 function HomeView() {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const initialRange = searchParams.get("range") || searchParams.get("month");
+  const isInitialLifetime = initialRange === "lifetime";
+
   const [stats, setStats] = useState(null);
   const [statsError, setStatsError] = useState(false);
   const [usageByKey, setUsageByKey] = useState(null);
@@ -1095,9 +1116,16 @@ function HomeView() {
   const [firstLoad, setFirstLoad] = useState(true);
   const [netError, setNetError] = useState(false);
   const [pollTimedOut, setPollTimedOut] = useState(false);
-  const [selectedMonth, setSelectedMonth] = useState(null);
+  const [selectedMonth, setSelectedMonth] = useState(
+    isInitialLifetime ? "lifetime" : searchParams.get("month") || null
+  );
+  const [lastMonthlyMonth, setLastMonthlyMonth] = useState(
+    !isInitialLifetime ? searchParams.get("month") || null : null
+  );
   const [loadProgress, setLoadProgress] = useState(0);
   const pollRef = useRef(null);
+
+  const isLifetime = selectedMonth === "lifetime";
 
   const loadStats = useCallback(
     async (month, refresh) => {
@@ -1199,7 +1227,12 @@ function HomeView() {
         if (res.status === 401 || res.status === 403) return navigate("/");
         const data = await res.json();
         setInsights(data);
-        if (data.month) setSelectedMonth(data.month);
+        if (month === "lifetime") {
+          setSelectedMonth("lifetime");
+        } else if (data.month) {
+          setSelectedMonth(data.month);
+          setLastMonthlyMonth(data.month);
+        }
 
         clearTimeout(pollRef.current);
         if (data.generating || data.regenerating) {
@@ -1220,11 +1253,6 @@ function HomeView() {
   );
 
   useEffect(() => {
-    // Fired alongside the 5 data loaders below rather than gating them --
-    // each loader already redirects on its own 401/403, so this was a
-    // second, blocking round-trip for no benefit. It only needs to catch
-    // the case where a session is authenticated-but-stale in a way the
-    // data endpoints wouldn't otherwise surface.
     fetch(`${API_URL}/api/cost/auth-check/`, { credentials: "include" })
       .then((res) => res.json())
       .then((data) => {
@@ -1235,11 +1263,12 @@ function HomeView() {
       });
 
     setLoadProgress(0);
-    loadStats();
-    loadInsights();
-    loadUsageByKey();
-    loadCostReconciliation();
-    loadCacheEconomics();
+    const initialArg = isInitialLifetime ? "lifetime" : searchParams.get("month") || undefined;
+    loadStats(initialArg);
+    loadInsights({ month: initialArg });
+    loadUsageByKey(initialArg);
+    loadCostReconciliation(initialArg);
+    loadCacheEconomics(initialArg);
 
     return () => clearTimeout(pollRef.current);
   }, [navigate, loadStats, loadInsights, loadUsageByKey, loadCostReconciliation, loadCacheEconomics]);
@@ -1247,7 +1276,7 @@ function HomeView() {
   const months = insights?.available_months ?? [];
   const curIdx = Math.max(
     0,
-    months.findIndex((m) => m.value === (selectedMonth ?? months[0]?.value))
+    months.findIndex((m) => m.value === (selectedMonth ?? lastMonthlyMonth ?? months[0]?.value))
   );
   const shown = months[curIdx];
 
@@ -1268,17 +1297,48 @@ function HomeView() {
   const pick = (m) => {
     if (!m || isMonthLoading) return;
     setSelectedMonth(m.value);
+    setLastMonthlyMonth(m.value);
     setLoadProgress(0);
     const arg = m.is_current ? undefined : m.value;
+    setSearchParams(arg ? { month: arg } : {});
     loadStats(arg);
     loadInsights({ month: arg });
     loadUsageByKey(arg);
     loadCostReconciliation(arg);
     loadCacheEconomics(arg);
   };
+
+  const switchToLifetime = () => {
+    if (isLifetime || isMonthLoading) return;
+    setSelectedMonth("lifetime");
+    setSearchParams({ range: "lifetime" });
+    setLoadProgress(0);
+    loadStats("lifetime");
+    loadInsights({ month: "lifetime" });
+    loadUsageByKey("lifetime");
+    loadCostReconciliation("lifetime");
+    loadCacheEconomics("lifetime");
+  };
+
+  const switchToMonthly = (targetMonth) => {
+    if (!isLifetime && !targetMonth) return;
+    if (isMonthLoading) return;
+    const m = targetMonth || (lastMonthlyMonth ? months.find((x) => x.value === lastMonthlyMonth) : null) || months[0];
+    const mVal = m?.is_current ? undefined : m?.value;
+    setSelectedMonth(m?.value ?? null);
+    if (m?.value) setLastMonthlyMonth(m.value);
+    setSearchParams(mVal ? { month: mVal } : {});
+    setLoadProgress(0);
+    loadStats(mVal);
+    loadInsights({ month: mVal });
+    loadUsageByKey(mVal);
+    loadCostReconciliation(mVal);
+    loadCacheEconomics(mVal);
+  };
+
   const refreshCurrent = () => {
     if (isMonthLoading) return;
-    const arg = shown?.is_current ? undefined : shown?.value;
+    const arg = isLifetime ? "lifetime" : shown?.is_current ? undefined : shown?.value;
     setLoadProgress(0);
     loadStats(arg, true);
     loadInsights({ month: arg, refresh: true });
@@ -1324,35 +1384,68 @@ function HomeView() {
       {showLoadingBar && <LoadingBar percent={loadPercent} />}
       <div className="cr__wrap">
         <div className="cr__top">
-          <div className="cr__brand">
-            TCG<span>ai</span> chatbot<small>MONTHLY OVERVIEW</small>
+          <div className="cr__brand-wrap">
+            <div className="cr__brand">
+              TCG<span>ai</span> chatbot<small>{isLifetime ? "LIFETIME OVERVIEW" : "MONTHLY OVERVIEW"}</small>
+            </div>
+            <div className="cr__view-toggle" role="group" aria-label="View timeframe selection">
+              <button
+                type="button"
+                className={`cr__toggle-btn ${!isLifetime ? "is-active" : ""}`}
+                onClick={() => switchToMonthly()}
+                disabled={isMonthLoading}
+              >
+                <span>📅</span> Monthly
+              </button>
+              <button
+                type="button"
+                className={`cr__toggle-btn ${isLifetime ? "is-active" : ""}`}
+                onClick={() => switchToLifetime()}
+                disabled={isMonthLoading}
+              >
+                <span>🌟</span> Lifetime (Since Jun 1, 2026)
+              </button>
+            </div>
           </div>
-          <div className="cr__stepper">
-            <button
-              aria-label="Previous month"
-              onClick={() => pick(months[curIdx + 1])}
-              disabled={isMonthLoading || curIdx >= months.length - 1}
-            >
-              &#9664;
-            </button>
-            <div>
-              <div className="cr__mn">{shown?.label ?? "…"}</div>
-              <div className={`cr__mm ${isMonthLoading ? "is-loading" : ""}`}>
-                {isMonthLoading
-                  ? `UPDATING… ${loadPercent}%`
-                  : shown?.is_current
-                  ? "IN PROGRESS"
-                  : " "}
+
+          {!isLifetime ? (
+            <div className="cr__stepper">
+              <button
+                aria-label="Previous month"
+                onClick={() => pick(months[curIdx + 1])}
+                disabled={isMonthLoading || curIdx >= months.length - 1}
+              >
+                &#9664;
+              </button>
+              <div>
+                <div className="cr__mn">{shown?.label ?? "…"}</div>
+                <div className={`cr__mm ${isMonthLoading ? "is-loading" : ""}`}>
+                  {isMonthLoading
+                    ? `UPDATING… ${loadPercent}%`
+                    : shown?.is_current
+                    ? "IN PROGRESS"
+                    : " "}
+                </div>
+              </div>
+              <button
+                aria-label="Next month"
+                onClick={() => pick(months[curIdx - 1])}
+                disabled={isMonthLoading || curIdx <= 0}
+              >
+                &#9654;
+              </button>
+            </div>
+          ) : (
+            <div className="cr__stepper cr__stepper--lifetime">
+              <div className="cr__lifetime-pill">
+                <span className="cr__lifetime-icon">🌟</span>
+                <div>
+                  <div className="cr__mn">Jun 1, 2026 &ndash; Present</div>
+                  <div className="cr__mm">ALL-UP LIFETIME STATS</div>
+                </div>
               </div>
             </div>
-            <button
-              aria-label="Next month"
-              onClick={() => pick(months[curIdx - 1])}
-              disabled={isMonthLoading || curIdx <= 0}
-            >
-              &#9654;
-            </button>
-          </div>
+          )}
         </div>
 
         {/* In-viewport header loadbar for mobile and desktop visibility */}
@@ -1367,102 +1460,134 @@ function HomeView() {
             <div className="cr__updating-hud" role="status" aria-live="polite">
               <CircularProgress percent={loadPercent} size={64} strokeWidth={5.5} />
               <div className="cr__updating-text">
-                <div className="cr__updating-title">Updating to {shown?.label || "selected month"}…</div>
+                <div className="cr__updating-title">
+                  Updating to {isLifetime ? "lifetime stats" : shown?.label || "selected month"}…
+                </div>
                 <div className="cr__updating-sub">Refreshing spend, usage &amp; AI insights ({loadPercent}%)</div>
               </div>
             </div>
           )}
 
-        {iview?.headline && (
-          <div className="cr__lede">
-            <div className="cr__scope">
-              {shown?.label ?? iview.month} &nbsp;·&nbsp; {isCurrent ? "through today" : "final"}
+          {iview?.headline && (
+            <div className="cr__lede">
+              <div className="cr__scope">
+                {isLifetime
+                  ? "Jun 1, 2026 – Present · Lifetime"
+                  : `${shown?.label ?? iview.month} · ${isCurrent ? "through today" : "final"}`}
+              </div>
+              <p>{iview.headline}</p>
             </div>
-            <p>{iview.headline}</p>
-          </div>
-        )}
+          )}
 
-        {statsError && !stats && (
-          <p className="cr__notice">Couldn&rsquo;t load spend &amp; usage. Try Refresh.</p>
-        )}
+          {statsError && !stats && (
+            <p className="cr__notice">Couldn&rsquo;t load spend &amp; usage. Try Refresh.</p>
+          )}
 
-        {/* Hero Pillar 1: Trust & Quality Scorecard */}
-        <TrustScorecardHero stats={stats} />
+          {/* Hero Pillar 1: Trust & Quality Scorecard */}
+          <TrustScorecardHero stats={stats} isLifetime={isLifetime} />
 
-        {/* Hero Pillar 2: Collector Demand Signals (Restock Radar & Catalog Opportunities) */}
-        {iview?.product_demand && (
-          <DemandRadarHero demand={iview.product_demand} oneOffs={iview.product_demand_one_offs} />
-        )}
+          {/* Hero Pillar 2: Collector Demand Signals (Restock Radar & Catalog Opportunities) */}
+          {iview?.product_demand && (
+            <DemandRadarHero
+              demand={iview.product_demand}
+              oneOffs={iview.product_demand_one_offs}
+              isLifetime={isLifetime}
+            />
+          )}
 
-        {/* Hero Pillar 3: Retail Labor Cost Savings & Economics */}
-        <LaborSavingsHero stats={stats} />
+          {/* Hero Pillar 3: Retail Labor Cost Savings & Economics */}
+          <LaborSavingsHero stats={stats} isLifetime={isLifetime} />
 
-        {insights?.regenerating && (
-          <p className="cr__notice">Refreshing this month&rsquo;s insights in the background…</p>
-        )}
+          {insights?.regenerating && (
+            <p className="cr__notice">Refreshing this month&rsquo;s insights in the background…</p>
+          )}
 
-        {generatingFresh && !pollTimedOut && (
-          <GenerationProgressCard progress={insights?.progress} isCurrent={isCurrent} />
-        )}
+          {generatingFresh && !pollTimedOut && (
+            <GenerationProgressCard
+              progress={insights?.progress}
+              isCurrent={isCurrent}
+              isLifetime={isLifetime}
+            />
+          )}
 
-        {pollTimedOut && (
-          <div className="cr__notice" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "10px" }}>
-            <span>Still working on it &mdash; this is taking longer than usual.</span>
-            <button className="cr__refresh" style={{ margin: 0, padding: "4px 12px", fontSize: "0.82rem" }} onClick={refreshCurrent}>
-              Retry now
+          {pollTimedOut && (
+            <div
+              className="cr__notice"
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                flexWrap: "wrap",
+                gap: "10px",
+              }}
+            >
+              <span>Still working on it &mdash; this is taking longer than usual.</span>
+              <button
+                className="cr__refresh"
+                style={{ margin: 0, padding: "4px 12px", fontSize: "0.82rem" }}
+                onClick={refreshCurrent}
+              >
+                Retry now
+              </button>
+            </div>
+          )}
+
+          {insights?.error && (
+            <p className="cr__notice">
+              Couldn&rsquo;t generate fresh insights ({insights.error}).
+              {insights.stale ? " Showing the last saved result." : ""}
+            </p>
+          )}
+
+          {insights?.insufficient_data && (
+            <p className="cr__notice">
+              Not enough conversations yet {isLifetime ? "since June 1, 2026" : "for this month"} (
+              {insights.conversations_analyzed} so far).
+            </p>
+          )}
+
+          {/* Shopper Topics & AI Strategic Recommendations */}
+          {showFindings && (
+            <RecommendationsSection
+              recs={iview.recommendations}
+              gaps={iview.unmet_needs}
+              requests={iview.top_requests}
+              isLifetime={isLifetime}
+            />
+          )}
+
+          {/* DevOps & Technical Billing Telemetry (Collapsed by default) */}
+          <DevOpsAccordion
+            stats={stats}
+            cacheEconomics={cacheEconomics}
+            usageByKey={usageByKey}
+            costReconciliation={costReconciliation}
+            costCommentary={insights?.cost_commentary}
+            isLifetime={isLifetime}
+          />
+
+          {showFindings && (
+            <p className="cr__prov">
+              Insights from {iview.conversations_analyzed} conversations
+              {iview.conversations_with_customer_text != null
+                ? ` (${iview.conversations_with_customer_text} with the customer's own messages)`
+                : ""}
+              , generated {iview.generated_at ? new Date(iview.generated_at).toLocaleString() : "—"}
+              {iview.sampled ? " · newest 200 sampled" : ""}. Counts are model estimates. Spend &amp;
+              usage from the Anthropic console{stats?.currency ? ` (${stats.currency})` : ""}.
+              {isLifetime
+                ? " Cumulative all-up lifetime statistics since June 1, 2026."
+                : isCurrent
+                ? " Figures update through the month."
+                : ""}
+            </p>
+          )}
+
+          <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "20px" }}>
+            <button className="cr__refresh" onClick={refreshCurrent} disabled={isMonthLoading}>
+              Refresh
             </button>
           </div>
-        )}
-
-        {insights?.error && (
-          <p className="cr__notice">
-            Couldn&rsquo;t generate fresh insights ({insights.error}).
-            {insights.stale ? " Showing the last saved result." : ""}
-          </p>
-        )}
-
-        {insights?.insufficient_data && (
-          <p className="cr__notice">
-            Not enough conversations yet for this month ({insights.conversations_analyzed} so far).
-          </p>
-        )}
-
-        {/* Shopper Topics & AI Strategic Recommendations */}
-        {showFindings && (
-          <RecommendationsSection
-            recs={iview.recommendations}
-            gaps={iview.unmet_needs}
-            requests={iview.top_requests}
-          />
-        )}
-
-        {/* DevOps & Technical Billing Telemetry (Collapsed by default) */}
-        <DevOpsAccordion
-          stats={stats}
-          cacheEconomics={cacheEconomics}
-          usageByKey={usageByKey}
-          costReconciliation={costReconciliation}
-          costCommentary={insights?.cost_commentary}
-        />
-
-        {showFindings && (
-          <p className="cr__prov">
-            Insights from {iview.conversations_analyzed} conversations
-            {iview.conversations_with_customer_text != null
-              ? ` (${iview.conversations_with_customer_text} with the customer's own messages)`
-              : ""}
-            , generated {iview.generated_at ? new Date(iview.generated_at).toLocaleString() : "—"}
-            {iview.sampled ? " · newest 200 sampled" : ""}. Counts are model estimates. Spend &amp;
-            usage from the Anthropic console{stats?.currency ? ` (${stats.currency})` : ""}.
-            {isCurrent ? " Figures update through the month." : ""}
-          </p>
-        )}
-
-        <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "20px" }}>
-          <button className="cr__refresh" onClick={refreshCurrent} disabled={isMonthLoading}>
-            Refresh
-          </button>
-        </div>
         </div>
       </div>
     </div>

@@ -4,7 +4,7 @@ import os
 
 from .api_auth import api_login_required
 from django.core.cache import cache
-from django.db.models import Avg, Count, Sum
+from django.db.models import Avg, Count, Q, Sum
 from django.db.models.functions import TruncDate
 from django.http import JsonResponse
 from django.utils import timezone
@@ -12,7 +12,15 @@ from django.utils import timezone
 from . import views as base_views
 from .llm_provider_adapter_implementations import app_api_key_ids, chat_api_key_ids
 from .models import Chat, Message
-from .month_utils import current_month_start, month_range, parse_month_param, prev_month, real_chats
+from .month_utils import (
+    CONVERSATION_START_DATE,
+    current_month_start,
+    lifetime_months,
+    month_range,
+    parse_month_param,
+    prev_month,
+    real_chats,
+)
 
 CURRENT_TTL = 900       # 15 min — the current month's cost figures still move
 PAST_TTL = 86400        # a day — past months are effectively fixed
@@ -472,10 +480,205 @@ def _build_stats(month_start):
     }
 
 
+
+def _build_lifetime_stats():
+    months = lifetime_months()
+
+    total_spend = 0.0
+    all_spend_daily = []
+    cost_err = None
+    has_spend = False
+    total_real_spend = 0.0
+
+    for m in months:
+        rates_resp = _rates_resp_for(m)
+        if m == current_month_start() and (rates_resp.get("error") or not rates_resp.get("rates")):
+            prev_rates_resp = _rates_resp_for(prev_month(m))
+            if prev_rates_resp.get("rates"):
+                rates_resp = prev_rates_resp
+        m_spend, m_spend_daily, m_err = _spend_for(m, rates_resp)
+        if m_err and not cost_err:
+            cost_err = m_err
+        if m_spend is not None:
+            has_spend = True
+            total_spend += m_spend
+            all_spend_daily.extend(m_spend_daily)
+            rates = _rates_from_resp(rates_resp)
+            m_real, _ = _real_spend_for(m_spend, m, rates)
+            total_real_spend += (m_real if m_real is not None else m_spend)
+
+    spend = round(total_spend, 2) if has_spend else None
+    real_spend = round(total_real_spend, 2) if has_spend else None
+    all_spend_daily.sort(key=lambda d: d.get("day", ""))
+
+    total_in = 0
+    total_out = 0
+    all_tok_daily = []
+    total_creation = 0
+    total_read = 0
+    tok_err = None
+    has_tokens = False
+
+    for m in months:
+        m_in, m_out, m_daily, m_cache, m_err = _tokens_for(m)
+        if m_err and not tok_err:
+            tok_err = m_err
+        if m_in is not None and m_out is not None:
+            has_tokens = True
+            total_in += m_in
+            total_out += m_out
+            all_tok_daily.extend(m_daily)
+            total_creation += m_cache.get("creation_tokens", 0)
+            total_read += m_cache.get("read_tokens", 0)
+
+    tok_in = total_in if has_tokens else None
+    tok_out = total_out if has_tokens else None
+    cache_hit_rate = round(total_read / total_in, 3) if total_in else None
+    all_tok_daily.sort(key=lambda d: d.get("day", ""))
+
+    lifetime_qs = real_chats(Chat.objects.filter(timestamp__gte=CONVERSATION_START_DATE))
+    convs = lifetime_qs.count()
+
+    rows = (
+        Chat.objects.filter(timestamp__gte=CONVERSATION_START_DATE)
+        .annotate(day=TruncDate("timestamp"))
+        .values("day", "likely_automated")
+        .annotate(count=Count("chat_id"))
+        .order_by("day")
+    )
+    by_day = {}
+    for r in rows:
+        day = r["day"].isoformat()
+        entry = by_day.setdefault(day, {"day": day, "count": 0, "bot_count": 0})
+        if r["likely_automated"]:
+            entry["bot_count"] += r["count"]
+        else:
+            entry["count"] += r["count"]
+    daily_counts = [by_day[day] for day in sorted(by_day)]
+    busiest = max(daily_counts, key=lambda d: d["count"], default=None)
+
+    days_elapsed = max(1, (timezone.now().date() - CONVERSATION_START_DATE.date()).days + 1)
+    per_day_avg = round(convs / days_elapsed, 1) if days_elapsed else 0.0
+
+    all_up = lifetime_qs.aggregate(
+        audited_count=Count('chat_id', filter=Q(evaluation_score__isnull=False)),
+        avg_score=Avg('evaluation_score'),
+        needs_attention_count=Count('chat_id', filter=Q(evaluation_score__lt=75) | Q(investigation_status="flagged")),
+    )
+    eval_avg = round(all_up["avg_score"], 1) if all_up["avg_score"] is not None else None
+    scored = all_up["audited_count"] or 0
+    low_score_count = all_up["needs_attention_count"] or 0
+
+    in_pc = _daily_mean(lifetime_qs, "tokens_in")
+    out_pc = _daily_mean(lifetime_qs, "tokens_out")
+
+    cost_pc = round(real_spend / convs, 4) if (real_spend is not None and convs) else None
+    bot_share = (spend - real_spend) / spend if (spend and real_spend is not None) else None
+
+    labor_rate = 18.0
+    labor_hours = round((convs * 4.0) / 60.0, 1)
+    labor_value = round(labor_hours * labor_rate, 2)
+    net_savings = round(labor_value - (real_spend if real_spend is not None else 0.0), 2)
+
+    chat_timestamps = list(lifetime_qs.values_list("timestamp", flat=True))
+    after_hours_count = sum(1 for ts in chat_timestamps if ts and (ts.hour < 10 or ts.hour >= 19))
+    after_hours_pct = round((after_hours_count / convs * 100), 1) if convs else 0.0
+
+    model_mix = [
+        {
+            "model": row["model"] or "unknown",
+            "conversations": row["c"],
+            "share_pct": round(row["c"] / convs * 100, 1) if convs else 0.0,
+        }
+        for row in lifetime_qs.values("model").annotate(c=Count("chat_id")).order_by("-c")
+    ]
+
+    return {
+        "month": "lifetime",
+        "label": "Lifetime (Since June 1, 2026)",
+        "is_lifetime": True,
+        "is_current": False,
+        "generated_at": timezone.now().isoformat(),
+        "currency": "USD",
+        "workspace_id": os.environ.get('ANTHROPIC_WORKSPACE_ID') or None,
+        "cost_source_error": cost_err or tok_err,
+        "spend": {
+            "total": spend,
+            "prev_total": None,
+            "delta_pct": None,
+            "projected_month_end": None,
+            "daily": all_spend_daily,
+        },
+        "tokens": {
+            "input": tok_in,
+            "output": tok_out,
+            "prev_input": None,
+            "prev_output": None,
+            "input_delta_pct": None,
+            "output_delta_pct": None,
+            "daily": all_tok_daily,
+            "cache_creation": total_creation,
+            "cache_read": total_read,
+            "cache_hit_rate": cache_hit_rate,
+        },
+        "conversations": {
+            "total": convs,
+            "prev_total": None,
+            "delta_pct": None,
+            "per_day_avg": per_day_avg,
+            "busiest": busiest,
+            "daily": daily_counts,
+        },
+        "eval_score": {
+            "avg": eval_avg,
+            "prev_avg": None,
+            "delta_pct": None,
+            "scored": scored,
+            "total": convs,
+            "coverage_pct": round(scored / convs * 100, 1) if convs else 0.0,
+        },
+        "labor_savings": {
+            "labor_rate_hourly": labor_rate,
+            "estimated_labor_hours": labor_hours,
+            "estimated_labor_value": labor_value,
+            "net_savings": net_savings,
+            "after_hours_count": after_hours_count,
+            "after_hours_pct": after_hours_pct,
+        },
+        "low_score_count": low_score_count,
+        "per_conversation": {
+            "tokens_in": in_pc,
+            "tokens_out": out_pc,
+            "prev_tokens_in": None,
+            "prev_tokens_out": None,
+            "tokens_in_delta_pct": None,
+            "tokens_out_delta_pct": None,
+            "cost": cost_pc,
+            "prev_cost": None,
+            "cost_delta_pct": None,
+            "billed_spend": spend,
+            "spend_excl_bot": round(real_spend, 2) if real_spend is not None else None,
+            "bot_share_pct": round(bot_share * 100, 1) if bot_share is not None else None,
+        },
+        "model_mix": model_mix,
+    }
+
+
 @api_login_required
 def monthly_stats(request):
     refresh = request.GET.get("refresh", "").lower() in ("1", "true", "yes")
     month_param = request.GET.get("month")
+
+    if month_param == "lifetime":
+        key = "monthly_stats:lifetime"
+        if not refresh:
+            cached = cache.get(key)
+            if cached is not None:
+                return JsonResponse({**cached, "cached": True})
+        payload = _build_lifetime_stats()
+        cache.set(key, payload, CURRENT_TTL)
+        return JsonResponse(payload)
+
     current = current_month_start()
 
     month_start = current
@@ -547,6 +750,71 @@ def usage_by_key(request):
     and its rows sum to the same spend total shown elsewhere on the page."""
     refresh = request.GET.get("refresh", "").lower() in ("1", "true", "yes")
     month_param = request.GET.get("month")
+
+    if month_param == "lifetime":
+        key = "usage_by_key:lifetime"
+        if not refresh:
+            cached = cache.get(key)
+            if cached is not None:
+                return JsonResponse({**cached, "cached": True})
+
+        months = lifetime_months()
+        allowed_ids = set(app_api_key_ids())
+        aggregated_keys = {}
+        ws_id = None
+        err = None
+
+        for m in months:
+            usage_resp = base_views.llmprovider.get_usage_by_key(year=m.year, month=m.month)
+            if not isinstance(usage_resp, dict) or usage_resp.get("error"):
+                if not err and isinstance(usage_resp, dict):
+                    err = usage_resp.get("error")
+                continue
+            if not ws_id:
+                ws_id = usage_resp.get("workspace_id")
+            rates = _rates_for(m)
+            raw_keys = usage_resp.get("keys", [])
+            if allowed_ids:
+                raw_keys = [k for k in raw_keys if k["api_key_id"] in allowed_ids]
+
+            for k in raw_keys:
+                kid = k["api_key_id"]
+                if kid not in aggregated_keys:
+                    aggregated_keys[kid] = {
+                        "api_key_id": kid,
+                        "name": k.get("name") or kid,
+                        "input_tokens": 0,
+                        "output_tokens": 0,
+                        "estimated_cost": 0.0,
+                    }
+                aggregated_keys[kid]["input_tokens"] += k.get("input_tokens", 0)
+                aggregated_keys[kid]["output_tokens"] += k.get("output_tokens", 0)
+                for model, tok in k.get("by_model", {}).items():
+                    rate = rates.get(model, {})
+                    cost = (
+                        tok.get("uncached_input_tokens", 0) * rate.get("input", 0)
+                        + tok.get("output_tokens", 0) * rate.get("output", 0)
+                        + tok.get("cache_creation_tokens", 0) * rate.get("cache_creation", 0)
+                        + tok.get("cache_read_tokens", 0) * rate.get("cache_read", 0)
+                    )
+                    aggregated_keys[kid]["estimated_cost"] += cost
+
+        keys = list(aggregated_keys.values())
+        for k in keys:
+            k["estimated_cost"] = round(k["estimated_cost"], 2)
+        keys.sort(key=lambda k: k["estimated_cost"], reverse=True)
+
+        payload = {
+            "month": "lifetime",
+            "is_lifetime": True,
+            "keys": keys,
+            "workspace_id": ws_id,
+            "estimated": True,
+            "error": err if not keys else None,
+        }
+        cache.set(key, payload, CURRENT_TTL)
+        return JsonResponse(payload)
+
     current = current_month_start()
 
     month_start = current
@@ -616,6 +884,54 @@ def cost_reconciliation(request):
     Search Curator/narrative/report included, not chat alone."""
     refresh = request.GET.get("refresh", "").lower() in ("1", "true", "yes")
     month_param = request.GET.get("month")
+
+    if month_param == "lifetime":
+        key = "cost_reconciliation:lifetime"
+        if not refresh:
+            cached = cache.get(key)
+            if cached is not None:
+                return JsonResponse({**cached, "cached": True})
+
+        months = lifetime_months()
+        total_billed = 0.0
+        total_real = 0.0
+        total_bot = 0.0
+        cost_err = None
+        has_billed = False
+
+        for m in months:
+            rates_resp = _rates_resp_for(m)
+            if m == current_month_start() and (rates_resp.get("error") or not rates_resp.get("rates")):
+                prev_rates_resp = _rates_resp_for(prev_month(m))
+                if prev_rates_resp.get("rates"):
+                    rates_resp = prev_rates_resp
+            spend, _, m_cost_err = _spend_for(m, rates_resp)
+            if m_cost_err and not cost_err:
+                cost_err = m_cost_err
+            rates = _rates_from_resp(rates_resp) if spend is not None else {}
+            split = _logged_spend_split(m, rates)
+            total_real += split.get("real", 0.0)
+            total_bot += split.get("bot", 0.0)
+            if spend is not None:
+                has_billed = True
+                total_billed += spend
+
+        billed_spend = round(total_billed, 2) if has_billed else None
+        logged_spend = round(total_real + total_bot, 2)
+        payload = {
+            "month": "lifetime",
+            "is_lifetime": True,
+            "billed_spend": billed_spend,
+            "logged_spend": logged_spend,
+            "real_spend": round(total_real, 2),
+            "bot_spend": round(total_bot, 2),
+            "unaccounted": round(billed_spend - logged_spend, 2) if billed_spend is not None else None,
+            "chat_scope_is_app_wide": _chat_scope_is_app_wide(),
+            "cost_source_error": cost_err,
+        }
+        cache.set(key, payload, CURRENT_TTL)
+        return JsonResponse(payload)
+
     current = current_month_start()
 
     month_start = current
@@ -682,6 +998,81 @@ def cache_economics(request):
     the dashboard."""
     refresh = request.GET.get("refresh", "").lower() in ("1", "true", "yes")
     month_param = request.GET.get("month")
+
+    if month_param == "lifetime":
+        key = "cache_economics:lifetime"
+        if not refresh:
+            cached = cache.get(key)
+            if cached is not None:
+                return JsonResponse({**cached, "cached": True})
+
+        months = lifetime_months()
+        total_creation = 0
+        total_read = 0
+        actual_cost = 0.0
+        baseline_cost = 0.0
+        investment = 0.0
+        returned = 0.0
+        priced_any = False
+        usage_err = None
+
+        for m in months:
+            buckets, m_err = _chat_cache_buckets(m)
+            if m_err and not usage_err:
+                usage_err = m_err
+            rates = _rates_for(m)
+            for model, tok in buckets.items():
+                creation = tok.get("cache_creation_tokens", 0)
+                read = tok.get("cache_read_tokens", 0)
+                uncached = tok.get("uncached_input_tokens", 0)
+                total_creation += creation
+                total_read += read
+                rate = rates.get(model, {})
+                input_rate = rate.get("input")
+                if not input_rate:
+                    continue
+                priced_any = True
+                cache_creation_rate = rate.get("cache_creation")
+                cache_read_rate = rate.get("cache_read")
+                actual_cost += uncached * input_rate
+                actual_cost += creation * (cache_creation_rate or 0)
+                actual_cost += read * (cache_read_rate or 0)
+                baseline_cost += (uncached + creation + read) * input_rate
+                if cache_creation_rate is not None:
+                    investment += creation * max(cache_creation_rate - input_rate, 0)
+                if cache_read_rate is not None:
+                    returned += read * max(input_rate - cache_read_rate, 0)
+
+        reads_per_write = round(total_read / total_creation, 2) if total_creation else None
+        savings = round(baseline_cost - actual_cost, 2) if priced_any else None
+        savings_pct = round(savings / baseline_cost * 100, 1) if priced_any and baseline_cost else None
+        roi_multiple = round(returned / investment, 2) if investment else None
+
+        if total_creation == 0 or not priced_any:
+            verdict = "no_data"
+        elif savings is not None and savings > 0:
+            verdict = "helping"
+        else:
+            verdict = "hurting"
+
+        payload = {
+            "month": "lifetime",
+            "is_lifetime": True,
+            "cache_read_tokens": total_read,
+            "cache_creation_tokens": total_creation,
+            "reads_per_write": reads_per_write,
+            "actual_cost": round(actual_cost, 2) if priced_any else None,
+            "baseline_cost": round(baseline_cost, 2) if priced_any else None,
+            "savings": savings,
+            "savings_pct": savings_pct,
+            "roi_multiple": roi_multiple,
+            "verdict": verdict,
+            "chat_scope_is_app_wide": _chat_scope_is_app_wide(),
+            "cost_source_error": usage_err,
+        }
+        cache.set(key, payload, CURRENT_TTL)
+        return JsonResponse(payload)
+
     current = current_month_start()
 
     month_start = current
