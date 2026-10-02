@@ -364,6 +364,23 @@ def _build_stats(month_start):
     cost_pc = round(real_spend / convs, 4) if (real_spend is not None and convs) else None
     prev_cost_pc = round(prev_real_spend / prev_convs, 4) if (prev_real_spend is not None and prev_convs) else None
 
+    # Retail Labor Substitution calculation:
+    # Benchmark: $18.00/hour retail associate, avg conversation = 4 minutes (0.0667 hrs)
+    labor_rate = 18.0
+    labor_hours = round((convs * 4.0) / 60.0, 1)
+    labor_value = round(labor_hours * labor_rate, 2)
+    net_savings = round(labor_value - (real_spend if real_spend is not None else 0.0), 2)
+
+    # 24/7 After-hours coverage: inquiries received outside physical store hours (before 10:00 or after 19:00)
+    chat_timestamps = list(_chat_qs(month_start).values_list("timestamp", flat=True))
+    after_hours_count = sum(1 for ts in chat_timestamps if ts and (ts.hour < 10 or ts.hour >= 19))
+    after_hours_pct = round((after_hours_count / convs * 100), 1) if convs else 0.0
+
+    # Low score count: chats this month with evaluation_score < 75
+    low_score_count = _chat_qs(month_start).filter(
+        evaluation_score__isnull=False, evaluation_score__lt=75
+    ).count()
+
     projected = None
     if is_current and spend is not None and timezone.now().day:
         projected = round(spend / timezone.now().day * days_in_month, 2)
@@ -425,6 +442,15 @@ def _build_stats(month_start):
             "total": convs,
             "coverage_pct": round(scored / convs * 100, 1) if convs else 0.0,
         },
+        "labor_savings": {
+            "labor_rate_hourly": labor_rate,
+            "estimated_labor_hours": labor_hours,
+            "estimated_labor_value": labor_value,
+            "net_savings": net_savings,
+            "after_hours_count": after_hours_count,
+            "after_hours_pct": after_hours_pct,
+        },
+        "low_score_count": low_score_count,
         "per_conversation": {
             "tokens_in": in_pc,
             "tokens_out": out_pc,

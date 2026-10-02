@@ -352,6 +352,44 @@ class GetChatIdsInvestigationFieldsTests(TestCase):
         self.assertEqual(row["github_issue_url"], "https://github.com/x/y/issues/1")
         self.assertEqual(row["linear_issue_url"], "https://linear.app/x/issue/ABC-1")
 
+    def test_get_chat_ids_filters_and_preview(self):
+        c1 = Chat.objects.create(chat_id="chat-good", model="claude-haiku-4-5", evaluation_score=95)
+        c2 = Chat.objects.create(chat_id="chat-bad", model="claude-haiku-4-5", evaluation_score=60)
+        c3 = Chat.objects.create(chat_id="chat-unscored", model="claude-haiku-4-5", evaluation_score=None)
+
+        Message.objects.create(
+            chat=c1, content="Do you have Charizard ex?", returned_content="Yes we do!",
+            tokens_in=10, tokens_out=10, model="claude-haiku-4-5"
+        )
+        Message.objects.create(
+            chat=c2, content="Need One Piece OP-05 box", returned_content="Sorry, out of stock",
+            tokens_in=10, tokens_out=10, model="claude-haiku-4-5",
+            products_shown={"primary": [{"title": "OP-05", "available": False}]}
+        )
+
+        # Test needs_attention filter (score < 75)
+        res_attention = self.client.get("/api/cost/get_chat_ids/?filter=needs_attention")
+        ids_attention = [c["chat_id"] for c in res_attention.json()["results"]]
+        self.assertIn("chat-bad", ids_attention)
+        self.assertNotIn("chat-good", ids_attention)
+
+        # Test unaudited filter
+        res_unaudited = self.client.get("/api/cost/get_chat_ids/?filter=unaudited")
+        ids_unaudited = [c["chat_id"] for c in res_unaudited.json()["results"]]
+        self.assertIn("chat-unscored", ids_unaudited)
+        self.assertNotIn("chat-good", ids_unaudited)
+
+        # Test search
+        res_search = self.client.get("/api/cost/get_chat_ids/?search=Charizard")
+        ids_search = [c["chat_id"] for c in res_search.json()["results"]]
+        self.assertIn("chat-good", ids_search)
+        self.assertNotIn("chat-bad", ids_search)
+
+        # Test preview
+        res_all = self.client.get("/api/cost/get_chat_ids/")
+        good_row = next(c for c in res_all.json()["results"] if c["chat_id"] == "chat-good")
+        self.assertEqual(good_row["preview"], "Do you have Charizard ex?")
+
 
 def _fake_response(status_code, json_body=None, text=""):
     resp = MagicMock()
@@ -1506,6 +1544,10 @@ class MonthlyStatsTests(TestCase):
         self.assertEqual(len(d["conversations"]["daily"]), 2)
         self.assertEqual(d["conversations"]["busiest"]["count"], 3)
         self.assertEqual(d["per_conversation"]["cost"], round(15.0 / 4, 4))
+        self.assertIn("labor_savings", d)
+        self.assertEqual(d["labor_savings"]["labor_rate_hourly"], 18.0)
+        self.assertEqual(d["labor_savings"]["estimated_labor_hours"], 0.3)
+        self.assertIn("low_score_count", d)
 
     def test_likely_automated_chats_are_excluded_from_every_stat(self):
         """ENG-149/150: a flagged bot chat must not appear in the dashboard's

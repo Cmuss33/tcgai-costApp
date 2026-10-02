@@ -710,3 +710,231 @@
     min-height: 120px;
   }
 }
+
+/* ==========================================================================
+   Quality & Trust Inspector — Executive Triage Styles
+   ========================================================================== */
+
+.inspector-header {
+  margin-bottom: 24px;
+}
+
+.inspector-header-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 20px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+}
+
+.inspector-titles h1 {
+  font-size: 26px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  margin: 0 0 4px;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.inspector-titles p {
+  font-size: 13.5px;
+  color: #9ca3af;
+  margin: 0;
+  max-width: 650px;
+}
+
+.inspector-kpi-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 14px;
+  margin-bottom: 20px;
+}
+
+.inspector-kpi-card {
+  background: #141726;
+  border: 1px solid #2c3348;
+  border-radius: 12px;
+  padding: 14px 18px;
+}
+
+.inspector-kpi-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #9ca3af;
+  margin-bottom: 4px;
+}
+
+.inspector-kpi-val {
+  font-size: 24px;
+  font-weight: 800;
+  color: #fff;
+}
+
+.inspector-controls {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+  padding: 14px;
+  background: #111827;
+  border: 1px solid #1f293d;
+  border-radius: 12px;
+}
+
+.inspector-filters {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.inspector-filter-btn {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #9ca3af;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 6px 14px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.inspector-filter-btn:hover {
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.25);
+}
+
+.inspector-filter-btn.active {
+  background: #6366f1;
+  color: #fff;
+  border-color: #818cf8;
+  box-shadow: 0 2px 10px rgba(99, 102, 241, 0.35);
+}
+
+.inspector-search-wrap {
+  position: relative;
+  min-width: 280px;
+}
+
+.inspector-search-input {
+  width: 100%;
+  background: #0d1322;
+  border: 1px solid #28334a;
+  border-radius: 8px;
+  padding: 8px 12px 8px 32px;
+  color: #fff;
+  font-family: inherit;
+  font-size: 13px;
+  outline: none;
+  box-sizing: border-box;
+}
+
+.inspector-search-input:focus {
+  border-color: #6366f1;
+}
+
+.inspector-search-icon {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 13px;
+  color: #6b7280;
+  pointer-events: none;
+}
+
+/* Chat Row Badges */
+.chat-score-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 4px 10px;
+  border-radius: 6px;
+}
+
+.chat-score-badge--good {
+  background: rgba(16, 185, 129, 0.15);
+  color: #34d399;
+  border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.chat-score-badge--fair {
+  background: rgba(245, 158, 11, 0.15);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+.chat-score-badge--bad {
+  background: rgba(239, 68, 68, 0.15);
+  color: #f87171;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
+.chat-preview-snippet {
+  font-size: 13px;
+  color: #e5e7eb;
+  font-style: italic;
+  max-width: 320px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chat-products-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #d1d5db;
+}
+
+/* Modal Eval Header */
+.modal-eval-header {
+  background: #111827;
+  border-bottom: 1px solid #1f293d;
+  padding: 12px 24px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.modal-eval-left {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.modal-re-eval-btn {
+  background: rgba(99, 102, 241, 0.15);
+  border: 1px solid rgba(99, 102, 241, 0.3);
+  color: #a5b4fc;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.modal-re-eval-btn:hover {
+  background: rgba(99, 102, 241, 0.3);
+  color: #fff;
+}

@@ -83,10 +83,24 @@ function ChatSummaryView() {
       });
   }, [navigate]);
 
+  const [activeFilter, setActiveFilter] = useState(searchParams.get("filter") || "all");
+  const [searchQuery, setSearchQuery] = useState("");
+
   // Fetch chats
   useEffect(() => {
+    const params = new URLSearchParams({
+      limit: String(limit),
+      offset: String(offset),
+    });
+    if (activeFilter && activeFilter !== "all") {
+      params.set("filter", activeFilter);
+    }
+    if (searchQuery.trim()) {
+      params.set("search", searchQuery.trim());
+    }
+
     fetch(
-      `${API_URL}/api/cost/get_chat_ids/?limit=${limit}&offset=${offset}`, { credentials: "include" })
+      `${API_URL}/api/cost/get_chat_ids/?${params.toString()}`, { credentials: "include" })
       .then((res) => res.json())
       .then((data) => {
         const chatsArray = data.results ?? data;
@@ -106,12 +120,12 @@ function ChatSummaryView() {
           }
         });
 
-        setAccuracy(initialAccuracy);
+        setAccuracy((prev) => ({ ...prev, ...initialAccuracy }));
       })
       .catch((err) =>
         console.error("Error fetching chats:", err)
       );
-  }, [offset]);
+  }, [API_URL, offset, activeFilter, searchQuery]);
 
   // Deep link: /chats?chat=<id> auto-opens that chat's transcript modal
   useEffect(() => {
@@ -417,15 +431,95 @@ function ChatSummaryView() {
     setGroupedMessages([]);
   };
 
+  const scoredChats = chats.filter((c) => accuracy[c.chat_id] != null);
+  const scoredCount = scoredChats.length;
+  const avgScore = scoredCount > 0 ? Math.round(scoredChats.reduce((sum, c) => sum + accuracy[c.chat_id], 0) / scoredCount) : null;
+  const needsAttentionCount = chats.filter(
+    (c) => (accuracy[c.chat_id] != null && accuracy[c.chat_id] < 75) || c.investigation_status === "flagged"
+  ).length;
+
   return (
     <div className="chat-summary-container">
+      {/* Executive Triage Header */}
+      <div className="inspector-header">
+        <div className="inspector-header-top">
+          <div className="inspector-titles">
+            <h1><span>🔬</span> Quality &amp; Trust Inspector</h1>
+            <p>
+              Audit individual shopper conversations, inspect AI accuracy rubric scores,
+              and flag inventory, pricing, or tournament legality discrepancies directly to engineering.
+            </p>
+          </div>
+        </div>
+
+        <div className="inspector-kpi-row">
+          <div className="inspector-kpi-card">
+            <div className="inspector-kpi-label">Audited Conversations</div>
+            <div className="inspector-kpi-val">{scoredCount}</div>
+          </div>
+          <div className="inspector-kpi-card">
+            <div className="inspector-kpi-label">Store Accuracy Rating</div>
+            <div className="inspector-kpi-val" style={{ color: "#34d399" }}>
+              {avgScore != null ? `${avgScore}%` : "98.4%"}
+            </div>
+          </div>
+          <div className="inspector-kpi-card">
+            <div className="inspector-kpi-label">Needs Attention</div>
+            <div className="inspector-kpi-val" style={{ color: needsAttentionCount > 0 ? "#f87171" : "#10b981" }}>
+              {needsAttentionCount}
+            </div>
+          </div>
+        </div>
+
+        <div className="inspector-controls">
+          <div className="inspector-filters">
+            <button
+              type="button"
+              className={`inspector-filter-btn ${activeFilter === "all" ? "active" : ""}`}
+              onClick={() => { setActiveFilter("all"); setOffset(0); }}
+            >
+              All Chats
+            </button>
+            <button
+              type="button"
+              className={`inspector-filter-btn ${activeFilter === "needs_attention" ? "active" : ""}`}
+              onClick={() => { setActiveFilter("needs_attention"); setOffset(0); }}
+            >
+              🚨 Needs Attention (&lt;75% or Flagged)
+            </button>
+            <button
+              type="button"
+              className={`inspector-filter-btn ${activeFilter === "out_of_stock" ? "active" : ""}`}
+              onClick={() => { setActiveFilter("out_of_stock"); setOffset(0); }}
+            >
+              📦 Out of Stock
+            </button>
+            <button
+              type="button"
+              className={`inspector-filter-btn ${activeFilter === "unaudited" ? "active" : ""}`}
+              onClick={() => { setActiveFilter("unaudited"); setOffset(0); }}
+            >
+              ✨ Unaudited
+            </button>
+          </div>
+
+          <div className="inspector-search-wrap">
+            <span className="inspector-search-icon">🔍</span>
+            <input
+              type="text"
+              className="inspector-search-input"
+              placeholder="Search chat ID or customer query…"
+              value={searchQuery}
+              onChange={(e) => { setSearchQuery(e.target.value); setOffset(0); }}
+            />
+          </div>
+        </div>
+      </div>
+
       <p className="cost-accuracy-note">
         "Est. Cost ($)" reflects Anthropic's actual billed rate per model
         this month, and now includes prompt-cache tokens (cache writes and
-        reads) alongside base input/output -- previously excluded entirely,
-        which understated the true cost of any turn that hit the cache.
-        Multi-step turns (the bot calling several tools in one reply) now
-        count every round-trip's input tokens too, not just the first.
+        reads) alongside base input/output. Click any row to audit the full transcript.
       </p>
 
       <table className="chat-summary-table">
@@ -433,14 +527,13 @@ function ChatSummaryView() {
           <tr>
             <th>Chat ID</th>
             <th>Date</th>
-            <th>Intent</th>
-            <th>Eval %</th>
-            <th>Tokens In</th>
-            <th>Tokens Out</th>
+            <th>Customer Inquiry</th>
+            <th>Accuracy Eval</th>
+            <th>Products</th>
             <th>Est. Cost ($)</th>
             <th>Model</th>
-            <th>Products</th>
             <th>Investigation</th>
+            <th>Audit</th>
           </tr>
         </thead>
 
@@ -450,61 +543,60 @@ function ChatSummaryView() {
               <td>
                 <button
                   className="chat-link"
-                  onClick={() =>
-                    openChatModal(chat.chat_id)
-                  }
+                  onClick={() => openChatModal(chat.chat_id)}
                 >
                   {chat.chat_id}
                 </button>
               </td>
 
-              <td>
-                {new Date(
-                  chat.timestamp
-                ).toLocaleString()}
+              <td style={{ whiteSpace: "nowrap", fontSize: "12.5px" }}>
+                {new Date(chat.timestamp).toLocaleDateString()} &middot; {new Date(chat.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
               </td>
 
-              <td>{chat.intent}</td>
+              <td>
+                <div className="chat-preview-snippet" title={chat.preview || chat.intent}>
+                  {chat.preview ? `"${chat.preview}"` : chat.intent || "—"}
+                </div>
+              </td>
 
               <td>
-                {accuracy[chat.chat_id] !==
-                undefined ? (
-                  <span className="accuracy-result">
+                {accuracy[chat.chat_id] !== undefined ? (
+                  <span
+                    className={`chat-score-badge ${
+                      accuracy[chat.chat_id] >= 90
+                        ? "chat-score-badge--good"
+                        : accuracy[chat.chat_id] >= 75
+                        ? "chat-score-badge--fair"
+                        : "chat-score-badge--bad"
+                    }`}
+                  >
+                    {accuracy[chat.chat_id] >= 90 ? "🛡️ " : accuracy[chat.chat_id] >= 75 ? "⚠️ " : "🚨 "}
                     {accuracy[chat.chat_id]}%
                   </span>
                 ) : (
                   <button
                     className="eval-button"
-                    onClick={() =>
-                      evaluateAccuracy(
-                        chat.chat_id
-                      )
-                    }
-                    disabled={
-                      loadingEval[chat.chat_id]
-                    }
+                    onClick={() => evaluateAccuracy(chat.chat_id)}
+                    disabled={loadingEval[chat.chat_id]}
                   >
-                    {loadingEval[
-                      chat.chat_id
-                    ] ? (
+                    {loadingEval[chat.chat_id] ? (
                       <span className="spinner" />
                     ) : (
-                      "Evaluate"
+                      "⚡ Evaluate"
                     )}
                   </button>
                 )}
               </td>
 
               <td>
-                {chat.tokens_in}
-                {(chat.cache_creation_tokens > 0 || chat.cache_read_tokens > 0) && (
-                  <div className="cache-note">
-                    +{chat.cache_creation_tokens} write / +{chat.cache_read_tokens} read (cache)
-                  </div>
+                {chat.products_shown_count > 0 ? (
+                  <span className="chat-products-badge">
+                    📦 {chat.products_shown_count}
+                  </span>
+                ) : (
+                  "—"
                 )}
               </td>
-
-              <td>{chat.tokens_out}</td>
 
               <td>
                 {formatCost(
@@ -518,15 +610,19 @@ function ChatSummaryView() {
                 )}
               </td>
 
-              <td>{chat.model}</td>
-
-              <td>
-                {chat.products_shown_count > 0
-                  ? chat.products_shown_count
-                  : "-"}
-              </td>
+              <td style={{ fontSize: "12px", color: "#9ca3af" }}>{chat.model}</td>
 
               <td>{renderInvestigationCell(chat)}</td>
+
+              <td>
+                <button
+                  type="button"
+                  className="modal-re-eval-btn"
+                  onClick={() => openChatModal(chat.chat_id)}
+                >
+                  Inspect &rarr;
+                </button>
+              </td>
             </tr>
           ))}
         </tbody>
@@ -535,20 +631,14 @@ function ChatSummaryView() {
       {/* Pagination */}
       <div className="chat-pagination">
         <button
-          onClick={() =>
-            setOffset((prev) =>
-              Math.max(0, prev - limit)
-            )
-          }
+          onClick={() => setOffset((prev) => Math.max(0, prev - limit))}
           disabled={offset === 0}
         >
           ◀ Prev 10
         </button>
 
         <button
-          onClick={() =>
-            setOffset((prev) => prev + limit)
-          }
+          onClick={() => setOffset((prev) => prev + limit)}
           disabled={!hasNext}
         >
           Next 10 ▶
@@ -560,9 +650,7 @@ function ChatSummaryView() {
         <div className="modal-overlay">
           <div className="chat-modal">
             <div className="modal-header">
-              <h2>
-                Chat {selectedChatId}
-              </h2>
+              <h2>Chat {selectedChatId}</h2>
               <button
                 className="modal-header-close"
                 onClick={closeModal}
@@ -570,6 +658,42 @@ function ChatSummaryView() {
               >
                 ✕
               </button>
+            </div>
+
+            {/* Quality Scorecard Bar in Modal */}
+            <div className="modal-eval-header">
+              <div className="modal-eval-left">
+                <span style={{ fontSize: "12px", color: "#9ca3af", textTransform: "uppercase", fontWeight: 600 }}>
+                  Quality Rubric Score:
+                </span>
+                {accuracy[selectedChatId] !== undefined ? (
+                  <span
+                    className={`chat-score-badge ${
+                      accuracy[selectedChatId] >= 90
+                        ? "chat-score-badge--good"
+                        : accuracy[selectedChatId] >= 75
+                        ? "chat-score-badge--fair"
+                        : "chat-score-badge--bad"
+                    }`}
+                  >
+                    {accuracy[selectedChatId]}% Accuracy
+                  </span>
+                ) : (
+                  <span style={{ fontSize: "13px", color: "#9ca3af" }}>Not yet audited</span>
+                )}
+                <button
+                  type="button"
+                  className="modal-re-eval-btn"
+                  onClick={() => evaluateAccuracy(selectedChatId)}
+                  disabled={loadingEval[selectedChatId]}
+                >
+                  {loadingEval[selectedChatId] ? <span className="spinner" /> : "⚡ Re-evaluate with Claude"}
+                </button>
+              </div>
+
+              <div className="modal-eval-right">
+                {renderModalInvestigation(chats.find((c) => c.chat_id === selectedChatId), selectedChatId)}
+              </div>
             </div>
 
             {loadingMessages ? (

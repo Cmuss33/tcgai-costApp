@@ -24,11 +24,24 @@ function Header() {
   return (
     <header className="header-container">
       <div className="header-content">
-        <nav className="header-nav" aria-label="Main Navigation">
-          <NavLink to="/home" className="header-btn">Overview</NavLink>
-          <NavLink to="/chats" className="header-btn">Chat Summary</NavLink>
-        </nav>
+        <div className="header-left">
+          <NavLink to="/home" className="header-brand-link">
+            TCG<span>ai</span> <span className="header-portal-tag">Store Portal</span>
+          </NavLink>
+          <nav className="header-nav" aria-label="Main Navigation">
+            <NavLink to="/home" className="header-btn">
+              <span>⚡</span> Command Center
+            </NavLink>
+            <NavLink to="/chats" className="header-btn">
+              <span>🔬</span> Quality & Trust Inspector
+            </NavLink>
+          </nav>
+        </div>
         <div className="header-actions">
+          <div className="header-bot-badge">
+            <span className="header-pulse-dot" aria-hidden="true" />
+            <span>Bot Online &middot; 24/7 Active</span>
+          </div>
           <button
             type="button"
             onClick={handleLogout}
