@@ -852,6 +852,95 @@
   pointer-events: none;
 }
 
+/* Batch Audit Button & Banner */
+.inspector-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.inspector-batch-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: linear-gradient(135deg, #4f46e5 0%, #6366f1 100%);
+  color: #fff;
+  border: 1px solid #818cf8;
+  border-radius: 8px;
+  padding: 6px 14px;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.25);
+}
+
+.inspector-batch-btn:hover:not(:disabled) {
+  background: linear-gradient(135deg, #4338ca 0%, #4f46e5 100%);
+  box-shadow: 0 4px 14px rgba(99, 102, 241, 0.4);
+  transform: translateY(-1px);
+}
+
+.inspector-batch-btn:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.batch-cost-pill {
+  font-size: 11px;
+  font-weight: 600;
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: 4px;
+  padding: 1px 6px;
+  color: #c7d2fe;
+}
+
+.batch-audit-banner {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 16px;
+  border-radius: 8px;
+  font-size: 13.5px;
+  font-weight: 600;
+  margin-bottom: 16px;
+  animation: fadeIn 0.2s ease;
+}
+
+.batch-audit-banner--success {
+  background: rgba(16, 185, 129, 0.15);
+  border: 1px solid rgba(16, 185, 129, 0.4);
+  color: #34d399;
+}
+
+.batch-audit-banner--info {
+  background: rgba(59, 130, 246, 0.15);
+  border: 1px solid rgba(59, 130, 246, 0.4);
+  color: #60a5fa;
+}
+
+.batch-audit-banner--error {
+  background: rgba(239, 68, 68, 0.15);
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  color: #f87171;
+}
+
+.batch-audit-banner-close {
+  background: transparent;
+  border: none;
+  color: inherit;
+  font-size: 16px;
+  cursor: pointer;
+  padding: 0 4px;
+  opacity: 0.8;
+}
+
+.batch-audit-banner-close:hover {
+  opacity: 1;
+}
+
 /* Chat Row Badges */
 .chat-score-badge {
   display: inline-flex;

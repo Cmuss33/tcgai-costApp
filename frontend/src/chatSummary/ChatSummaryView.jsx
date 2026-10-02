@@ -56,6 +56,8 @@ function ChatSummaryView() {
   const [hasNext, setHasNext] = useState(false);
 
   const [modelRates, setModelRates] = useState({});
+  const [batchAuditing, setBatchAuditing] = useState(false);
+  const [batchBanner, setBatchBanner] = useState(null);
 
   // Real $/token rates derived from Anthropic's own billing data for this
   // month (see pricing.js) - fetched once, not recomputed per chat.
@@ -168,6 +170,52 @@ function ChatSummaryView() {
         ...prev,
         [chatId]: false,
       }));
+    }
+  };
+
+  const handleBatchAudit = async () => {
+    if (batchAuditing) return;
+    setBatchAuditing(true);
+    setBatchBanner(null);
+
+    try {
+      const res = await fetch(`${API_URL}/api/cost/batch_evaluate/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ limit: 25 }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setBatchBanner({
+          type: "error",
+          message: data.error || data.message || `Audit failed (${res.status})`,
+        });
+        return;
+      }
+
+      if (data.audited_count === 0) {
+        setBatchBanner({
+          type: "info",
+          message: "All conversations are already audited! No pending chats to evaluate.",
+        });
+        return;
+      }
+
+      const newScores = {};
+      data.results.forEach((r) => {
+        newScores[r.chat_id] = r.score;
+      });
+      setAccuracy((prev) => ({ ...prev, ...newScores }));
+
+      setBatchBanner({
+        type: "success",
+        message: `⚡ Successfully auto-evaluated ${data.audited_count} conversations (Est. cost: $${data.estimated_cost_usd} USD)! Store Accuracy Rating updated.`,
+      });
+    } catch (err) {
+      setBatchBanner({ type: "error", message: String(err) });
+    } finally {
+      setBatchAuditing(false);
     }
   };
 
@@ -503,6 +551,28 @@ function ChatSummaryView() {
             </button>
           </div>
 
+          <div className="inspector-actions">
+            <button
+              type="button"
+              className="inspector-batch-btn"
+              onClick={handleBatchAudit}
+              disabled={batchAuditing}
+              title="Audit the latest 25 unaudited chats (~$0.01)"
+            >
+              {batchAuditing ? (
+                <>
+                  <span className="spinner" style={{ width: 13, height: 13, marginRight: 6 }} />
+                  Auditing 25 chats...
+                </>
+              ) : (
+                <>
+                  <span>⚡ Batch Audit 25</span>
+                  <span className="batch-cost-pill">~$0.01</span>
+                </>
+              )}
+            </button>
+          </div>
+
           <div className="inspector-search-wrap">
             <span className="inspector-search-icon">🔍</span>
             <input
@@ -514,6 +584,20 @@ function ChatSummaryView() {
             />
           </div>
         </div>
+
+        {batchBanner && (
+          <div className={`batch-audit-banner batch-audit-banner--${batchBanner.type}`}>
+            <span>{batchBanner.message}</span>
+            <button
+              type="button"
+              className="batch-audit-banner-close"
+              onClick={() => setBatchBanner(null)}
+              aria-label="Close message"
+            >
+              ✕
+            </button>
+          </div>
+        )}
       </div>
 
       <p className="cost-accuracy-note">

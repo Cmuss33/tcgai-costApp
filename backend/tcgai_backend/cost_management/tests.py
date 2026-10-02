@@ -3927,3 +3927,84 @@ class ShadowtestTrafficExclusionTests(TestCase):
         self.assertTrue(Chat.objects.get(chat_id=chat.chat_id).likely_automated)
 
 
+class AutoAuditAndBatchEvaluationTests(TestCase):
+    """Verifies smart auto-audit filtering, batch evaluation endpoint,
+    and the auto_audit_chats management command."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="auditor", password="pw")
+        self.client.force_login(self.user)
+
+    @patch("anthropic.Anthropic")
+    def test_score_single_chat_success(self, mock_anthropic_class):
+        from .views import score_single_chat
+        mock_client = MagicMock()
+        mock_anthropic_class.return_value = mock_client
+        mock_resp = MagicMock()
+        mock_resp.content = [MagicMock(text="92")]
+        mock_client.messages.create.return_value = mock_resp
+
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}):
+            chat = Chat.objects.create(chat_id="test-score-1", model="claude-haiku-4-5")
+            Message.objects.create(
+                chat=chat,
+                content="Do you have Charizard?",
+                returned_content="Yes we do!",
+                tokens_in=50,
+                tokens_out=20,
+                model="claude-haiku-4-5",
+            )
+
+            score = score_single_chat(chat)
+            self.assertEqual(score, 92)
+            chat.refresh_from_db()
+            self.assertEqual(chat.evaluation_score, 92)
+
+    def test_should_auto_audit_chat_filtering(self):
+        from .views import should_auto_audit_chat
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}):
+            # Bot should not be audited
+            c_bot = Chat.objects.create(chat_id="bot-test", model="claude-haiku-4-5", likely_automated=True)
+            self.assertFalse(should_auto_audit_chat(c_bot))
+
+            # Shadowtest should not be audited
+            c_shadow = Chat.objects.create(chat_id="conv-shadowtest-9", model="claude-haiku-4-5")
+            self.assertFalse(should_auto_audit_chat(c_shadow))
+
+            # Already scored should not be audited
+            c_scored = Chat.objects.create(chat_id="real-scored", model="claude-haiku-4-5", evaluation_score=90)
+            self.assertFalse(should_auto_audit_chat(c_scored))
+
+            # Real chat with products shown qualifies
+            c_prod = Chat.objects.create(chat_id="real-prod", model="claude-haiku-4-5")
+            self.assertTrue(should_auto_audit_chat(c_prod, products_shown={"primary": [{"name": "Charizard"}]}))
+
+    @patch("cost_management.views.score_single_chat")
+    def test_batch_evaluate_endpoint(self, mock_score):
+        mock_score.return_value = 95
+        c1 = Chat.objects.create(chat_id="batch-c1", model="claude-haiku-4-5")
+        c2 = Chat.objects.create(chat_id="batch-c2", model="claude-haiku-4-5")
+        Message.objects.create(chat=c1, content="q1", returned_content="a1", tokens_in=10, tokens_out=10, model="claude-haiku-4-5")
+        Message.objects.create(chat=c2, content="q2", returned_content="a2", tokens_in=10, tokens_out=10, model="claude-haiku-4-5")
+
+        resp = self.client.post(
+            "/api/cost/batch_evaluate/",
+            data=json.dumps({"limit": 10}),
+            content_type="application/json"
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["status"], "success")
+        self.assertEqual(data["audited_count"], 2)
+        self.assertIn("estimated_cost_usd", data)
+
+    def test_auto_audit_chats_command(self):
+        from django.core.management import call_command
+        from io import StringIO
+        Chat.objects.create(chat_id="cmd-chat-1", model="claude-haiku-4-5")
+        out = StringIO()
+        call_command("auto_audit_chats", limit=5, dry_run=True, stdout=out)
+        self.assertIn("[DRY-RUN] Would audit chat: cmd-chat-1", out.getvalue())
+
+
+
