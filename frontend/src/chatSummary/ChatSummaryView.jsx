@@ -1,8 +1,21 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import "./ChatSummaryView.css";
 import FlagChatModal from "./FlagChatModal";
 import { estimateCost, estimateInputCost, estimateTokenCost, formatCost, getModelRate } from "./pricing";
+
+function getPageNumbers(currentPage, totalPages) {
+  if (totalPages <= 7) {
+    return Array.from({ length: totalPages }, (_, i) => i + 1);
+  }
+  if (currentPage <= 4) {
+    return [1, 2, 3, 4, 5, "...", totalPages];
+  }
+  if (currentPage >= totalPages - 3) {
+    return [1, "...", totalPages - 4, totalPages - 3, totalPages - 2, totalPages - 1, totalPages];
+  }
+  return [1, "...", currentPage - 1, currentPage, currentPage + 1, "...", totalPages];
+}
 
 function ProductCard({ product }) {
   return (
@@ -35,7 +48,7 @@ function ChatSummaryView() {
 
   const [chats, setChats] = useState([]);
 
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [flagState, setFlagState] = useState(null); // { chatId, pending, error }
 
   const [loadingEval, setLoadingEval] = useState({});
@@ -50,14 +63,25 @@ function ChatSummaryView() {
   const [expandedMessages, setExpandedMessages] =
     useState({});
 
-  // Pagination
-  const [offset, setOffset] = useState(0);
-  const limit = 10;
+  // Pagination & Page Navigation
+  const initialPage = parseInt(searchParams.get("page") || "1", 10);
+  const validInitialPage = !isNaN(initialPage) && initialPage >= 1 ? initialPage : 1;
+  const [pageSize, setPageSize] = useState(10);
+  const [offset, setOffset] = useState((validInitialPage - 1) * 10);
   const [hasNext, setHasNext] = useState(false);
+  const [totalChats, setTotalChats] = useState(0);
+  const [loadingChats, setLoadingChats] = useState(false);
+  const [jumpPageInput, setJumpPageInput] = useState("");
+
+  const hasOpenedInitialChat = useRef(false);
+  const tableRef = useRef(null);
 
   const [modelRates, setModelRates] = useState({});
   const [batchAuditing, setBatchAuditing] = useState(false);
   const [batchBanner, setBatchBanner] = useState(null);
+
+  const currentPage = Math.floor(offset / pageSize) + 1;
+  const totalPages = Math.max(1, Math.ceil(totalChats / pageSize));
 
   // Real $/token rates derived from Anthropic's own billing data for this
   // month (see pricing.js) - fetched once, not recomputed per chat.
@@ -83,7 +107,7 @@ function ChatSummaryView() {
           navigate("/");
         }
       });
-  }, [navigate]);
+  }, [API_URL, navigate]);
 
   const [activeFilter, setActiveFilter] = useState(searchParams.get("filter") || "all");
   const [searchQuery, setSearchQuery] = useState("");
@@ -91,7 +115,7 @@ function ChatSummaryView() {
   // Fetch chats
   useEffect(() => {
     const params = new URLSearchParams({
-      limit: String(limit),
+      limit: String(pageSize),
       offset: String(offset),
     });
     if (activeFilter && activeFilter !== "all") {
@@ -101,6 +125,7 @@ function ChatSummaryView() {
       params.set("search", searchQuery.trim());
     }
 
+    setLoadingChats(true);
     fetch(
       `${API_URL}/api/cost/get_chat_ids/?${params.toString()}`, { credentials: "include" })
       .then((res) => res.json())
@@ -109,6 +134,8 @@ function ChatSummaryView() {
 
         setChats(chatsArray);
         setHasNext(data.has_next ?? false);
+        const resolvedTotal = data.total !== undefined ? data.total : (data.has_next ? offset + chatsArray.length + 1 : offset + chatsArray.length);
+        setTotalChats(resolvedTotal);
 
         const initialAccuracy = {};
 
@@ -126,17 +153,77 @@ function ChatSummaryView() {
       })
       .catch((err) =>
         console.error("Error fetching chats:", err)
-      );
-  }, [API_URL, offset, activeFilter, searchQuery]);
+      )
+      .finally(() => {
+        setLoadingChats(false);
+      });
+  }, [API_URL, offset, pageSize, activeFilter, searchQuery]);
 
   // Deep link: /chats?chat=<id> auto-opens that chat's transcript modal
   useEffect(() => {
     const chatParam = searchParams.get("chat");
-    if (chatParam) {
+    if (chatParam && !hasOpenedInitialChat.current) {
+      hasOpenedInitialChat.current = true;
       openChatModal(chatParam);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
+
+  const handlePageChange = (targetPage) => {
+    if (targetPage < 1 || targetPage > totalPages || targetPage === currentPage) return;
+    const newOffset = (targetPage - 1) * pageSize;
+    setOffset(newOffset);
+
+    const nextParams = new URLSearchParams(searchParams);
+    if (targetPage > 1) {
+      nextParams.set("page", String(targetPage));
+    } else {
+      nextParams.delete("page");
+    }
+    setSearchParams(nextParams, { replace: true });
+
+    if (tableRef.current) {
+      tableRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  };
+
+  const handlePageSizeChange = (e) => {
+    const newSize = Number(e.target.value);
+    setPageSize(newSize);
+    setOffset(0);
+
+    const nextParams = new URLSearchParams(searchParams);
+    nextParams.delete("page");
+    setSearchParams(nextParams, { replace: true });
+  };
+
+  const handleJumpSubmit = (e) => {
+    e.preventDefault();
+    const pageNum = parseInt(jumpPageInput, 10);
+    if (!isNaN(pageNum) && pageNum >= 1 && pageNum <= totalPages) {
+      handlePageChange(pageNum);
+      setJumpPageInput("");
+    }
+  };
+
+  const handleFilterClick = (filterKey) => {
+    setActiveFilter(filterKey);
+    setOffset(0);
+
+    const nextParams = new URLSearchParams(searchParams);
+    nextParams.delete("page");
+    if (filterKey && filterKey !== "all") {
+      nextParams.set("filter", filterKey);
+    } else {
+      nextParams.delete("filter");
+    }
+    setSearchParams(nextParams, { replace: true });
+  };
+
+  const handleSearchChange = (e) => {
+    setSearchQuery(e.target.value);
+    setOffset(0);
+  };
 
   const evaluateAccuracy = async (chatId) => {
     setLoadingEval((prev) => ({
@@ -477,6 +564,11 @@ function ChatSummaryView() {
   const closeModal = () => {
     setSelectedChatId(null);
     setGroupedMessages([]);
+    if (searchParams.get("chat")) {
+      const nextParams = new URLSearchParams(searchParams);
+      nextParams.delete("chat");
+      setSearchParams(nextParams, { replace: true });
+    }
   };
 
   const scoredChats = chats.filter((c) => accuracy[c.chat_id] != null);
@@ -524,28 +616,28 @@ function ChatSummaryView() {
             <button
               type="button"
               className={`inspector-filter-btn ${activeFilter === "all" ? "active" : ""}`}
-              onClick={() => { setActiveFilter("all"); setOffset(0); }}
+              onClick={() => handleFilterClick("all")}
             >
               All Chats
             </button>
             <button
               type="button"
               className={`inspector-filter-btn ${activeFilter === "needs_attention" ? "active" : ""}`}
-              onClick={() => { setActiveFilter("needs_attention"); setOffset(0); }}
+              onClick={() => handleFilterClick("needs_attention")}
             >
               🚨 Needs Attention (&lt;75% or Flagged)
             </button>
             <button
               type="button"
               className={`inspector-filter-btn ${activeFilter === "out_of_stock" ? "active" : ""}`}
-              onClick={() => { setActiveFilter("out_of_stock"); setOffset(0); }}
+              onClick={() => handleFilterClick("out_of_stock")}
             >
               📦 Out of Stock
             </button>
             <button
               type="button"
               className={`inspector-filter-btn ${activeFilter === "unaudited" ? "active" : ""}`}
-              onClick={() => { setActiveFilter("unaudited"); setOffset(0); }}
+              onClick={() => handleFilterClick("unaudited")}
             >
               ✨ Unaudited
             </button>
@@ -580,7 +672,7 @@ function ChatSummaryView() {
               className="inspector-search-input"
               placeholder="Search chat ID or customer query…"
               value={searchQuery}
-              onChange={(e) => { setSearchQuery(e.target.value); setOffset(0); }}
+              onChange={handleSearchChange}
             />
           </div>
         </div>
@@ -606,6 +698,42 @@ function ChatSummaryView() {
         reads) alongside base input/output. Click any Chat ID to view conversation details.
       </p>
 
+      {/* Table meta bar with count, active page info, and page size selector */}
+      <div className="chat-meta-bar" ref={tableRef}>
+        <div className="chat-meta-count">
+          {loadingChats ? (
+            <span className="chat-meta-loading">
+              <span className="spinner" style={{ width: 13, height: 13, marginRight: 6 }} />
+              Loading conversations...
+            </span>
+          ) : totalChats > 0 ? (
+            <span>
+              Showing <strong className="chat-meta-highlight">{offset + 1}–{Math.min(offset + chats.length, totalChats)}</strong> of <strong className="chat-meta-highlight">{totalChats}</strong> conversations
+              {totalPages > 1 && (
+                <span className="chat-meta-page-tag">Page {currentPage} of {totalPages}</span>
+              )}
+            </span>
+          ) : (
+            <span>0 conversations found</span>
+          )}
+        </div>
+
+        <div className="chat-meta-right">
+          <label htmlFor="top-page-size" className="chat-pagesize-label">Chats per page:</label>
+          <select
+            id="top-page-size"
+            value={pageSize}
+            onChange={handlePageSizeChange}
+            className="chat-pagesize-select"
+          >
+            <option value={10}>10</option>
+            <option value={25}>25</option>
+            <option value={50}>50</option>
+            <option value={100}>100</option>
+          </select>
+        </div>
+      </div>
+
       <table className="chat-summary-table">
         <thead>
           <tr>
@@ -621,101 +749,213 @@ function ChatSummaryView() {
         </thead>
 
         <tbody>
-          {chats.map((chat) => (
-            <tr key={chat.chat_id}>
-              <td>
-                <button
-                  className="chat-link"
-                  onClick={() => openChatModal(chat.chat_id)}
-                >
-                  {chat.chat_id}
-                </button>
+          {loadingChats && chats.length === 0 ? (
+            <tr>
+              <td colSpan="8" style={{ textAlign: "center", padding: "40px", color: "#9ca3af" }}>
+                <span className="spinner" style={{ width: 18, height: 18, marginRight: 8, verticalAlign: "middle" }} />
+                Loading conversations...
               </td>
-
-              <td style={{ whiteSpace: "nowrap", fontSize: "12.5px" }}>
-                {new Date(chat.timestamp).toLocaleDateString()} &middot; {new Date(chat.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-              </td>
-
-              <td>
-                <div className="chat-preview-snippet" title={chat.preview || chat.intent}>
-                  {chat.preview ? `"${chat.preview}"` : chat.intent || "—"}
-                </div>
-              </td>
-
-              <td>
-                {accuracy[chat.chat_id] !== undefined ? (
-                  <span
-                    className={`chat-score-badge ${
-                      accuracy[chat.chat_id] >= 90
-                        ? "chat-score-badge--good"
-                        : accuracy[chat.chat_id] >= 75
-                        ? "chat-score-badge--fair"
-                        : "chat-score-badge--bad"
-                    }`}
-                  >
-                    {accuracy[chat.chat_id] >= 90 ? "🛡️ " : accuracy[chat.chat_id] >= 75 ? "⚠️ " : "🚨 "}
-                    {accuracy[chat.chat_id]}%
-                  </span>
-                ) : (
-                  <button
-                    className="eval-button"
-                    onClick={() => evaluateAccuracy(chat.chat_id)}
-                    disabled={loadingEval[chat.chat_id]}
-                  >
-                    {loadingEval[chat.chat_id] ? (
-                      <span className="spinner" />
-                    ) : (
-                      "⚡ Evaluate"
-                    )}
-                  </button>
-                )}
-              </td>
-
-              <td>
-                {chat.products_shown_count > 0 ? (
-                  <span className="chat-products-badge">
-                    📦 {chat.products_shown_count}
-                  </span>
-                ) : (
-                  "—"
-                )}
-              </td>
-
-              <td>
-                {formatCost(
-                  estimateCost(
-                    getModelRate(modelRates, chat.model),
-                    chat.tokens_in,
-                    chat.tokens_out,
-                    chat.cache_creation_tokens,
-                    chat.cache_read_tokens
-                  )
-                )}
-              </td>
-
-              <td style={{ fontSize: "12px", color: "#9ca3af" }}>{chat.model}</td>
-
-              <td>{renderInvestigationCell(chat)}</td>
             </tr>
-          ))}
+          ) : chats.length === 0 ? (
+            <tr>
+              <td colSpan="8" style={{ textAlign: "center", padding: "40px", color: "#9ca3af" }}>
+                No conversations found matching criteria.
+              </td>
+            </tr>
+          ) : (
+            chats.map((chat) => (
+              <tr key={chat.chat_id}>
+                <td>
+                  <button
+                    className="chat-link"
+                    onClick={() => openChatModal(chat.chat_id)}
+                  >
+                    {chat.chat_id}
+                  </button>
+                </td>
+
+                <td style={{ whiteSpace: "nowrap", fontSize: "12.5px" }}>
+                  {new Date(chat.timestamp).toLocaleDateString()} &middot; {new Date(chat.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                </td>
+
+                <td>
+                  <div className="chat-preview-snippet" title={chat.preview || chat.intent}>
+                    {chat.preview ? `"${chat.preview}"` : chat.intent || "—"}
+                  </div>
+                </td>
+
+                <td>
+                  {accuracy[chat.chat_id] !== undefined ? (
+                    <span
+                      className={`chat-score-badge ${
+                        accuracy[chat.chat_id] >= 90
+                          ? "chat-score-badge--good"
+                          : accuracy[chat.chat_id] >= 75
+                          ? "chat-score-badge--fair"
+                          : "chat-score-badge--bad"
+                      }`}
+                    >
+                      {accuracy[chat.chat_id] >= 90 ? "🛡️ " : accuracy[chat.chat_id] >= 75 ? "⚠️ " : "🚨 "}
+                      {accuracy[chat.chat_id]}%
+                    </span>
+                  ) : (
+                    <button
+                      className="eval-button"
+                      onClick={() => evaluateAccuracy(chat.chat_id)}
+                      disabled={loadingEval[chat.chat_id]}
+                    >
+                      {loadingEval[chat.chat_id] ? (
+                        <span className="spinner" />
+                      ) : (
+                        "⚡ Evaluate"
+                      )}
+                    </button>
+                  )}
+                </td>
+
+                <td>
+                  {chat.products_shown_count > 0 ? (
+                    <span className="chat-products-badge">
+                      📦 {chat.products_shown_count}
+                    </span>
+                  ) : (
+                    "—"
+                  )}
+                </td>
+
+                <td>
+                  {formatCost(
+                    estimateCost(
+                      getModelRate(modelRates, chat.model),
+                      chat.tokens_in,
+                      chat.tokens_out,
+                      chat.cache_creation_tokens,
+                      chat.cache_read_tokens
+                    )
+                  )}
+                </td>
+
+                <td style={{ fontSize: "12px", color: "#9ca3af" }}>{chat.model}</td>
+
+                <td>{renderInvestigationCell(chat)}</td>
+              </tr>
+            ))
+          )}
         </tbody>
       </table>
 
-      {/* Pagination */}
-      <div className="chat-pagination">
-        <button
-          onClick={() => setOffset((prev) => Math.max(0, prev - limit))}
-          disabled={offset === 0}
-        >
-          ◀ Prev 10
-        </button>
+      {/* Pagination Navigation */}
+      <div className="chat-pagination-wrapper">
+        <div className="chat-pagination-summary">
+          {totalChats > 0 ? (
+            <span>
+              Page <strong className="chat-meta-highlight">{currentPage}</strong> of <strong className="chat-meta-highlight">{totalPages}</strong>
+              <span className="chat-summary-count"> ({totalChats} total conversations)</span>
+            </span>
+          ) : (
+            <span>Page 1 of 1</span>
+          )}
+        </div>
 
-        <button
-          onClick={() => setOffset((prev) => prev + limit)}
-          disabled={!hasNext}
-        >
-          Next 10 ▶
-        </button>
+        <nav className="chat-pagination-controls" aria-label="Conversation list pagination">
+          <button
+            type="button"
+            className="chat-page-btn chat-page-nav-btn"
+            onClick={() => handlePageChange(1)}
+            disabled={currentPage === 1 || loadingChats}
+            title="Go to first page"
+            aria-label="First page"
+          >
+            « First
+          </button>
+
+          <button
+            type="button"
+            className="chat-page-btn chat-page-nav-btn"
+            onClick={() => handlePageChange(currentPage - 1)}
+            disabled={currentPage === 1 || loadingChats}
+            title="Go to previous page"
+            aria-label="Previous page"
+          >
+            ‹ Prev
+          </button>
+
+          <div className="chat-page-numbers">
+            {getPageNumbers(currentPage, totalPages).map((p, idx) => {
+              if (p === "...") {
+                return (
+                  <span key={`ellipsis-${idx}`} className="chat-page-ellipsis" aria-hidden="true">
+                    &hellip;
+                  </span>
+                );
+              }
+              const isCurrent = p === currentPage;
+              return (
+                <button
+                  key={p}
+                  type="button"
+                  className={`chat-page-btn chat-page-num-btn ${isCurrent ? "chat-page-btn--active" : ""}`}
+                  onClick={() => handlePageChange(p)}
+                  disabled={isCurrent || loadingChats}
+                  aria-current={isCurrent ? "page" : undefined}
+                  aria-label={`Page ${p}`}
+                >
+                  {p}
+                </button>
+              );
+            })}
+          </div>
+
+          <button
+            type="button"
+            className="chat-page-btn chat-page-nav-btn"
+            onClick={() => handlePageChange(currentPage + 1)}
+            disabled={currentPage >= totalPages || !hasNext || loadingChats}
+            title="Go to next page"
+            aria-label="Next page"
+          >
+            Next ›
+          </button>
+
+          <button
+            type="button"
+            className="chat-page-btn chat-page-nav-btn"
+            onClick={() => handlePageChange(totalPages)}
+            disabled={currentPage >= totalPages || loadingChats}
+            title="Go to last page"
+            aria-label="Last page"
+          >
+            Last »
+          </button>
+        </nav>
+
+        {totalPages > 3 && (
+          <form className="chat-page-jump-form" onSubmit={handleJumpSubmit}>
+            <label htmlFor="jump-page-input">Go to page:</label>
+            <input
+              id="jump-page-input"
+              type="number"
+              min={1}
+              max={totalPages}
+              className="chat-page-jump-input"
+              value={jumpPageInput}
+              onChange={(e) => setJumpPageInput(e.target.value)}
+              placeholder={String(currentPage)}
+            />
+            <button
+              type="submit"
+              className="chat-page-jump-btn"
+              disabled={
+                !jumpPageInput ||
+                parseInt(jumpPageInput, 10) < 1 ||
+                parseInt(jumpPageInput, 10) > totalPages ||
+                parseInt(jumpPageInput, 10) === currentPage
+              }
+            >
+              Go
+            </button>
+          </form>
+        )}
       </div>
 
       {/* MODAL */}
