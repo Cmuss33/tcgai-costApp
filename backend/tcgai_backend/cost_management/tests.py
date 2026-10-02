@@ -4287,4 +4287,72 @@ class AutoAuditAndBatchEvaluationTests(TestCase):
             self.assertFalse(should_auto_audit_chat(c_new, products_shown={"primary": [{"name": "Pikachu"}]}))
 
 
+class AnthropicRateLimitAndRetryTests(TestCase):
+    """Verifies that AnthropicAdapter retries on HTTP 429/529 with backoff,
+    and stats_views does not cache transient rate-limit errors."""
+
+    def test_anthropic_get_retries_on_429_and_succeeds(self):
+        from .llm_provider_adapter_implementations import _anthropic_get
+        rate_limit_resp = MagicMock(
+            status_code=429,
+            headers={"retry-after": "1"},
+            text='{"type":"error","error":{"type":"rate_limit_error","message":"You exceeded your rate limit."}}'
+        )
+        success_resp = MagicMock(status_code=200, json=lambda: {"data": []})
+        sleep_mock = MagicMock()
+
+        with patch("cost_management.llm_provider_adapter_implementations.requests.get", side_effect=[rate_limit_resp, success_resp]):
+            resp = _anthropic_get("https://api.anthropic.com/v1/organizations/usage_report/messages", {}, {}, max_retries=3, sleep_fn=sleep_mock)
+            self.assertEqual(resp.status_code, 200)
+            self.assertEqual(sleep_mock.call_count, 1)
+            self.assertGreaterEqual(sleep_mock.call_args[0][0], 1.0)
+
+    def test_anthropic_get_exceeds_max_retries(self):
+        from .llm_provider_adapter_implementations import _anthropic_get
+        rate_limit_resp = MagicMock(
+            status_code=429,
+            headers={"retry-after": "0.5"},
+            text='{"type":"error","error":{"type":"rate_limit_error","message":"Rate limit exceeded."}}'
+        )
+        sleep_mock = MagicMock()
+
+        with patch("cost_management.llm_provider_adapter_implementations.requests.get", return_value=rate_limit_resp):
+            resp = _anthropic_get("https://api.anthropic.com/v1/organizations/usage_report/messages", {}, {}, max_retries=2, sleep_fn=sleep_mock)
+            self.assertEqual(resp.status_code, 429)
+            self.assertEqual(sleep_mock.call_count, 2)
+
+    def test_spend_for_and_tokens_for_do_not_cache_rate_limit_errors(self):
+        from django.core.cache import cache
+        from .stats_views import _spend_for, _tokens_for, _raw_usage_by_key
+        from .month_utils import current_month_start, prev_month
+        cache.clear()
+
+        m = prev_month(current_month_start())
+        month_str = f"{m.year:04d}-{m.month:02d}"
+
+        rate_limit_resp = MagicMock(
+            status_code=429,
+            headers={"retry-after": "0"},
+            text='{"type":"error","error":{"type":"rate_limit_error","message":"You exceeded your rate limit."}}'
+        )
+        with patch("cost_management.llm_provider_adapter_implementations.requests.get", return_value=rate_limit_resp):
+            # spend_for returns (total, daily, err)
+            total, daily, spend_err = _spend_for(m, rates_resp={})
+            self.assertIsNotNone(spend_err)
+            self.assertIn("rate_limit_error", spend_err)
+            self.assertIsNone(cache.get(f"spend_for:{month_str}"))
+
+            # tokens_for returns (in, out, daily, cache_info, err)
+            t_in, t_out, t_daily, c_info, token_err = _tokens_for(m)
+            self.assertIsNotNone(token_err)
+            self.assertIn("rate_limit_error", token_err)
+            self.assertIsNone(cache.get(f"tokens_for:{month_str}"))
+
+            # raw_usage_by_key returns dict with "error"
+            usage = _raw_usage_by_key(m)
+            self.assertIn("error", usage)
+            self.assertIsNone(cache.get(f"raw_usage_by_key:{month_str}"))
+
+
+
 
