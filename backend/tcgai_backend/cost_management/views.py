@@ -12,7 +12,7 @@ from django.db import transaction
 from django.db.models import Avg, Count, IntegerField, Q, Sum, Value
 from django.db.models.functions import Coalesce, TruncDate
 from django.utils.timezone import now
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone as dt_timezone
 from .api_auth import api_login_required
 from .month_utils import real_chats
 
@@ -24,6 +24,8 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 
 DAILY_AUTO_AUDIT_CAP = 30  # Safety budget cap (~$0.01/day or ~$0.30/month)
+CONVERSATION_START_DATE = datetime(2026, 6, 1, 0, 0, 0, tzinfo=dt_timezone.utc)
+
 
 GREETING_REGEX = re.compile(
     r'^\s*(hi|hello|hey|yo|howdy|good\s+(morning|afternoon|evening)|hi\s+there|hey\s+there|help|greetings|hola)\s*[!.,?]*\s*$',
@@ -151,7 +153,7 @@ def batch_evaluate(request):
         limit = min(int(data.get("limit", 25)), 50)
 
         unaudited_qs = real_chats(
-            Chat.objects.filter(evaluation_score__isnull=True)
+            Chat.objects.filter(timestamp__gte=CONVERSATION_START_DATE, evaluation_score__isnull=True)
         ).order_by('-timestamp')[:limit]
 
         chats_to_audit = list(unaudited_qs)
@@ -310,7 +312,7 @@ def log_message(request):
 @api_login_required
 def get_messages(request):
     try:
-        chats = real_chats(Chat.objects.all())
+        chats = real_chats(Chat.objects.filter(timestamp__gte=CONVERSATION_START_DATE))
         result = []
         for chat in chats:
             messages = Message.objects.filter(chat=chat).order_by('-timestamp')
@@ -342,7 +344,8 @@ def get_chat_ids(request):
         # month-scoped like monthly_stats/insights_summary, so without this
         # they'd be the overwhelming majority of every page (see
         # flag_automated_chats and month_utils.real_chats).
-        visible_chats = real_chats(Chat.objects.all())
+        # Only include real conversations from June 1, 2026 onwards.
+        visible_chats = real_chats(Chat.objects.filter(timestamp__gte=CONVERSATION_START_DATE))
 
         if filter_type == "needs_attention":
             visible_chats = visible_chats.filter(
@@ -396,8 +399,8 @@ def get_chat_ids(request):
             )
         }
 
-        # All-time / all-up KPIs across all real conversations since the start
-        all_real = real_chats(Chat.objects.all())
+        # All-time / all-up KPIs across all real conversations since June 1, 2026
+        all_real = real_chats(Chat.objects.filter(timestamp__gte=CONVERSATION_START_DATE))
         all_up = all_real.aggregate(
             audited_count=Count('chat_id', filter=Q(evaluation_score__isnull=False)),
             avg_score=Avg('evaluation_score'),
