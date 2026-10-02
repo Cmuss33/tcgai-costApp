@@ -261,6 +261,73 @@ class GetChatIdsExcludesAutomatedChatsTests(TestCase):
         self.assertEqual(len(data["results"]), 2)
         self.assertTrue(all(not c["chat_id"].startswith("bot-") for c in data["results"]))
         self.assertTrue(data["has_next"])  # one real chat left, not the 50 bot chats
+        self.assertEqual(data["total"], 3)
+        self.assertEqual(data["page"], 1)
+        self.assertEqual(data["total_pages"], 2)
+
+
+class GetChatIdsPaginationTests(TestCase):
+    """Verifies that get_chat_ids returns total, page, total_pages,
+    and supports page navigation across offsets and limits."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="owner", password="pw")
+        self.client.force_login(self.user)
+
+    def test_pagination_fields_empty(self):
+        response = self.client.get("/api/cost/get_chat_ids/")
+        data = response.json()
+        self.assertEqual(data["total"], 0)
+        self.assertEqual(data["page"], 1)
+        self.assertEqual(data["total_pages"], 1)
+        self.assertFalse(data["has_next"])
+        self.assertEqual(data["results"], [])
+
+    def test_multi_page_navigation(self):
+        for i in range(25):
+            Chat.objects.create(chat_id=f"chat-{i:02d}", model="claude-haiku-4-5")
+
+        # Page 1: limit 10, offset 0 -> page 1 of 3
+        res1 = self.client.get("/api/cost/get_chat_ids/?limit=10&offset=0")
+        d1 = res1.json()
+        self.assertEqual(d1["total"], 25)
+        self.assertEqual(d1["page"], 1)
+        self.assertEqual(d1["total_pages"], 3)
+        self.assertTrue(d1["has_next"])
+        self.assertEqual(len(d1["results"]), 10)
+
+        # Page 2: limit 10, offset 10 -> page 2 of 3
+        res2 = self.client.get("/api/cost/get_chat_ids/?limit=10&offset=10")
+        d2 = res2.json()
+        self.assertEqual(d2["total"], 25)
+        self.assertEqual(d2["page"], 2)
+        self.assertEqual(d2["total_pages"], 3)
+        self.assertTrue(d2["has_next"])
+        self.assertEqual(len(d2["results"]), 10)
+
+        # Page 3: limit 10, offset 20 -> page 3 of 3
+        res3 = self.client.get("/api/cost/get_chat_ids/?limit=10&offset=20")
+        d3 = res3.json()
+        self.assertEqual(d3["total"], 25)
+        self.assertEqual(d3["page"], 3)
+        self.assertEqual(d3["total_pages"], 3)
+        self.assertFalse(d3["has_next"])
+        self.assertEqual(len(d3["results"]), 5)
+
+    def test_pagination_with_filters(self):
+        # 3 audited chats, 2 unaudited
+        for i in range(3):
+            Chat.objects.create(chat_id=f"audited-{i}", model="claude-haiku-4-5", evaluation_score=95)
+        for i in range(2):
+            Chat.objects.create(chat_id=f"unaudited-{i}", model="claude-haiku-4-5", evaluation_score=None)
+
+        res = self.client.get("/api/cost/get_chat_ids/?filter=unaudited&limit=10&offset=0")
+        data = res.json()
+        self.assertEqual(data["total"], 2)
+        self.assertEqual(data["page"], 1)
+        self.assertEqual(data["total_pages"], 1)
+        self.assertFalse(data["has_next"])
+        self.assertEqual(len(data["results"]), 2)
 
 
 class GetChatIdsCacheTokenTotalsTests(TestCase):

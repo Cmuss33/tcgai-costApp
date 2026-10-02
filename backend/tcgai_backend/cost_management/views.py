@@ -4,6 +4,7 @@ from .models import Chat, Message
 from django.views.decorators.http import require_http_methods
 from django.views.decorators.csrf import csrf_exempt
 import json
+import math
 from django.contrib.auth import authenticate, login, logout
 import anthropic
 import os
@@ -320,8 +321,15 @@ def get_messages(request):
 @api_login_required
 def get_chat_ids(request):
     try:
-        limit = int(request.GET.get("limit", 10))
-        offset = int(request.GET.get("offset", 0))
+        try:
+            limit = max(1, int(request.GET.get("limit", 10)))
+        except (ValueError, TypeError):
+            limit = 10
+        try:
+            offset = max(0, int(request.GET.get("offset", 0)))
+        except (ValueError, TypeError):
+            offset = 0
+
         filter_type = request.GET.get("filter")
         search_query = request.GET.get("search", "").strip()
 
@@ -354,6 +362,8 @@ def get_chat_ids(request):
             )
 
         total = visible_chats.count()
+        page = (offset // limit) + 1
+        total_pages = math.ceil(total / limit) if total > 0 else 1
 
         chats = visible_chats.order_by('-timestamp')[offset:offset + limit]
         results = list(chats.values())
@@ -396,7 +406,12 @@ def get_chat_ids(request):
 
         return JsonResponse({
             "results": results,
-            "has_next": offset + limit < total
+            "has_next": offset + limit < total,
+            "total": total,
+            "page": page,
+            "total_pages": total_pages,
+            "limit": limit,
+            "offset": offset,
         }, safe=False)
 
     except Exception as e:
