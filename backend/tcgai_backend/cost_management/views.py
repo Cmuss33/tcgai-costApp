@@ -25,6 +25,11 @@ from concurrent.futures import ThreadPoolExecutor
 
 DAILY_AUTO_AUDIT_CAP = 30  # Safety budget cap (~$0.01/day or ~$0.30/month)
 
+GREETING_REGEX = re.compile(
+    r'^\s*(hi|hello|hey|yo|howdy|good\s+(morning|afternoon|evening)|hi\s+there|hey\s+there|help|greetings|hola)\s*[!.,?]*\s*$',
+    re.IGNORECASE
+)
+
 
 def score_single_chat(chat):
     """Evaluates a single Chat instance using Claude Haiku and saves evaluation_score.
@@ -391,11 +396,28 @@ def get_chat_ids(request):
             )
         }
 
-        # Opening message text preview for shopper context
+        # All-time / all-up KPIs across all real conversations since the start
+        all_real = real_chats(Chat.objects.all())
+        all_up = all_real.aggregate(
+            audited_count=Count('chat_id', filter=Q(evaluation_score__isnull=False)),
+            avg_score=Avg('evaluation_score'),
+            needs_attention_count=Count('chat_id', filter=Q(evaluation_score__lt=75) | Q(investigation_status="flagged")),
+            total_count=Count('chat_id'),
+        )
+        avg_score_val = round(all_up["avg_score"], 1) if all_up["avg_score"] is not None else None
+
+        # Customer inquiry extraction: select the first substantive message per chat,
+        # skipping opening greetings like 'hello' or 'hi' when subsequent messages exist.
         first_messages = {}
         for m in Message.objects.filter(chat_id__in=products_shown_counts.keys()).order_by('timestamp'):
-            if m.chat_id not in first_messages and m.content and m.content.strip():
-                first_messages[m.chat_id] = m.content.strip()[:140]
+            text = (m.content or "").strip()
+            if not text:
+                continue
+            curr = first_messages.get(m.chat_id)
+            if curr is None:
+                first_messages[m.chat_id] = text[:140]
+            elif GREETING_REGEX.match(curr) and not GREETING_REGEX.match(text):
+                first_messages[m.chat_id] = text[:140]
 
         for chat in results:
             chat["products_shown_count"] = products_shown_counts[chat["chat_id"]]
@@ -412,6 +434,12 @@ def get_chat_ids(request):
             "total_pages": total_pages,
             "limit": limit,
             "offset": offset,
+            "kpis": {
+                "audited_count": all_up["audited_count"] or 0,
+                "avg_score": avg_score_val,
+                "needs_attention_count": all_up["needs_attention_count"] or 0,
+                "total_conversations": all_up["total_count"] or 0,
+            }
         }, safe=False)
 
     except Exception as e:

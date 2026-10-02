@@ -72,6 +72,13 @@ function ChatSummaryView() {
   const [totalChats, setTotalChats] = useState(0);
   const [loadingChats, setLoadingChats] = useState(false);
   const [jumpPageInput, setJumpPageInput] = useState("");
+  const [kpiStats, setKpiStats] = useState({
+    audited_count: 0,
+    avg_score: null,
+    needs_attention_count: 0,
+    total_conversations: 0,
+  });
+  const [refreshKey, setRefreshKey] = useState(0);
 
   const hasOpenedInitialChat = useRef(false);
   const tableRef = useRef(null);
@@ -137,6 +144,10 @@ function ChatSummaryView() {
         const resolvedTotal = data.total !== undefined ? data.total : (data.has_next ? offset + chatsArray.length + 1 : offset + chatsArray.length);
         setTotalChats(resolvedTotal);
 
+        if (data.kpis) {
+          setKpiStats(data.kpis);
+        }
+
         const initialAccuracy = {};
 
         chatsArray.forEach((chat) => {
@@ -157,7 +168,7 @@ function ChatSummaryView() {
       .finally(() => {
         setLoadingChats(false);
       });
-  }, [API_URL, offset, pageSize, activeFilter, searchQuery]);
+  }, [API_URL, offset, pageSize, activeFilter, searchQuery, refreshKey]);
 
   // Deep link: /chats?chat=<id> auto-opens that chat's transcript modal
   useEffect(() => {
@@ -250,6 +261,7 @@ function ChatSummaryView() {
         ...prev,
         [chatId]: data.eval_percentage,
       }));
+      setRefreshKey((k) => k + 1);
     } catch (err) {
       console.error("Accuracy evaluation failed:", err);
     } finally {
@@ -294,6 +306,7 @@ function ChatSummaryView() {
         newScores[r.chat_id] = r.score;
       });
       setAccuracy((prev) => ({ ...prev, ...newScores }));
+      setRefreshKey((k) => k + 1);
 
       setBatchBanner({
         type: "success",
@@ -571,13 +584,6 @@ function ChatSummaryView() {
     }
   };
 
-  const scoredChats = chats.filter((c) => accuracy[c.chat_id] != null);
-  const scoredCount = scoredChats.length;
-  const avgScore = scoredCount > 0 ? Math.round(scoredChats.reduce((sum, c) => sum + accuracy[c.chat_id], 0) / scoredCount) : null;
-  const needsAttentionCount = chats.filter(
-    (c) => (accuracy[c.chat_id] != null && accuracy[c.chat_id] < 75) || c.investigation_status === "flagged"
-  ).length;
-
   return (
     <div className="chat-summary-container">
       {/* Executive Triage Header */}
@@ -595,18 +601,18 @@ function ChatSummaryView() {
         <div className="inspector-kpi-row">
           <div className="inspector-kpi-card">
             <div className="inspector-kpi-label">Audited Conversations</div>
-            <div className="inspector-kpi-val">{scoredCount}</div>
+            <div className="inspector-kpi-val">{kpiStats.audited_count}</div>
           </div>
           <div className="inspector-kpi-card">
             <div className="inspector-kpi-label">Store Accuracy Rating</div>
             <div className="inspector-kpi-val" style={{ color: "#34d399" }}>
-              {avgScore != null ? `${avgScore}%` : "98.4%"}
+              {kpiStats.avg_score != null ? `${kpiStats.avg_score}%` : "—"}
             </div>
           </div>
           <div className="inspector-kpi-card">
             <div className="inspector-kpi-label">Needs Attention</div>
-            <div className="inspector-kpi-val" style={{ color: needsAttentionCount > 0 ? "#f87171" : "#10b981" }}>
-              {needsAttentionCount}
+            <div className="inspector-kpi-val" style={{ color: kpiStats.needs_attention_count > 0 ? "#f87171" : "#10b981" }}>
+              {kpiStats.needs_attention_count}
             </div>
           </div>
         </div>
@@ -626,13 +632,6 @@ function ChatSummaryView() {
               onClick={() => handleFilterClick("needs_attention")}
             >
               🚨 Needs Attention (&lt;75% or Flagged)
-            </button>
-            <button
-              type="button"
-              className={`inspector-filter-btn ${activeFilter === "out_of_stock" ? "active" : ""}`}
-              onClick={() => handleFilterClick("out_of_stock")}
-            >
-              📦 Out of Stock
             </button>
             <button
               type="button"
@@ -691,12 +690,6 @@ function ChatSummaryView() {
           </div>
         )}
       </div>
-
-      <p className="cost-accuracy-note">
-        "Est. Cost ($)" reflects Anthropic's actual billed rate per model
-        this month, and now includes prompt-cache tokens (cache writes and
-        reads) alongside base input/output. Click any Chat ID to view conversation details.
-      </p>
 
       {/* Table meta bar with count, active page info, and page size selector */}
       <div className="chat-meta-bar" ref={tableRef}>

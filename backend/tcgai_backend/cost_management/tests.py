@@ -454,8 +454,38 @@ class GetChatIdsInvestigationFieldsTests(TestCase):
 
         # Test preview
         res_all = self.client.get("/api/cost/get_chat_ids/")
-        good_row = next(c for c in res_all.json()["results"] if c["chat_id"] == "chat-good")
+        all_json = res_all.json()
+        good_row = next(c for c in all_json["results"] if c["chat_id"] == "chat-good")
         self.assertEqual(good_row["preview"], "Do you have Charizard ex?")
+
+        # Test all-up KPIs (2 audited: 95 and 60 -> avg 77.5; 1 needs_attention: 60 < 75; total: 3)
+        kpis = all_json["kpis"]
+        self.assertEqual(kpis["audited_count"], 2)
+        self.assertEqual(kpis["avg_score"], 77.5)
+        self.assertEqual(kpis["needs_attention_count"], 1)
+        self.assertEqual(kpis["total_conversations"], 3)
+
+    def test_customer_inquiry_skips_generic_opening_greetings(self):
+        import datetime
+        from django.utils import timezone
+        c = Chat.objects.create(chat_id="chat-greeting-test", model="claude-haiku-4-5")
+        m1 = Message.objects.create(chat=c, content="Hello!", tokens_in=10, tokens_out=10, model="claude-haiku-4-5")
+        m2 = Message.objects.create(chat=c, content="Do you have any Lorcana boosters in stock?", tokens_in=10, tokens_out=10, model="claude-haiku-4-5")
+        # Ensure m1 is older than m2
+        Message.objects.filter(id=m1.id).update(timestamp=timezone.now() - datetime.timedelta(minutes=5))
+
+        res = self.client.get("/api/cost/get_chat_ids/")
+        row = next(r for r in res.json()["results"] if r["chat_id"] == "chat-greeting-test")
+        self.assertEqual(row["preview"], "Do you have any Lorcana boosters in stock?")
+
+    def test_customer_inquiry_falls_back_to_greeting_if_only_message(self):
+        c = Chat.objects.create(chat_id="chat-only-hi", model="claude-haiku-4-5")
+        Message.objects.create(chat=c, content="hi there", tokens_in=10, tokens_out=10, model="claude-haiku-4-5")
+
+        res = self.client.get("/api/cost/get_chat_ids/")
+        row = next(r for r in res.json()["results"] if r["chat_id"] == "chat-only-hi")
+        self.assertEqual(row["preview"], "hi there")
+
 
 
 def _fake_response(status_code, json_body=None, text=""):
