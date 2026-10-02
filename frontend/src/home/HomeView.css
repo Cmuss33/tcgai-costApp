@@ -61,6 +61,16 @@
 .cr__stepper .cr__mm {
   font-family: var(--font-m); font-size: 10px; color: var(--faint); letter-spacing: 0.08em;
   text-align: center;
+  transition: color 0.2s ease;
+}
+.cr__stepper .cr__mm.is-loading {
+  color: var(--a-eval, #2fe0a6);
+  font-weight: 700;
+  animation: cr-pulse 0.9s ease-in-out infinite;
+}
+@keyframes cr-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
 }
 
 /* lede */
@@ -487,6 +497,58 @@
 }
 @keyframes cr-spin { to { transform: rotate(360deg); } }
 
+/* circular progress with centered percentage */
+.cr__circle-progress {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.cr__circle-svg {
+  transform: rotate(0deg);
+  overflow: visible;
+}
+.cr__circle-bg {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.08);
+}
+.cr__circle-bar {
+  fill: none;
+  stroke: url(#crCircleGradient);
+  transition: stroke-dashoffset 0.35s ease;
+  filter: drop-shadow(0 0 6px rgba(47, 224, 166, 0.4));
+}
+.cr__circle-progress.is-indeterminate .cr__circle-svg {
+  animation: cr-spin 1.2s linear infinite;
+}
+.cr__circle-inner {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+.cr__circle-pct {
+  font-family: var(--font-m);
+  font-weight: 700;
+  font-size: 1.15rem;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+.cr__circle-label {
+  font-family: var(--font-m);
+  font-size: 10px;
+  color: var(--dim);
+  text-transform: uppercase;
+  margin-top: 2px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .cr__circle-bar { transition: none; }
+}
+
 /* loading bar */
 .cr__loadbar {
   position: fixed; top: 0; left: 0; right: 0; z-index: 60;
@@ -505,6 +567,92 @@
 }
 @media (prefers-reduced-motion: reduce) {
   .cr__loadbar-fill { transition: none; }
+}
+
+/* in-viewport header loadbar */
+.cr__header-loadbar {
+  width: 100%;
+  height: 3px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 999px;
+  overflow: hidden;
+  margin: 10px 0 16px;
+  animation: cr-fade-in 0.2s ease-out;
+}
+.cr__header-loadbar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--a-spend), var(--a-eval));
+  transition: width 0.25s ease;
+  box-shadow: 0 0 10px rgba(47, 224, 166, 0.5);
+}
+
+/* dashboard body and transition HUD */
+.cr__body {
+  position: relative;
+  transition: opacity 0.25s ease;
+}
+.cr__body.is-updating > *:not(.cr__updating-hud) {
+  opacity: 0.38;
+  filter: blur(0.5px);
+  pointer-events: none;
+  user-select: none;
+}
+.cr__updating-hud {
+  position: absolute;
+  top: 32px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  background: color-mix(in srgb, var(--panel) 94%, black);
+  border: 1px solid var(--edge);
+  box-shadow: 0 16px 42px rgba(0, 0, 0, 0.55), 0 0 24px rgba(47, 224, 166, 0.18);
+  padding: 14px 24px;
+  border-radius: 14px;
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  animation: cr-hud-in 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  max-width: 90vw;
+}
+@keyframes cr-hud-in {
+  from { opacity: 0; transform: translate(-50%, -8px) scale(0.97); }
+  to { opacity: 1; transform: translate(-50%, 0) scale(1); }
+}
+.cr__updating-title {
+  font-family: var(--font-d);
+  font-size: 14.5px;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: 3px;
+}
+.cr__updating-sub {
+  font-family: var(--font-b);
+  font-size: 12px;
+  color: var(--dim);
+}
+
+@media (max-width: 600px) {
+  .cr__updating-hud {
+    top: 14px;
+    padding: 10px 16px;
+    gap: 12px;
+    width: calc(100% - 24px);
+  }
+  .cr__updating-title {
+    font-size: 13px;
+  }
+  .cr__updating-sub {
+    font-size: 11px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cr__header-loadbar-fill { transition: none; }
+  .cr__body { transition: none; }
+  .cr__body.is-updating > *:not(.cr__updating-hud) { filter: none; }
+  .cr__updating-hud { animation: none; }
 }
 
 /* svg */
