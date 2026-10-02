@@ -12,6 +12,7 @@ from django.utils import timezone
 from .cost_commentary import cost_commentary_for
 from .models import Chat, InsightsSnapshot, Message
 from .month_utils import (
+    CONVERSATION_START_DATE,
     conversation_count as _conversation_count,
     current_month_start as _current_month_start,
     month_iter as _month_iter,
@@ -490,6 +491,172 @@ def _kick_generation(month_start, is_current):
     return None
 
 
+def _build_lifetime_insights():
+    start_date = CONVERSATION_START_DATE.date().replace(day=1)
+    snapshots = list(InsightsSnapshot.objects.filter(month__gte=start_date).order_by("-month"))
+
+    current_start = _current_month_start()
+    has_current_snapshot = any(s.month == current_start for s in snapshots)
+    payloads = [dict(s.payload) for s in snapshots]
+    if not has_current_snapshot:
+        fresh = cache.get(CACHE_KEY)
+        if fresh and not fresh.get("generating") and not fresh.get("error"):
+            payloads.append(dict(fresh))
+
+    lifetime_qs = _real_chats(Chat.objects.filter(timestamp__gte=CONVERSATION_START_DATE))
+    total_convs = lifetime_qs.count()
+
+    if total_convs < MIN_CONVERSATIONS and not payloads:
+        return {
+            "insufficient_data": True,
+            "conversations_analyzed": total_convs,
+            "month": "lifetime",
+            "is_lifetime": True,
+        }
+
+    demand_map = {}
+    total_one_offs = 0
+    for p in payloads:
+        total_one_offs += p.get("product_demand_one_offs", 0)
+        for item in p.get("product_demand", []):
+            prod = (item.get("product") or "").strip()
+            if not prod:
+                continue
+            norm = prod.lower()
+            if norm not in demand_map:
+                demand_map[norm] = {
+                    "product": prod,
+                    "count": 0,
+                    "status": item.get("status", "out_of_stock"),
+                    "examples": set(),
+                }
+            demand_map[norm]["count"] += int(item.get("count") or 0)
+            if item.get("status") == "out_of_stock":
+                demand_map[norm]["status"] = "out_of_stock"
+            for ex in item.get("examples", []):
+                demand_map[norm]["examples"].add(ex)
+
+    aggregated_demand = []
+    for d in demand_map.values():
+        aggregated_demand.append({
+            "product": d["product"],
+            "count": d["count"],
+            "status": d["status"],
+            "examples": list(d["examples"])[:5],
+        })
+    aggregated_demand.sort(key=lambda d: d["count"], reverse=True)
+
+    requests_map = {}
+    for p in payloads:
+        for item in p.get("top_requests", []):
+            topic = (item.get("topic") or "").strip()
+            if not topic:
+                continue
+            norm = topic.lower()
+            if norm not in requests_map:
+                requests_map[norm] = {
+                    "topic": topic,
+                    "count": 0,
+                    "examples": set(),
+                }
+            requests_map[norm]["count"] += int(item.get("count") or 0)
+            for ex in item.get("examples", []):
+                requests_map[norm]["examples"].add(ex)
+
+    aggregated_requests = []
+    for r in requests_map.values():
+        aggregated_requests.append({
+            "topic": r["topic"],
+            "count": r["count"],
+            "share_pct": round(r["count"] / total_convs * 100) if total_convs else None,
+            "examples": list(r["examples"])[:5],
+        })
+    aggregated_requests.sort(key=lambda r: r["count"], reverse=True)
+
+    gaps_map = {}
+    for p in payloads:
+        for item in p.get("unmet_needs", []):
+            gap = (item.get("gap") or "").strip()
+            if not gap:
+                continue
+            norm = gap.lower()
+            if norm not in gaps_map:
+                gaps_map[norm] = {
+                    "gap": gap,
+                    "gap_type": item.get("gap_type", "other"),
+                    "count": 0,
+                    "summary": item.get("summary", ""),
+                    "examples": set(),
+                }
+            gaps_map[norm]["count"] += int(item.get("count") or 0)
+            for ex in item.get("examples", []):
+                gaps_map[norm]["examples"].add(ex)
+
+    aggregated_gaps = []
+    for g in gaps_map.values():
+        aggregated_gaps.append({
+            "gap": g["gap"],
+            "gap_type": g["gap_type"],
+            "count": g["count"],
+            "summary": g["summary"],
+            "examples": list(g["examples"])[:5],
+        })
+    aggregated_gaps.sort(key=lambda g: g["count"], reverse=True)
+
+    recs_map = {}
+    for p in payloads:
+        for item in p.get("recommendations", []):
+            title = (item.get("title") or "").strip()
+            if not title:
+                continue
+            norm = title.lower()
+            if norm not in recs_map:
+                recs_map[norm] = {
+                    "title": title,
+                    "impact": item.get("impact", "medium"),
+                    "effort": item.get("effort", ""),
+                    "detail": item.get("detail", ""),
+                    "addresses": item.get("addresses", ""),
+                    "evidence_count": int(item.get("evidence_count") or 0),
+                    "examples": set(item.get("examples", [])),
+                }
+            else:
+                recs_map[norm]["evidence_count"] += int(item.get("evidence_count") or 0)
+                for ex in item.get("examples", []):
+                    recs_map[norm]["examples"].add(ex)
+
+    aggregated_recs = []
+    for r in recs_map.values():
+        aggregated_recs.append({
+            "title": r["title"],
+            "impact": r["impact"],
+            "effort": r["effort"],
+            "detail": r["detail"],
+            "addresses": r["addresses"],
+            "evidence_count": r["evidence_count"],
+            "examples": list(r["examples"])[:5],
+        })
+    aggregated_recs.sort(key=lambda r: (_IMPACT_ORDER.get(r["impact"], 3), -r["evidence_count"]))
+
+    headline = (
+        f"Lifetime store intelligence synthesized across {total_convs} customer conversations "
+        f"since June 1, 2026."
+    )
+
+    return {
+        "month": "lifetime",
+        "is_lifetime": True,
+        "headline": headline,
+        "top_requests": aggregated_requests[:MAX_TOP_REQUESTS],
+        "unmet_needs": aggregated_gaps[:MAX_UNMET_NEEDS],
+        "product_demand": aggregated_demand[:MAX_DEMAND_ITEMS],
+        "product_demand_one_offs": total_one_offs,
+        "recommendations": aggregated_recs[:MAX_RECOMMENDATIONS],
+        "conversations_analyzed": total_convs,
+        "generated_at": timezone.now().isoformat(),
+    }
+
+
 def _finalize(payload, month_start, cached=False):
     # cost_commentary is independent of the transcript-narrative payload
     # above -- its own data source (monthly_stats) and its own cache, so it
@@ -499,7 +666,7 @@ def _finalize(payload, month_start, cached=False):
     body = {
         **payload,
         "available_months": _available_months(),
-        "cost_commentary": cost_commentary_for(month_start),
+        "cost_commentary": cost_commentary_for(month_start) if month_start else None,
     }
     if cached:
         body["cached"] = True
@@ -510,6 +677,17 @@ def _finalize(payload, month_start, cached=False):
 def insights_summary(request):
     refresh = request.GET.get("refresh", "").lower() in ("1", "true", "yes")
     month_param = request.GET.get("month")
+
+    if month_param == "lifetime":
+        key = "insights_summary:lifetime"
+        if not refresh:
+            cached = cache.get(key)
+            if cached is not None:
+                return _finalize(cached, None, cached=True)
+        payload = _build_lifetime_insights()
+        cache.set(key, payload, CACHE_TIMEOUT)
+        return _finalize(payload, None)
+
     current_start = _current_month_start()
 
     if month_param:
