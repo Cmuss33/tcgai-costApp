@@ -446,7 +446,7 @@ function ChatSummaryView() {
           <div className="inspector-titles">
             <h1><span>🔬</span> Quality &amp; Trust Inspector</h1>
             <p>
-              Audit individual shopper conversations, inspect AI accuracy rubric scores,
+              Audit individual shopper conversations, review AI accuracy scores,
               and flag inventory, pricing, or tournament legality discrepancies directly to engineering.
             </p>
           </div>
@@ -519,7 +519,7 @@ function ChatSummaryView() {
       <p className="cost-accuracy-note">
         "Est. Cost ($)" reflects Anthropic's actual billed rate per model
         this month, and now includes prompt-cache tokens (cache writes and
-        reads) alongside base input/output. Click any row to audit the full transcript.
+        reads) alongside base input/output. Click any Chat ID to view conversation details.
       </p>
 
       <table className="chat-summary-table">
@@ -533,7 +533,6 @@ function ChatSummaryView() {
             <th>Est. Cost ($)</th>
             <th>Model</th>
             <th>Investigation</th>
-            <th>Transcript</th>
           </tr>
         </thead>
 
@@ -613,16 +612,6 @@ function ChatSummaryView() {
               <td style={{ fontSize: "12px", color: "#9ca3af" }}>{chat.model}</td>
 
               <td>{renderInvestigationCell(chat)}</td>
-
-              <td>
-                <button
-                  type="button"
-                  className="modal-re-eval-btn"
-                  onClick={() => openChatModal(chat.chat_id)}
-                >
-                  View Transcript 👁️
-                </button>
-              </td>
             </tr>
           ))}
         </tbody>
