@@ -8,7 +8,7 @@ from django.contrib.auth import authenticate, login, logout
 import anthropic
 import os
 from django.db import transaction
-from django.db.models import Avg, Count, IntegerField, Sum, Value
+from django.db.models import Avg, Count, IntegerField, Q, Sum, Value
 from django.db.models.functions import Coalesce, TruncDate
 from django.utils.timezone import now
 from datetime import timedelta
@@ -178,12 +178,37 @@ def get_chat_ids(request):
     try:
         limit = int(request.GET.get("limit", 10))
         offset = int(request.GET.get("offset", 0))
+        filter_type = request.GET.get("filter")
+        search_query = request.GET.get("search", "").strip()
 
         # ENG-149/150: exclude flagged bot chats -- this list isn't
         # month-scoped like monthly_stats/insights_summary, so without this
         # they'd be the overwhelming majority of every page (see
         # flag_automated_chats and month_utils.real_chats).
         visible_chats = real_chats(Chat.objects.all())
+
+        if filter_type == "needs_attention":
+            visible_chats = visible_chats.filter(
+                Q(evaluation_score__lt=75) | Q(investigation_status="flagged")
+            )
+        elif filter_type == "out_of_stock":
+            chat_ids_with_oos = Message.objects.filter(
+                products_shown__isnull=False
+            ).filter(
+                Q(products_shown__icontains='"available": false') | Q(products_shown__icontains='"available":false')
+            ).values_list('chat_id', flat=True).distinct()
+            visible_chats = visible_chats.filter(chat_id__in=chat_ids_with_oos)
+        elif filter_type == "unaudited":
+            visible_chats = visible_chats.filter(evaluation_score__isnull=True)
+
+        if search_query:
+            matching_chat_ids = Message.objects.filter(
+                Q(content__icontains=search_query) | Q(returned_content__icontains=search_query)
+            ).values_list('chat_id', flat=True).distinct()
+            visible_chats = visible_chats.filter(
+                Q(chat_id__icontains=search_query) | Q(chat_id__in=matching_chat_ids)
+            )
+
         total = visible_chats.count()
 
         chats = visible_chats.order_by('-timestamp')[offset:offset + limit]
@@ -212,8 +237,15 @@ def get_chat_ids(request):
             )
         }
 
+        # Opening message text preview for shopper context
+        first_messages = {}
+        for m in Message.objects.filter(chat_id__in=products_shown_counts.keys()).order_by('timestamp'):
+            if m.chat_id not in first_messages and m.content and m.content.strip():
+                first_messages[m.chat_id] = m.content.strip()[:140]
+
         for chat in results:
             chat["products_shown_count"] = products_shown_counts[chat["chat_id"]]
+            chat["preview"] = first_messages.get(chat["chat_id"], "")
             totals = cache_totals.get(chat["chat_id"], {"cache_creation_total": 0, "cache_read_total": 0})
             chat["cache_creation_tokens"] = totals["cache_creation_total"]
             chat["cache_read_tokens"] = totals["cache_read_total"]

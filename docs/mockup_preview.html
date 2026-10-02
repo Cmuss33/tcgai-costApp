@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TCG AI Assistant — Store Owner Portal UI Redesign Mockups</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #090d16;
+      --card-bg: #111827;
+      --card-border: #1f293d;
+      --accent: #6366f1;
+      --accent-glow: rgba(99, 102, 241, 0.25);
+      --success: #10b981;
+      --warning: #f59e0b;
+      --danger: #ef4444;
+      --text: #f3f4f6;
+      --text-muted: #9ca3af;
+    }
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    body {
+      background-color: var(--bg);
+      color: var(--text);
+      font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+      line-height: 1.5;
+      padding: 32px 24px;
+      min-height: 100vh;
+    }
+    .header {
+      max-width: 1300px;
+      margin: 0 auto 32px;
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: center;
+      gap: 20px;
+      border-bottom: 1px solid var(--card-border);
+      padding-bottom: 24px;
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(99, 102, 241, 0.15);
+      color: #818cf8;
+      border: 1px solid rgba(99, 102, 241, 0.3);
+      padding: 4px 12px;
+      border-radius: 9999px;
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 8px;
+    }
+    h1 {
+      font-size: 28px;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      background: linear-gradient(135deg, #ffffff 40%, #a5b4fc 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .subtitle {
+      color: var(--text-muted);
+      font-size: 14px;
+      margin-top: 4px;
+      max-width: 650px;
+    }
+    .tabs {
+      display: flex;
+      gap: 8px;
+      background: #0d1322;
+      padding: 4px;
+      border-radius: 12px;
+      border: 1px solid var(--card-border);
+    }
+    .tab-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      font-family: inherit;
+      font-size: 13px;
+      font-weight: 600;
+      padding: 8px 18px;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+    .tab-btn:hover {
+      color: var(--text);
+    }
+    .tab-btn.active {
+      background: var(--accent);
+      color: #ffffff;
+      box-shadow: 0 4px 12px var(--accent-glow);
+    }
+    .container {
+      max-width: 1300px;
+      margin: 0 auto;
+    }
+    .view-panel {
+      display: none;
+      animation: fadeIn 0.3s ease;
+    }
+    .view-panel.active {
+      display: block;
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 16px;
+      overflow: hidden;
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4);
+      margin-bottom: 24px;
+    }
+    .card-top {
+      padding: 20px 24px;
+      background: #0f1626;
+      border-bottom: 1px solid var(--card-border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 16px;
+    }
+    .card-title {
+      font-size: 18px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .card-desc {
+      font-size: 13px;
+      color: var(--text-muted);
+      margin-top: 2px;
+    }
+    .pillars {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 16px;
+      padding: 20px 24px;
+      background: #0c1220;
+      border-bottom: 1px solid var(--card-border);
+    }
+    .pillar-box {
+      background: rgba(255, 255, 255, 0.02);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      border-radius: 10px;
+      padding: 14px 16px;
+    }
+    .pillar-box h4 {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 4px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .pillar-box p {
+      font-size: 12px;
+      color: var(--text-muted);
+      line-height: 1.4;
+    }
+    .img-wrapper {
+      position: relative;
+      background: #04070e;
+      text-align: center;
+      padding: 12px;
+      cursor: zoom-in;
+    }
+    .img-wrapper img {
+      max-width: 100%;
+      height: auto;
+      border-radius: 8px;
+      box-shadow: 0 8px 30px rgba(0,0,0,0.6);
+      transition: transform 0.2s ease;
+      display: block;
+      margin: 0 auto;
+    }
+    .img-wrapper:hover img {
+      transform: scale(1.005);
+    }
+    .img-caption {
+      margin-top: 10px;
+      font-size: 12px;
+      color: var(--text-muted);
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 16px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      text-decoration: none;
+      color: #fff;
+      background: #252d3d;
+      border: 1px solid #374151;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+    .btn:hover {
+      background: #374151;
+    }
+    .btn-primary {
+      background: var(--accent);
+      border-color: #4f46e5;
+    }
+    .btn-primary:hover {
+      background: #4f46e5;
+    }
+    /* Modal / Lightbox */
+    .lightbox {
+      display: none;
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0, 0, 0, 0.92);
+      backdrop-filter: blur(8px);
+      z-index: 9999;
+      justify-content: center;
+      align-items: center;
+      padding: 24px;
+      cursor: zoom-out;
+    }
+    .lightbox.active {
+      display: flex;
+    }
+    .lightbox img {
+      max-width: 95vw;
+      max-height: 95vh;
+      border-radius: 8px;
+      box-shadow: 0 10px 50px rgba(0,0,0,0.8);
+      object-fit: contain;
+    }
+    .lightbox-close {
+      position: absolute;
+      top: 24px;
+      right: 28px;
+      font-size: 32px;
+      color: #fff;
+      cursor: pointer;
+      background: rgba(255,255,255,0.1);
+      width: 44px;
+      height: 44px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border: none;
+    }
+    .lightbox-close:hover {
+      background: rgba(255,255,255,0.2);
+    }
+  </style>
+</head>
+<body>
+
+  <div class="header">
+    <div>
+      <div class="badge">🎨 Executive Design Preview</div>
+      <h1>TCG Store Owner Portal — Redesigned Experience</h1>
+      <p class="subtitle">
+        Custom-built to establish rock-solid owner trust, unearth real-time customer demand trends (Restocks vs. Catalog gaps), and demonstrate tangible labor savings ($0.15/chat vs $18/hr staff).
+      </p>
+    </div>
+    <div class="tabs">
+      <button class="tab-btn active" onclick="switchTab('screen-home')">1. Store Command Center</button>
+      <button class="tab-btn" onclick="switchTab('screen-inspector')">2. Quality & Trust Inspector</button>
+      <button class="tab-btn" onclick="switchTab('screen-v1')">3. Initial Draft (V1)</button>
+    </div>
+  </div>
+
+  <div class="container">
+
+    <!-- TAB 1: STORE COMMAND CENTER -->
+    <div id="screen-home" class="view-panel active">
+      <div class="card">
+        <div class="card-top">
+          <div>
+            <div class="card-title">
+              <span>⚡ Concept 1: The Store Owner Command Center</span>
+              <span class="badge" style="margin: 0; background: rgba(16, 185, 129, 0.15); color: #34d399; border-color: rgba(16, 185, 129, 0.3);">Recommended Hero Screen</span>
+            </div>
+            <div class="card-desc">Designed to immediately answer: <em>"Is the bot handling my store customers well, and what are collectors looking to buy right now?"</em></div>
+          </div>
+          <div style="display:flex; gap:10px;">
+            <a href="mockups/store_command_center.jpg" target="_blank" class="btn">Open Full Res in New Tab ↗</a>
+            <button class="btn btn-primary" onclick="openLightbox('mockups/store_command_center.jpg')">Enlarge Preview 🔍</button>
+          </div>
+        </div>
+
+        <div class="pillars">
+          <div class="pillar-box">
+            <h4 style="color: #60a5fa;">🛡️ Trust & Accuracy Radar</h4>
+            <p><strong>98.4% Accuracy Score</strong> with real-time intent resolution. Clear visual indicator that customer questions are answered safely and reliably.</p>
+          </div>
+          <div class="pillar-box">
+            <h4 style="color: #f59e0b;">🔥 Customer Demand Signals</h4>
+            <p>Highlights high-demand cards customers ask for: <strong>Restock Alerts</strong> (e.g., <em>One Piece OP-05</em>, <em>Lorcana Chapter 1</em>) and <strong>Add to Catalog</strong> requests.</p>
+          </div>
+          <div class="pillar-box">
+            <h4 style="color: #34d399;">💰 True Labor Cost Savings</h4>
+            <p>Quantifies efficiency: <strong>$0.18 avg cost per chat</strong> vs <strong>$18/hr retail associate</strong>, saving ~$1,420/month with 24/7 coverage.</p>
+          </div>
+        </div>
+
+        <div class="img-wrapper" onclick="openLightbox('mockups/store_command_center.jpg')">
+          <img src="mockups/store_command_center.jpg" alt="Store Command Center Mockup" />
+          <div class="img-caption">💡 Click image to zoom / inspect details</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 2: CHAT QUALITY INSPECTOR -->
+    <div id="screen-inspector" class="view-panel">
+      <div class="card">
+        <div class="card-top">
+          <div>
+            <div class="card-title">
+              <span>🔬 Concept 2: Chat Quality & Trust Inspector (Triage)</span>
+              <span class="badge" style="margin: 0;">Verification Engine</span>
+            </div>
+            <div class="card-desc">Allows the store owner to audit conversations in seconds with AI quality scorecards and friction flags.</div>
+          </div>
+          <div style="display:flex; gap:10px;">
+            <a href="mockups/chat_quality_inspector.jpg" target="_blank" class="btn">Open Full Res in New Tab ↗</a>
+            <button class="btn btn-primary" onclick="openLightbox('mockups/chat_quality_inspector.jpg')">Enlarge Preview 🔍</button>
+          </div>
+        </div>
+
+        <div class="pillars">
+          <div class="pillar-box">
+            <h4 style="color: #818cf8;">📑 Transparent Transcript View</h4>
+            <p>Inspect exactly what the customer typed and how the bot replied with product links, tone badges, and condition guidelines.</p>
+          </div>
+          <div class="pillar-box">
+            <h4 style="color: #ef4444;">🚩 Proactive Friction Alerts</h4>
+            <p>Instantly flags when a customer asked for an out-of-stock item, pricing dispute, or tournament legality ambiguity so owners can act.</p>
+          </div>
+          <div class="pillar-box">
+            <h4 style="color: #10b981;">✅ Automated Rubric Eval</h4>
+            <p>Scores each conversation across 4 pillars: <em>Inventory Accuracy (99%)</em>, <em>Politeness (100%)</em>, <em>Policy Adherence (96%)</em>, and <em>Speed (1.2s)</em>.</p>
+          </div>
+        </div>
+
+        <div class="img-wrapper" onclick="openLightbox('mockups/chat_quality_inspector.jpg')">
+          <img src="mockups/chat_quality_inspector.jpg" alt="Chat Quality Inspector Mockup" />
+          <div class="img-caption">💡 Click image to zoom / inspect details</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 3: V1 COMPARISON -->
+    <div id="screen-v1" class="view-panel">
+      <div class="card">
+        <div class="card-top">
+          <div>
+            <div class="card-title">
+              <span>📐 Draft V1 Archive (For Reference)</span>
+              <span class="badge" style="margin: 0; background: rgba(156, 163, 175, 0.2); color: #d1d5db; border-color: rgba(156, 163, 175, 0.3);">Initial Concept</span>
+            </div>
+            <div class="card-desc">The earlier draft before pivoting to the high-trust Command Center.</div>
+          </div>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; padding: 20px;">
+          <div class="img-wrapper" onclick="openLightbox('mockups/v1_dashboard_home.jpg')">
+            <h3 style="font-size: 14px; margin-bottom: 8px; color: #a5b4fc;">Dashboard Home (V1)</h3>
+            <img src="mockups/v1_dashboard_home.jpg" alt="V1 Home" />
+          </div>
+          <div class="img-wrapper" onclick="openLightbox('mockups/v1_chat_triage.jpg')">
+            <h3 style="font-size: 14px; margin-bottom: 8px; color: #a5b4fc;">Chat Triage (V1)</h3>
+            <img src="mockups/v1_chat_triage.jpg" alt="V1 Triage" />
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Lightbox -->
+  <div id="lightbox" class="lightbox" onclick="closeLightbox()">
+    <button class="lightbox-close" onclick="closeLightbox()">&times;</button>
+    <img id="lightbox-img" src="" alt="Enlarged Mockup" onclick="event.stopPropagation()" />
+  </div>
+
+  <script>
+    function switchTab(tabId) {
+      document.querySelectorAll('.view-panel').forEach(p => p.classList.remove('active'));
+      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      document.getElementById(tabId).classList.add('active');
+      event.target.classList.add('active');
+    }
+
+    function openLightbox(src) {
+      const lb = document.getElementById('lightbox');
+      const img = document.getElementById('lightbox-img');
+      img.src = src;
+      lb.classList.add('active');
+    }
+
+    function closeLightbox() {
+      document.getElementById('lightbox').classList.remove('active');
+    }
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') closeLightbox();
+    });
+  </script>
+</body>
+</html>
