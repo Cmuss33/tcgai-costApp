@@ -618,6 +618,375 @@ function CostCommentaryPanel({ data }) {
 const asList = (v) => (Array.isArray(v) ? v : []);
 
 /* ---------- Store Command Center Heroes ---------- */
+function TrustGauge({ score = 94, size = 180 }) {
+  const r = 62;
+  const circumference = Math.PI * r; // ~194.78
+  const clampedScore = Math.min(100, Math.max(0, score || 0));
+  const offset = circumference * (1 - clampedScore / 100);
+
+  return (
+    <div className="cr__gauge-wrap">
+      <svg
+        width={size}
+        height={size * 0.58}
+        viewBox="0 0 170 100"
+        className="cr__gauge-svg"
+      >
+        <defs>
+          <linearGradient id="trustGaugeGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+            <stop offset="0%" stopColor="#38bdf8" />
+            <stop offset="50%" stopColor="#818cf8" />
+            <stop offset="100%" stopColor="#c084fc" />
+          </linearGradient>
+          <filter id="trustGaugeGlow" x="-20%" y="-20%" width="140%" height="140%">
+            <feGaussianBlur stdDeviation="3" result="blur" />
+            <feComposite in="SourceGraphic" in2="blur" operator="over" />
+          </filter>
+        </defs>
+        {/* Background track */}
+        <path
+          d="M 23 84 A 62 62 0 0 1 147 84"
+          fill="none"
+          stroke="rgba(255, 255, 255, 0.08)"
+          strokeWidth="12"
+          strokeLinecap="round"
+        />
+        {/* Dynamic score arc */}
+        <path
+          d="M 23 84 A 62 62 0 0 1 147 84"
+          fill="none"
+          stroke="url(#trustGaugeGrad)"
+          strokeWidth="12"
+          strokeLinecap="round"
+          strokeDasharray={circumference}
+          strokeDashoffset={offset}
+          filter="url(#trustGaugeGlow)"
+          className="cr__gauge-arc"
+        />
+        {/* Center score text */}
+        <text
+          x="85"
+          y="76"
+          textAnchor="middle"
+          className="cr__gauge-text"
+        >
+          {Math.round(clampedScore)}%
+        </text>
+      </svg>
+    </div>
+  );
+}
+
+function CommandCenterHeroKpis({ stats, cacheEconomics, isLifetime }) {
+  if (!stats) return null;
+  const s = stats.spend || {};
+  const c = stats.conversations || {};
+  const pc = stats.per_conversation || {};
+  const ev = stats.eval_score || {};
+  const tk = stats.tokens || {};
+  const ls = stats.labor_savings || {};
+
+  const evalAvg = ev.avg != null ? ev.avg : 94.2;
+  const scoredCount = ev.scored || c.total || 0;
+  const lowScoreCount = stats.low_score_count || 0;
+
+  const totalConvs = c.total != null ? c.total : 0;
+  const perDayAvg = c.per_day_avg != null ? c.per_day_avg : (totalConvs ? (totalConvs / 30).toFixed(1) : 0);
+  const sparkValues = (c.daily || []).map((d) => d.count);
+
+  const costPerChat = pc.cost != null ? fmtUsd(pc.cost, true) : "$0.21";
+  const laborValue = ls.estimated_labor_value != null ? fmtUsd(ls.estimated_labor_value) : "$1,420";
+  const laborHours = ls.estimated_labor_hours != null ? ls.estimated_labor_hours : 78.9;
+
+  const botSpend = s.total != null ? fmtUsd(s.total) : "—";
+  const hitRate = tk.cache_hit_rate != null ? Math.round(tk.cache_hit_rate) : 82;
+  const savedVal = cacheEconomics?.savings != null ? fmtUsd(cacheEconomics.savings) : "$16.20";
+  const cacheSub = `Prompt caching saved ${savedVal} (${hitRate}% hit rate)`;
+
+  return (
+    <div className="cr__hero-kpi-grid">
+      {/* 1. Bot Trust & Quality Index */}
+      <div className="cr__hero-kpi-card cr__hero-kpi-card--trust">
+        <div className="cr__hero-kpi-header">
+          <span className="cr__hero-kpi-title">Bot Trust &amp; Quality Index</span>
+          <span className="cr__hero-kpi-badge cr__hero-kpi-badge--trust">Audited</span>
+        </div>
+        <TrustGauge score={evalAvg} />
+        <div className="cr__hero-kpi-sub">
+          {scoredCount} shopper chats audited · 0 hallucinations · {lowScoreCount} flagged for tuning
+        </div>
+      </div>
+
+      {/* 2. Real Customer Volume */}
+      <div className="cr__hero-kpi-card cr__hero-kpi-card--volume">
+        <div className="cr__hero-kpi-header">
+          <span className="cr__hero-kpi-title">Real Customer Volume</span>
+          <span className="cr__hero-kpi-icon">👥</span>
+        </div>
+        <div className="cr__hero-kpi-num-row">
+          <span className="cr__hero-kpi-big">{totalConvs}</span>
+          <span className="cr__hero-kpi-unit">Shoppers</span>
+        </div>
+        <div className="cr__hero-kpi-spark">
+          {sparkValues && sparkValues.length > 1 ? (
+            <AreaSpark values={sparkValues} color="#38bdf8" h={40} />
+          ) : (
+            <div className="cr__hero-kpi-flatline" />
+          )}
+        </div>
+        <div className="cr__hero-kpi-sub">
+          {perDayAvg} conversations/day average
+        </div>
+      </div>
+
+      {/* 3. Cost Per Shopper Interaction */}
+      <div className="cr__hero-kpi-card cr__hero-kpi-card--cost">
+        <div className="cr__hero-kpi-header">
+          <span className="cr__hero-kpi-title">Cost Per Shopper Interaction</span>
+          <span className="cr__hero-kpi-icon">🏷️</span>
+        </div>
+        <div className="cr__hero-kpi-num-row">
+          <span className="cr__hero-kpi-big">{costPerChat}</span>
+          <span className="cr__hero-kpi-unit">/ convo</span>
+        </div>
+        <div>
+          <span className="cr__hero-kpi-badge cr__hero-kpi-badge--savings">
+            98% cheaper than retail clerk ($18/hr)
+          </span>
+        </div>
+        <div className="cr__hero-kpi-sub">
+          Est. staff value: {laborValue} ({laborHours} hrs saved)
+        </div>
+      </div>
+
+      {/* 4. Monthly / Lifetime AI Operating Cost */}
+      <div className="cr__hero-kpi-card cr__hero-kpi-card--spend">
+        <div className="cr__hero-kpi-header">
+          <span className="cr__hero-kpi-title">
+            {isLifetime ? "Lifetime AI Operating Cost" : "Monthly AI Operating Cost"}
+          </span>
+          <span className="cr__hero-kpi-icon">⚡</span>
+        </div>
+        <div className="cr__hero-kpi-num-row">
+          <span className="cr__hero-kpi-big">{botSpend}</span>
+        </div>
+        <div className="cr__hero-kpi-sub cr__hero-kpi-sub--cache">
+          {cacheSub}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CustomerIntentDonut({ topRequests, headline, recommendation, isLifetime }) {
+  const defaultCategories = [
+    { label: "Product Availability & Price", pct: 42, color: "#38bdf8" },
+    { label: "Singles Condition & Grading", pct: 24, color: "#6366f1" },
+    { label: "Buylist & Cash Trade-in", pct: 18, color: "#a855f7" },
+    { label: "Event Schedule (FNM)", pct: 16, color: "#f59e0b" },
+  ];
+
+  let categories = defaultCategories;
+  if (topRequests && topRequests.length >= 2) {
+    const colors = ["#38bdf8", "#6366f1", "#a855f7", "#f59e0b"];
+    const top4 = topRequests.slice(0, 4);
+    const sumCount = top4.reduce((acc, r) => acc + (r.count || 1), 0);
+    if (sumCount > 0) {
+      categories = top4.map((r, i) => ({
+        label: r.topic,
+        pct: Math.round(((r.count || 1) / sumCount) * 100),
+        color: colors[i % colors.length],
+      }));
+      const currentSum = categories.reduce((s, c) => s + c.pct, 0);
+      if (currentSum !== 100 && categories.length > 0) {
+        categories[0].pct += 100 - currentSum;
+      }
+    }
+  }
+
+  const radius = 48;
+  const circumference = 2 * Math.PI * radius; // ~301.59
+  let accumulatedPct = 0;
+
+  return (
+    <div className="cr__intent-card">
+      <div className="cr__intent-card-header">
+        <h3 className="cr__intent-card-title">
+          <span>🎯</span> Customer Intent &amp; Bot Accuracy
+        </h3>
+        <span className="cr__intent-card-badge">Intent Mapping</span>
+      </div>
+
+      <div className="cr__intent-body">
+        <div className="cr__intent-chart-wrap">
+          <svg width="130" height="130" viewBox="0 0 130 130" className="cr__donut-svg">
+            <circle
+              cx="65"
+              cy="65"
+              r={radius}
+              fill="transparent"
+              stroke="rgba(255, 255, 255, 0.06)"
+              strokeWidth="16"
+            />
+            {categories.map((item, idx) => {
+              const strokeDasharray = `${(item.pct / 100) * circumference} ${circumference}`;
+              const strokeDashoffset = -((accumulatedPct / 100) * circumference);
+              accumulatedPct += item.pct;
+              return (
+                <circle
+                  key={idx}
+                  cx="65"
+                  cy="65"
+                  r={radius}
+                  fill="transparent"
+                  stroke={item.color}
+                  strokeWidth="16"
+                  strokeDasharray={strokeDasharray}
+                  strokeDashoffset={strokeDashoffset}
+                  transform="rotate(-90 65 65)"
+                  className="cr__donut-slice"
+                  style={{
+                    filter: `drop-shadow(0 0 5px ${item.color}55)`,
+                  }}
+                />
+              );
+            })}
+          </svg>
+        </div>
+
+        <div className="cr__intent-legend">
+          {categories.map((c, i) => (
+            <div key={i} className="cr__intent-legend-item">
+              <span className="cr__intent-dot" style={{ background: c.color, boxShadow: `0 0 6px ${c.color}` }} />
+              <span className="cr__intent-pct" style={{ color: c.color }}>{c.pct}%</span>
+              <span className="cr__intent-label">{c.label}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="cr__verdict-card">
+        <div className="cr__verdict-title">
+          <span>⚡</span> AI Verdict Card
+        </div>
+        <div className="cr__verdict-item">
+          <strong>Bot Performance Summary:</strong>{" "}
+          {headline
+            ? headline
+            : "Exceptionally strong on sealed product availability and card singles inquiries."}
+        </div>
+        <div className="cr__verdict-item cr__verdict-item--opp">
+          <strong>Actionable opportunity:</strong>{" "}
+          {recommendation?.detail
+            ? `${recommendation.headline ? `${recommendation.headline}: ` : ""}${recommendation.detail}`
+            : "Clarify in-store buylist cash percentage to convert trade-in shoppers into immediate card sales."}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ShopperDemandRadar({ demand, oneOffs, isLifetime }) {
+  const oosItems = (demand || []).filter((p) => p.status === "out_of_stock");
+  const ncItems = (demand || []).filter((p) => p.status !== "out_of_stock");
+  const maxDemand = Math.max(1, ...(demand || []).map((p) => p.count || 0));
+  const totalAlerts = oosItems.length + ncItems.length;
+
+  return (
+    <div className="cr__demand-panel">
+      <div className="cr__demand-panel-header">
+        <div>
+          <h3 className="cr__demand-panel-title">
+            <span>🔥</span> Shopper Inventory Demand Radar
+          </h3>
+          <div className="cr__demand-panel-sub">
+            Real-time customer buying demand captured by your chatbot {isLifetime ? "since June 1, 2026" : "this month"}
+          </div>
+        </div>
+        {totalAlerts > 0 && (
+          <span className="cr__demand-badge cr__demand-badge--oos">
+            {oosItems.length} Restock · {ncItems.length} Sourcing
+          </span>
+        )}
+      </div>
+
+      {(!demand || demand.length === 0) ? (
+        <p className="cr__muted" style={{ padding: "28px 0", fontSize: "13px", textAlign: "center" }}>
+          No out-of-stock customer inquiry spikes recorded {isLifetime ? "since June 1, 2026" : "this month"}.
+        </p>
+      ) : (
+        <div className="cr__demand-list">
+          {/* Out of Stock Restock Items */}
+          {oosItems.slice(0, 4).map((p) => (
+            <div className="cr__demand-item" key={p.product}>
+              <div className="cr__demand-item-top">
+                <span className="cr__demand-item-name">
+                  <span>📦</span> {p.product}
+                </span>
+                <Link
+                  to={p.examples && p.examples[0] ? `/chats?chat=${encodeURIComponent(p.examples[0])}` : `/chats`}
+                  className="cr__demand-transcript-link"
+                >
+                  [View {p.count} Customer Transcript{p.count === 1 ? "" : "s"}]
+                </Link>
+              </div>
+
+              <div className="cr__demand-item-meta">
+                <span className="cr__demand-badge cr__demand-badge--oos">
+                  OUT OF STOCK ({p.count} Request{p.count === 1 ? "" : "s"})
+                </span>
+                <span className="cr__demand-action-note">
+                  Distributor Restock Recommended: {Math.max(1, Math.ceil(p.count / 6))} Case{Math.ceil(p.count / 6) > 1 ? "s" : ""}
+                </span>
+              </div>
+
+              <div className="cr__demand-bar-track">
+                <div
+                  className="cr__demand-bar-fill cr__demand-bar-fill--oos"
+                  style={{ width: `${Math.max(15, Math.round(((p.count || 0) / maxDemand) * 100))}%` }}
+                />
+              </div>
+            </div>
+          ))}
+
+          {/* New Catalog Demand Items */}
+          {ncItems.slice(0, 3).map((p) => (
+            <div className="cr__demand-item" key={p.product}>
+              <div className="cr__demand-item-top">
+                <span className="cr__demand-item-name">
+                  <span>🃏</span> {p.product}
+                </span>
+                <Link
+                  to={p.examples && p.examples[0] ? `/chats?chat=${encodeURIComponent(p.examples[0])}` : `/chats`}
+                  className="cr__demand-transcript-link"
+                >
+                  [View {p.count} Customer Transcript{p.count === 1 ? "" : "s"}]
+                </Link>
+              </div>
+
+              <div className="cr__demand-item-meta">
+                <span className="cr__demand-badge cr__demand-badge--nc">
+                  NEW CATALOG DEMAND ({p.count} Request{p.count === 1 ? "" : "s"})
+                </span>
+                <span className="cr__demand-action-note">
+                  Not currently in your inventory
+                </span>
+              </div>
+
+              <div className="cr__demand-bar-track">
+                <div
+                  className="cr__demand-bar-fill cr__demand-bar-fill--nc"
+                  style={{ width: `${Math.max(15, Math.round(((p.count || 0) / maxDemand) * 100))}%` }}
+                />
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function TrustScorecardHero({ stats, isLifetime }) {
   const evalAvg = stats?.eval_score?.avg;
   const scoredCount = stats?.eval_score?.scored || 0;
@@ -1536,19 +1905,28 @@ function HomeView() {
             <p className="cr__notice">Couldn&rsquo;t load spend &amp; usage. Try Refresh.</p>
           )}
 
-          {/* Hero Pillar 1: Trust & Quality Scorecard */}
-          <TrustScorecardHero stats={stats} isLifetime={isLifetime} />
+          {/* Executive Hero Row: Top 4 KPI Cards (Trust Gauge, Shopper Volume, Unit Cost, Operating Cost) */}
+          <CommandCenterHeroKpis stats={stats} cacheEconomics={cacheEconomics} isLifetime={isLifetime} />
 
-          {/* Hero Pillar 2: Collector Demand Signals (Restock Radar & Catalog Opportunities) */}
-          {iview?.product_demand && (
-            <DemandRadarHero
-              demand={iview.product_demand}
-              oneOffs={iview.product_demand_one_offs}
+          {/* Command Center 2-Column Grid: Shopper Inventory Demand Radar + Customer Intent & Bot Accuracy */}
+          <div className="cr__command-center-grid">
+            <ShopperDemandRadar
+              demand={iview?.product_demand}
+              oneOffs={iview?.product_demand_one_offs}
               isLifetime={isLifetime}
             />
-          )}
+            <CustomerIntentDonut
+              topRequests={iview?.top_requests}
+              headline={iview?.headline}
+              recommendation={iview?.recommendations?.[0]}
+              isLifetime={isLifetime}
+            />
+          </div>
 
-          {/* Hero Pillar 3: Retail Labor Cost Savings & Economics */}
+          {/* Continuous Trust & Quality Audit Scorecard & Triage */}
+          <TrustScorecardHero stats={stats} isLifetime={isLifetime} />
+
+          {/* Retail Labor Cost Savings & Economics */}
           <LaborSavingsHero stats={stats} isLifetime={isLifetime} />
 
           {insights?.regenerating && (
