@@ -280,6 +280,7 @@
     </div>
     <div class="tabs">
       <button class="tab-btn active" onclick="switchTab('screen-home')">1. Store Command Center</button>
+      <button class="tab-btn" onclick="switchTab('screen-pr68')">✨ Live Merged UI (PR #68)</button>
       <button class="tab-btn" onclick="switchTab('screen-inspector')">2. Quality & Trust Inspector</button>
       <button class="tab-btn" onclick="switchTab('screen-v1')">3. Initial Draft (V1)</button>
     </div>
@@ -322,6 +323,28 @@
         <div class="img-wrapper" onclick="openLightbox('mockups/store_command_center.jpg')">
           <img src="mockups/store_command_center.jpg" alt="Store Command Center Mockup" />
           <div class="img-caption">💡 Click image to zoom / inspect details</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB: LIVE MERGED UI (PR #68) -->
+    <div id="screen-pr68" class="view-panel">
+      <div class="card">
+        <div class="card-top">
+          <div>
+            <div class="card-title">
+              <span>⚡ Live Implementation Preview (PR #68)</span>
+              <span class="badge" style="margin: 0; background: rgba(56, 189, 248, 0.15); color: #38bdf8; border-color: rgba(56, 189, 248, 0.3);">Merged Codebase</span>
+            </div>
+            <div class="card-desc">Interactive live render of the SVG Trust Gauge, 4-Card Hero Grid, Customer Intent Donut Chart, and Shopper Demand Radar.</div>
+          </div>
+          <div style="display:flex; gap:10px;">
+            <a href="live_command_center_preview.html" target="_blank" class="btn btn-primary">Open Standalone Full Screen ↗</a>
+          </div>
+        </div>
+
+        <div style="width: 100%; height: 980px; overflow: hidden; background: #090d16;">
+          <iframe src="live_command_center_preview.html" style="width: 100%; height: 100%; border: none;"></iframe>
         </div>
       </div>
     </div>
