@@ -6,8 +6,8 @@ const API_URL = import.meta.env.VITE_API_URL ?? "";
 const POLL_MS = 2500;
 const MAX_POLLS = 35;
 // stats, insights (first response only -- not each poll), usageByKey,
-// costReconciliation, cacheEconomics
-const TOTAL_LOADERS = 5;
+// costReconciliation, cacheEconomics, commercialImpact
+const TOTAL_LOADERS = 6;
 
 const GAP_LABELS = { catalog: "catalog", policy: "policy", capability: "capability", other: "other" };
 const STATUS_LABELS = { out_of_stock: "out of stock", not_carried: "not carried", unknown: "unknown" };
@@ -1384,6 +1384,80 @@ function DevOpsAccordion({ stats, cacheEconomics, usageByKey, costReconciliation
   );
 }
 
+
+/* ---------- C5: commercial impact hero (Rufus-style plain numbers) ---------- */
+function CommercialImpactHero({ data, isLifetime }) {
+  if (!data) return null;
+  const spend = data.spend != null ? fmtUsd(data.spend, true) : "\u2014";
+  const revenue =
+    data.influenced_revenue != null ? fmtUsd(data.influenced_revenue, true) : "\u2014";
+  const rpd =
+    data.revenue_per_dollar != null ? `$${data.revenue_per_dollar.toFixed(2)}` : "\u2014";
+  const convRate =
+    data.conversion_rate != null ? `${(data.conversion_rate * 100).toFixed(1)}%` : "\u2014";
+  const convSub =
+    data.converting_conversations != null && data.conversations != null
+      ? `${data.converting_conversations} of ${data.conversations} conversations`
+      : "Share of conversations ending in purchase";
+
+  return (
+    <div className="cr__labor-section">
+      <div className="cr__labor-grid">
+        <div className="cr__labor-card cr__labor-card--spend">
+          <div className="cr__labor-card-top">
+            <span className="cr__labor-label">AI Spend</span>
+            <span style={{ fontSize: "15px" }}>\uD83E\uDD16</span>
+          </div>
+          <div className="cr__labor-val">{spend}</div>
+          <div className="cr__labor-sub">
+            {isLifetime ? "Anthropic cost since June 1, 2026" : "Anthropic cost this month"}
+          </div>
+        </div>
+
+        <div className="cr__labor-card cr__labor-card--savings">
+          <div className="cr__labor-card-top">
+            <span className="cr__labor-label">Chat-Influenced Revenue</span>
+            <span style={{ fontSize: "15px" }}>\uD83D\uDCB0</span>
+          </div>
+          <div className="cr__labor-val cr__labor-val--savings">{revenue}</div>
+          <div className="cr__labor-sub">
+            From products the assistant recommended{data.mixed_currencies ? ` (${data.currency}, mixed currencies)` : ""}
+          </div>
+        </div>
+
+        <div className="cr__labor-card cr__labor-card--labor">
+          <div className="cr__labor-card-top">
+            <span className="cr__labor-label">Return per $1 of AI Spend</span>
+            <span style={{ fontSize: "15px" }}>\uD83D\uDCC8</span>
+          </div>
+          <div className="cr__labor-val">{rpd}</div>
+          <div className="cr__labor-sub">Revenue back for every $1 of AI spend</div>
+        </div>
+
+        <div className="cr__labor-card cr__labor-card--hours">
+          <div className="cr__labor-card-top">
+            <span className="cr__labor-label">Conversations \u2192 Purchase</span>
+            <span style={{ fontSize: "15px" }}>\uD83D\uDED2</span>
+          </div>
+          <div className="cr__labor-val">{convRate}</div>
+          <div className="cr__labor-sub">{convSub}</div>
+        </div>
+      </div>
+      {data.methodology && (
+        <p className="cr__prov" style={{ marginTop: "10px" }}>
+          {data.methodology}
+          {data.data_as_of
+            ? ` Data as of ${new Date(data.data_as_of).toLocaleString()}.`
+            : ""}
+          {data.unlinked_orders > 0
+            ? ` ${data.unlinked_orders} attributed order${data.unlinked_orders === 1 ? "" : "s"} could not be matched to a logged conversation.`
+            : ""}
+        </p>
+      )}
+    </div>
+  );
+}
+
 /* ---------- circular progress with centered percentage ---------- */
 function CircularProgress({ percent, size = 76, strokeWidth = 5.5, label }) {
   const isDeterminate = typeof percent === "number" && !isNaN(percent);
@@ -1525,6 +1599,7 @@ function HomeView() {
   const [statsError, setStatsError] = useState(false);
   const [usageByKey, setUsageByKey] = useState(null);
   const [costReconciliation, setCostReconciliation] = useState(null);
+  const [commercialImpact, setCommercialImpact] = useState(null);
   const [cacheEconomics, setCacheEconomics] = useState(null);
   const [insights, setInsights] = useState(null);
   const [firstLoad, setFirstLoad] = useState(true);
@@ -1605,6 +1680,27 @@ function HomeView() {
     [navigate]
   );
 
+  const loadCommercialImpact = useCallback(
+    async (month, refresh) => {
+      try {
+        const params = new URLSearchParams();
+        if (month) params.set("month", month);
+        if (refresh) params.set("refresh", "1");
+        const qs = params.toString();
+        const res = await fetch(`${API_URL}/api/cost/commercial_impact/${qs ? `?${qs}` : ""}`, {
+          credentials: "include",
+        });
+        if (res.status === 401 || res.status === 403) return navigate("/");
+        setCommercialImpact(await res.json());
+      } catch {
+        // Non-critical panel -- the rest of the dashboard still works without it.
+      } finally {
+        setLoadProgress((p) => p + 1);
+      }
+    },
+    [navigate]
+  );
+
   const loadCacheEconomics = useCallback(
     async (month, refresh) => {
       try {
@@ -1674,8 +1770,9 @@ function HomeView() {
       loadUsageByKey(arg, refresh);
       loadCostReconciliation(arg, refresh);
       loadCacheEconomics(arg, refresh);
+      loadCommercialImpact(arg, refresh);
     },
-    [loadStats, loadInsights, loadUsageByKey, loadCostReconciliation, loadCacheEconomics]
+    [loadStats, loadInsights, loadUsageByKey, loadCostReconciliation, loadCacheEconomics, loadCommercialImpact]
   );
 
   useEffect(() => {
@@ -1928,6 +2025,9 @@ function HomeView() {
 
           {/* Retail Labor Cost Savings & Economics */}
           <LaborSavingsHero stats={stats} isLifetime={isLifetime} />
+
+          {/* C5: Commercial Impact -- Rufus-style plain numbers */}
+          <CommercialImpactHero data={commercialImpact} isLifetime={isLifetime} />
 
           {insights?.regenerating && (
             <p className="cr__notice">Refreshing this month&rsquo;s insights in the background…</p>

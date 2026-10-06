@@ -1,6 +1,7 @@
 """Month-scoped cost / token / engagement stats for the home dashboard."""
 import calendar
 import os
+from decimal import Decimal
 
 from .api_auth import api_login_required
 from django.core.cache import cache
@@ -11,7 +12,7 @@ from django.utils import timezone
 
 from . import views as base_views
 from .llm_provider_adapter_implementations import app_api_key_ids, chat_api_key_ids
-from .models import Chat, Message
+from .models import AttributedOrder, Chat, Message
 from .month_utils import (
     CONVERSATION_START_DATE,
     current_month_start,
@@ -1226,5 +1227,77 @@ def cache_economics(request):
         "cost_source_error": usage_err,
     }
     if not usage_err:
+        cache.set(key, payload, CURRENT_TTL if month_start == current else PAST_TTL)
+    return JsonResponse(payload)
+
+
+COMMERCIAL_IMPACT_METHODOLOGY = (
+    "Influenced revenue = revenue from products the assistant recommended (main + add-on picks), "
+    "at price paid after discounts. Excludes shipping/tax. Spend = this app's Anthropic API cost "
+    "(same chat-surface scoping as the dashboard). A conversation counts as converting when at "
+    "least one attributed order links to its chat id."
+)
+
+
+@api_login_required
+def commercial_impact(request):
+    """Rufus-style commercial metrics for the store, in plain numbers: AI spend
+    vs chat-influenced revenue, return per $1 of AI spend, and the share of
+    conversations ending in purchase. Revenue comes from AttributedOrder rows
+    ingested via log_attribution/ (the chatbot's ENG-161 attribution pipeline);
+    spend reuses _spend_for's chat-surface-scoped figure so both sides of the
+    ratio describe the same traffic.
+
+    The methodology string is part of the response on purpose -- the brief's
+    $12B figure ships with "methodology undisclosed"; this panel shows its work.
+    """
+    month_param = request.GET.get("month")
+    current = current_month_start()
+
+    month_start = current
+    if month_param:
+        parsed = parse_month_param(month_param)
+        if parsed is None:
+            return JsonResponse({"error": "invalid month; expected YYYY-MM"}, status=400)
+        month_start = parsed
+    start, end = month_range(month_start)
+
+    key = f"commercial_impact:{month_start:%Y-%m}"
+    cached = cache.get(key)
+    if cached is not None:
+        return JsonResponse({**cached, "cached": True})
+
+    rates_resp = _rates_resp_for(month_start)
+    spend, _, cost_err = _spend_for(month_start, rates_resp)
+
+    orders = AttributedOrder.objects.filter(order_created_at__gte=start, order_created_at__lt=end)
+
+    revenue = sum((o.influenced_revenue for o in orders), Decimal("0"))
+    by_currency = {}
+    for o in orders:
+        by_currency[o.currency] = by_currency.get(o.currency, Decimal("0")) + o.influenced_revenue
+    currency = max(by_currency, key=by_currency.get) if by_currency else "USD"
+
+    convs = _chat_qs(month_start).count()
+    converting = orders.values("chat_id_raw").distinct().count()
+    unlinked = orders.filter(chat__isnull=True).count()
+
+    payload = {
+        "month": month_start.strftime("%Y-%m"),
+        "spend": spend,
+        "influenced_revenue": float(revenue),
+        "revenue_per_dollar": round(float(revenue) / spend, 2) if spend else None,
+        "currency": currency,
+        "mixed_currencies": len(by_currency) > 1,
+        "orders_count": orders.count(),
+        "conversations": convs,
+        "converting_conversations": converting,
+        "conversion_rate": round(converting / convs, 4) if convs else None,
+        "unlinked_orders": unlinked,
+        "methodology": COMMERCIAL_IMPACT_METHODOLOGY,
+        "data_as_of": timezone.now().isoformat(),
+        "cost_source_error": cost_err,
+    }
+    if not cost_err:
         cache.set(key, payload, CURRENT_TTL if month_start == current else PAST_TTL)
     return JsonResponse(payload)

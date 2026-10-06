@@ -11,7 +11,7 @@ from django.contrib.auth.models import User
 from django.core.management import call_command
 from django.test import TestCase, override_settings
 
-from .models import Chat, Message
+from .models import AttributedOrder, Chat, Message
 from .issue_trackers import GitHubIssueTracker, IssueRef, IssueTrackerError, LinearIssueTracker
 
 
@@ -4356,3 +4356,191 @@ class AnthropicRateLimitAndRetryTests(TestCase):
 
 
 
+
+
+def make_attribution_payload(chat_id="conv-attr-1", order_id="1001", **overrides):
+    payload = {
+        "chat_id": chat_id,
+        "shop": "test-shop.myshopify.com",
+        "order_id": order_id,
+        "attribution_type": "influenced",
+        "influenced_revenue": "89.99",
+        "order_total": "104.99",
+        "currency": "USD",
+        "order_created_at": "2026-10-06T12:00:00Z",
+        "surfaces": ["chat"],
+        "influence_score": 0.85,
+    }
+    payload.update(overrides)
+    return payload
+
+
+class LogAttributionTests(TestCase):
+    def test_happy_path_creates_row_and_links_chat(self):
+        Chat.objects.create(chat_id="conv-attr-1", model="claude-haiku-4-5")
+        response = self.client.post(
+            "/api/cost/log_attribution/",
+            data=json.dumps(make_attribution_payload()),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "success")
+
+        order = AttributedOrder.objects.get(shop="test-shop.myshopify.com", order_id="1001")
+        self.assertEqual(order.chat.chat_id, "conv-attr-1")
+        self.assertEqual(order.chat_id_raw, "conv-attr-1")
+        self.assertEqual(float(order.influenced_revenue), 89.99)
+        self.assertEqual(order.currency, "USD")
+        self.assertEqual(order.surfaces, ["chat"])
+
+    def test_replay_of_same_order_updates_instead_of_duplicating(self):
+        first = make_attribution_payload()
+        replay = make_attribution_payload(influenced_revenue="95.50", order_total="110.00")
+        for payload in (first, replay):
+            response = self.client.post(
+                "/api/cost/log_attribution/",
+                data=json.dumps(payload),
+                content_type="application/json",
+            )
+            self.assertEqual(response.status_code, 200)
+
+        qs = AttributedOrder.objects.filter(shop="test-shop.myshopify.com", order_id="1001")
+        self.assertEqual(qs.count(), 1)
+        self.assertEqual(float(qs.get().influenced_revenue), 95.50)
+
+    def test_unknown_chat_id_still_stored_unlinked(self):
+        # Attribution must never lose revenue: a chat_id with no Chat row
+        # stores with chat=NULL so commercial_impact can surface it as
+        # `unlinked_orders` (join-key drift canary).
+        response = self.client.post(
+            "/api/cost/log_attribution/",
+            data=json.dumps(make_attribution_payload(chat_id="never-logged")),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        order = AttributedOrder.objects.get(order_id="1001")
+        self.assertIsNone(order.chat)
+        self.assertEqual(order.chat_id_raw, "never-logged")
+
+    def test_missing_chat_id_or_order_id_is_400(self):
+        for payload in (
+            make_attribution_payload(chat_id=""),
+            make_attribution_payload(order_id=""),
+        ):
+            response = self.client.post(
+                "/api/cost/log_attribution/",
+                data=json.dumps(payload),
+                content_type="application/json",
+            )
+            self.assertEqual(response.status_code, 400)
+
+    def test_requires_post(self):
+        self.assertEqual(self.client.get("/api/cost/log_attribution/").status_code, 405)
+
+    def test_no_login_required_like_log_message(self):
+        # Ingestion is server-to-server, fire-and-forget -- same shape as log_message.
+        response = self.client.post(
+            "/api/cost/log_attribution/",
+            data=json.dumps(make_attribution_payload(order_id="2002")),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+
+
+class CommercialImpactTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.user = User.objects.create_user(username="owner", password="pw")
+        self.this_month = _now().replace(day=1, hour=12, minute=0, second=0, microsecond=0)
+
+    def tearDown(self):
+        cache.clear()
+
+    def _seed(self, chat_id, revenue, when=None, currency="USD", order_id=None):
+        when = when or self.this_month.replace(day=10)
+        Chat.objects.create(chat_id=chat_id, model="claude-haiku-4-5")
+        AttributedOrder.objects.create(
+            chat_id_raw=chat_id,
+            chat=Chat.objects.get(chat_id=chat_id),
+            shop="test-shop.myshopify.com",
+            order_id=order_id or f"ord-{chat_id}",
+            influenced_revenue=revenue,
+            order_total=revenue,
+            currency=currency,
+            order_created_at=when,
+        )
+
+    def _patch_spend(self, spend):
+        p = patch(
+            "cost_management.stats_views._spend_for",
+            return_value=(spend, [], None),
+        )
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_requires_login(self):
+        self.assertEqual(self.client.get("/api/cost/commercial_impact/").status_code, 401)
+
+    def test_four_numbers_and_methodology(self):
+        self._patch_spend(10.0)
+        self._seed("c1", 100, order_id="o1")
+        self._seed("c2", 50, order_id="o2")
+        Chat.objects.create(chat_id="c3-no-order", model="claude-haiku-4-5")
+        self.client.force_login(self.user)
+
+        d = self.client.get("/api/cost/commercial_impact/").json()
+
+        self.assertEqual(d["spend"], 10.0)
+        self.assertEqual(d["influenced_revenue"], 150.0)
+        self.assertEqual(d["revenue_per_dollar"], 15.0)
+        self.assertEqual(d["conversations"], 3)
+        self.assertEqual(d["converting_conversations"], 2)
+        self.assertAlmostEqual(d["conversion_rate"], 2 / 3, places=4)
+        self.assertEqual(d["currency"], "USD")
+        self.assertFalse(d["mixed_currencies"])
+        self.assertIn("Influenced revenue", d["methodology"])
+        self.assertIn("data_as_of", d)
+
+    def test_revenue_per_dollar_is_null_when_spend_is_zero(self):
+        # Never a 0/0 artifact -- null renders as an em dash, not a lie.
+        self._patch_spend(0)
+        self._seed("c1", 100, order_id="o1")
+        self.client.force_login(self.user)
+
+        d = self.client.get("/api/cost/commercial_impact/").json()
+        self.assertIsNone(d["revenue_per_dollar"])
+        self.assertEqual(d["influenced_revenue"], 100.0)
+
+    def test_mixed_currencies_flagged_with_majority_currency(self):
+        self._patch_spend(10.0)
+        self._seed("c1", 200, currency="USD", order_id="o1")
+        self._seed("c2", 50, currency="CAD", order_id="o2")
+        self.client.force_login(self.user)
+
+        d = self.client.get("/api/cost/commercial_impact/").json()
+        self.assertTrue(d["mixed_currencies"])
+        self.assertEqual(d["currency"], "USD")
+
+    def test_unlinked_orders_surfaced_as_canary(self):
+        self._patch_spend(10.0)
+        # No Chat row for ghost-chat: stored unlinked by log_attribution.
+        AttributedOrder.objects.create(
+            chat_id_raw="ghost-chat",
+            chat=None,
+            shop="test-shop.myshopify.com",
+            order_id="o-ghost",
+            influenced_revenue=25,
+            order_total=25,
+            currency="USD",
+            order_created_at=self.this_month.replace(day=10),
+        )
+        self.client.force_login(self.user)
+
+        d = self.client.get("/api/cost/commercial_impact/").json()
+        self.assertEqual(d["unlinked_orders"], 1)
+        self.assertEqual(d["influenced_revenue"], 25.0)
+
+    def test_invalid_month_param(self):
+        self.client.force_login(self.user)
+        response = self.client.get("/api/cost/commercial_impact/?month=nope")
+        self.assertEqual(response.status_code, 400)

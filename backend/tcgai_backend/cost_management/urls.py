@@ -10,6 +10,7 @@ urlpatterns = [
     path('get_cost/', views.get_cost, name='get_cost'),
     path('get_tokens/', views.get_tokens, name='get_cost'),
     path('log_message/', views.log_message, name='log_message'),
+    path('log_attribution/', views.log_attribution, name='log_attribution'),
     path('get_messages/', views.get_messages, name='get_messages'),
     path('get_chat_ids/', views.get_chat_ids, name='get_chat_ids'),
     path('get_messages_by_chat_id/<str:chat_id>/', views.get_messages_by_chat_id, name='get_messages_by_chat_id'),
@@ -28,5 +29,6 @@ urlpatterns = [
     path('get_model_rates/', stats_views.model_rates, name='get_model_rates'),
     path('get_usage_by_key/', stats_views.usage_by_key, name='get_usage_by_key'),
     path('cost_reconciliation/', stats_views.cost_reconciliation, name='cost_reconciliation'),
+    path('commercial_impact/', stats_views.commercial_impact, name='commercial_impact'),
     path('cache_economics/', stats_views.cache_economics, name='cache_economics'),
 ]
