@@ -127,3 +127,52 @@ class Message(models.Model):
 
     def __str__(self):
         return f"Message in Chat {self.chat.chat_id}"
+
+
+class AttributedOrder(models.Model):
+    """Revenue the upstream chatbot attributes to one of its conversations.
+
+    Ingested via POST /api/cost/log_attribution/ (fire-and-forget, same
+    unauthenticated shape as log_message/), emitted by the chatbot's
+    AttributionService.createAttribution when its ENG-161 pipeline scores an
+    order. Powers the C5 commercial-impact panel: chat-influenced revenue
+    against AI spend, in Rufus-style plain numbers.
+
+    The join key is OrderAttribution.agentSessionId == Chat.chat_id (the
+    chatbot posts its conversation_id as chat_id). `chat` stays nullable:
+    attribution can arrive for a chat_id that was never logged (e.g. logging
+    disabled for that turn), and that must not lose the revenue row --
+    commercial_impact surfaces those rows as `unlinked_orders` (a canary for
+    join-key drift).
+    """
+
+    chat = models.ForeignKey(
+        Chat, null=True, blank=True, on_delete=models.SET_NULL,
+        to_field="chat_id", related_name="attributed_orders",
+    )
+    chat_id_raw = models.CharField(max_length=255, db_index=True)
+    shop = models.CharField(max_length=255, db_index=True, default="")
+    order_id = models.CharField(max_length=255)
+    attribution_type = models.CharField(max_length=20, default="influenced")
+    # Influenced revenue = recommended (main + add-on) revenue at price paid
+    # after discounts, per ENG-161. Excludes shipping/tax by construction.
+    influenced_revenue = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    order_total = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    currency = models.CharField(max_length=3, default="USD")
+    order_created_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    surfaces = models.JSONField(null=True, blank=True)
+    influence_score = models.FloatField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            # Webhook replays must be idempotent: the same order scored twice
+            # updates the row instead of double-counting revenue.
+            models.UniqueConstraint(
+                fields=["shop", "order_id"], name="unique_shop_order_attribution"
+            ),
+        ]
+        ordering = ["-order_created_at"]
+
+    def __str__(self):
+        return f"{self.shop} order {self.order_id} -> chat {self.chat_id_raw}"

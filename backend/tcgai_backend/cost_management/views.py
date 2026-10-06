@@ -1,16 +1,18 @@
 from django.http import JsonResponse
 from .llm_provider_adapter_implementations import AnthropicAdapter
-from .models import Chat, Message
+from .models import AttributedOrder, Chat, Message
 from django.views.decorators.http import require_http_methods
 from django.views.decorators.csrf import csrf_exempt
 import json
 import math
+from decimal import Decimal, InvalidOperation
 from django.contrib.auth import authenticate, login, logout
 import anthropic
 import os
 from django.db import transaction
 from django.db.models import Avg, Count, IntegerField, Q, Sum, Value
 from django.db.models.functions import Coalesce, TruncDate
+from django.utils.dateparse import parse_datetime
 from django.utils.timezone import now
 from datetime import datetime, timedelta, timezone as dt_timezone
 from .api_auth import api_login_required
@@ -580,3 +582,73 @@ def get_avg_conversations_per_day(request):
         return JsonResponse({"average_conversations_per_day": avg_per_day})
     except Exception as e:
         return JsonResponse({'status': 'error', 'message': str(e)}, status=400)
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def log_attribution(request):
+    """Fire-and-forget revenue attribution ingestion from the chatbot's ENG-161
+    pipeline (AttributionService.createAttribution, called when an order is
+    scored). Same unauthenticated shape as log_message: the chatbot posts
+    server-side with no session, so this route is csrf_exempt and login-free
+    by design -- it only ever writes AttributedOrder rows.
+
+    Idempotent on (shop, order_id): Shopify webhook replays / rescoring update
+    the row instead of double-counting revenue. Attribution for a chat_id with
+    no Chat row is still stored (chat left null) -- commercial_impact surfaces
+    those rows as `unlinked_orders`, a canary for join-key drift.
+    """
+    try:
+        data = json.loads(request.body)
+        chat_id = data.get("chat_id")
+        shop = str(data.get("shop") or "")
+        order_id = data.get("order_id")
+        if not chat_id or not order_id:
+            return JsonResponse(
+                {"status": "error", "message": "chat_id and order_id are required"},
+                status=400,
+            )
+
+        def _dec(value):
+            try:
+                return Decimal(str(value)) if value is not None else Decimal("0")
+            except (InvalidOperation, ValueError, TypeError):
+                return Decimal("0")
+
+        order_created_at = data.get("order_created_at")
+        if isinstance(order_created_at, str):
+            try:
+                order_created_at = parse_datetime(order_created_at)
+            except (ValueError, TypeError):
+                order_created_at = None
+
+        surfaces = data.get("surfaces")
+        if not isinstance(surfaces, list):
+            surfaces = None
+
+        influence_score = data.get("influence_score")
+        try:
+            influence_score = float(influence_score) if influence_score is not None else None
+        except (ValueError, TypeError):
+            influence_score = None
+
+        chat = Chat.objects.filter(chat_id=str(chat_id)).first()
+
+        with transaction.atomic():
+            obj, created = AttributedOrder.objects.update_or_create(
+                shop=shop,
+                order_id=str(order_id),
+                defaults={
+                    "chat": chat,
+                    "chat_id_raw": str(chat_id),
+                    "attribution_type": str(data.get("attribution_type") or "influenced")[:20],
+                    "influenced_revenue": _dec(data.get("influenced_revenue")),
+                    "order_total": _dec(data.get("order_total")),
+                    "currency": str(data.get("currency") or "USD")[:3].upper(),
+                    "order_created_at": order_created_at,
+                    "surfaces": surfaces,
+                    "influence_score": influence_score,
+                },
+            )
+        return JsonResponse({"status": "success", "created": created})
+    except Exception as e:
+        return JsonResponse({"status": "error", "message": str(e)}, status=400)
