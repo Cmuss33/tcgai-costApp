@@ -1406,7 +1406,7 @@ function CommercialImpactHero({ data, isLifetime }) {
         <div className="cr__labor-card cr__labor-card--spend">
           <div className="cr__labor-card-top">
             <span className="cr__labor-label">AI Spend</span>
-            <span style={{ fontSize: "15px" }}>\uD83E\uDD16</span>
+            <span style={{ fontSize: "15px" }}>🤖</span>
           </div>
           <div className="cr__labor-val">{spend}</div>
           <div className="cr__labor-sub">
@@ -1417,7 +1417,7 @@ function CommercialImpactHero({ data, isLifetime }) {
         <div className="cr__labor-card cr__labor-card--savings">
           <div className="cr__labor-card-top">
             <span className="cr__labor-label">Chat-Influenced Revenue</span>
-            <span style={{ fontSize: "15px" }}>\uD83D\uDCB0</span>
+            <span style={{ fontSize: "15px" }}>💰</span>
           </div>
           <div className="cr__labor-val cr__labor-val--savings">{revenue}</div>
           <div className="cr__labor-sub">
@@ -1428,7 +1428,7 @@ function CommercialImpactHero({ data, isLifetime }) {
         <div className="cr__labor-card cr__labor-card--labor">
           <div className="cr__labor-card-top">
             <span className="cr__labor-label">Return per $1 of AI Spend</span>
-            <span style={{ fontSize: "15px" }}>\uD83D\uDCC8</span>
+            <span style={{ fontSize: "15px" }}>📈</span>
           </div>
           <div className="cr__labor-val">{rpd}</div>
           <div className="cr__labor-sub">Revenue back for every $1 of AI spend</div>
@@ -1436,8 +1436,8 @@ function CommercialImpactHero({ data, isLifetime }) {
 
         <div className="cr__labor-card cr__labor-card--hours">
           <div className="cr__labor-card-top">
-            <span className="cr__labor-label">Conversations \u2192 Purchase</span>
-            <span style={{ fontSize: "15px" }}>\uD83D\uDED2</span>
+            <span className="cr__labor-label">Conversations → Purchase</span>
+            <span style={{ fontSize: "15px" }}>🛒</span>
           </div>
           <div className="cr__labor-val">{convRate}</div>
           <div className="cr__labor-sub">{convSub}</div>
