@@ -1822,3 +1822,78 @@ section[aria-label="Operator missions"] .cr__mission-card {
 }
 
 
+
+/* ---------- C4: alerts & preference memory ---------- */
+.cr__btn {
+  padding: 6px 14px; font-family: var(--font-m); font-size: 11px;
+  color: var(--text); background: var(--panel-2); border: 1px solid var(--edge);
+  border-radius: 8px; cursor: pointer; white-space: nowrap;
+}
+.cr__btn:hover { border-color: var(--a-eval); color: var(--a-eval); }
+.cr__btn--ghost { background: transparent; }
+.cr__btn--danger:hover { border-color: #f87171; color: #f87171; }
+
+.cr__alert-rules { display: grid; gap: 10px; margin: 12px 0; }
+.cr__alert-rule {
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 12px; padding: 12px 14px;
+}
+.cr__alert-rule.is-breaching { border-color: rgba(245, 165, 36, 0.45); }
+.cr__alert-rule.is-off { opacity: 0.55; }
+.cr__alert-rule-head {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 10px;
+  margin-bottom: 6px;
+}
+.cr__alert-rule-type {
+  display: block; color: var(--faint); font-size: 0.8rem; margin-top: 2px;
+}
+.cr__alert-status {
+  font-size: 0.75rem; font-weight: 600; padding: 3px 10px; border-radius: 999px;
+  border: 1px solid var(--edge); white-space: nowrap;
+}
+.cr__alert-status--ok { color: #2fe0a6; border-color: #2fe0a655; }
+.cr__alert-status--breach { color: #f5c56c; border-color: #f5a52466; }
+.cr__alert-status--off { color: var(--faint); }
+.cr__alert-meta {
+  display: flex; flex-wrap: wrap; gap: 4px 14px;
+  color: var(--dim); font-size: 0.85rem; margin-bottom: 8px;
+}
+.cr__alert-hint { color: var(--faint); font-size: 0.8rem; margin: 8px 0 0; }
+.cr__alert-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.cr__alert-edit {
+  display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; margin-bottom: 8px;
+}
+.cr__alert-edit label, .cr__alert-add-row label {
+  display: flex; flex-direction: column; gap: 4px;
+  font-size: 0.8rem; color: var(--dim);
+}
+.cr__alert-edit input, .cr__alert-add-row input, .cr__alert-add-row select {
+  font-family: var(--font-m); font-size: 0.9rem; color: var(--text);
+  background: var(--panel-2); border: 1px solid var(--edge);
+  border-radius: 8px; padding: 6px 10px; min-width: 0;
+}
+.cr__alert-edit input { width: 130px; }
+.cr__alert-add {
+  border: 1px dashed rgba(255, 255, 255, 0.12); border-radius: 12px;
+  padding: 12px 14px; margin: 12px 0;
+}
+.cr__alert-add-row {
+  display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; margin-top: 8px;
+}
+.cr__alert-add-row input { width: 110px; }
+.cr__alert-firings { margin: 12px 0; display: grid; gap: 8px; }
+.cr__alert-firing {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  background: rgba(255, 255, 255, 0.02); border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 10px; padding: 8px 12px; font-size: 0.88rem;
+}
+.cr__alert-prefs {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  color: var(--dim); font-size: 0.88rem; margin-top: 12px;
+}
+
+@media (max-width: 600px) {
+  .cr__alert-rule-head { flex-direction: column; }
+  .cr__alert-firing { flex-direction: column; align-items: flex-start; }
+}

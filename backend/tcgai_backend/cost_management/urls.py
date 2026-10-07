@@ -5,6 +5,7 @@ from . import insights_views
 from . import stats_views
 from . import sso
 from . import verdicts
+from . import alerts_views
 
 urlpatterns = [
     path('sso_login/', sso.sso_login, name='sso_login'),
@@ -34,4 +35,9 @@ urlpatterns = [
     path('commercial_impact/', stats_views.commercial_impact, name='commercial_impact'),
     path('cache_economics/', stats_views.cache_economics, name='cache_economics'),
     path('verdicts/', verdicts.verdict_cards, name='verdicts'),
+    path('alert_rules/', alerts_views.alert_rules, name='alert_rules'),
+    path('alert_rules/<int:rule_id>/', alerts_views.alert_rule_detail, name='alert_rule_detail'),
+    path('alert_firings/<int:firing_id>/acknowledge/', alerts_views.alert_firing_acknowledge, name='alert_firing_acknowledge'),
+    path('preferences/', alerts_views.preferences, name='preferences'),
+    path('preferences/<str:key>/', alerts_views.preference_detail, name='preference_detail'),
 ]
