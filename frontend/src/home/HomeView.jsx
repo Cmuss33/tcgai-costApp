@@ -7,7 +7,7 @@ const POLL_MS = 2500;
 const MAX_POLLS = 35;
 // stats, insights (first response only -- not each poll),
 // costReconciliation, cacheEconomics, commercialImpact
-const TOTAL_LOADERS = 6;
+const TOTAL_LOADERS = 7;
 
 const STATUS_LABELS = { out_of_stock: "out of stock", not_carried: "not carried", unknown: "unknown" };
 const ASSESSMENT_LABELS = {
@@ -1420,6 +1420,233 @@ function VerdictCard({ card }) {
   );
 }
 
+/* ---------- C2: operator missions -- guided checklists over live endpoints ----------
+   A mission is a checklist with LIVE values, never a wizard. Each step shows its
+   number, links its evidence, and marks itself done from the underlying endpoint's
+   current value. Deterministic -- no model narration.
+   Done-criteria live in the constants below (documented). Thresholds are read from
+   live responses at render; nothing is hardcoded in copy (mission-rot guard:
+   if an endpoint changes, the steps follow it). */
+const RECON_OK_PCT = 5; // same bar as the C3 reconciliation verdict
+const AUDIT_COVERAGE_PCT = 80; // min scored-chat coverage for a meaningful budget audit
+const BUDGET_THEME_RE = /budget|over-?budget|pric/i; // pricing/budget failure themes
+const NEEDS_ATTENTION_LIMIT = 50;
+
+function MissionChatLinks({ chats }) {
+  if (!chats || chats.length === 0) return null;
+  return (
+    <div className="cr__ex">
+      {chats.map((c) => (
+        <Link key={c.chat_id} to={`/chats?chat=${encodeURIComponent(c.chat_id)}`}>
+          {c.evaluation_score != null ? `${c.evaluation_score}%` : "flagged"}
+        </Link>
+      ))}
+    </div>
+  );
+}
+
+function MissionStep({ step }) {
+  const check = step.done == null ? "⏳" : step.done ? "✅" : "⬜";
+  return (
+    <li className={`cr__mission-step${step.done ? " is-done" : ""}`}>
+      <span className="cr__mission-check" aria-hidden="true">
+        {check}
+      </span>
+      <div className="cr__mission-step-body">
+        <div>
+          {step.label}: <strong>{step.value}</strong>
+        </div>
+        {step.detail && step.done === false && <div className="cr__muted">{step.detail}</div>}
+        {step.chatLinks && <MissionChatLinks chats={step.chatLinks} />}
+        {step.themeLinks && <ExampleLinks ids={step.themeLinks} />}
+        {step.done === false && step.href && (
+          <a className="cr__verdict-link" href={step.href}>
+            {step.hrefLabel ?? "See the numbers →"}
+          </a>
+        )}
+      </div>
+    </li>
+  );
+}
+
+function MissionCard({ icon, title, blurb, steps }) {
+  const known = steps.filter((s) => s.done != null);
+  const doneCount = known.filter((s) => s.done).length;
+  const allDone = known.length === steps.length && doneCount === steps.length;
+  return (
+    <div className={`cr__mission-card${allDone ? " is-done" : ""}`}>
+      <div className="cr__mission-head">
+        <span aria-hidden="true">{allDone ? "✅" : icon}</span>
+        <div>
+          <strong>{title}</strong>
+          <div className="cr__muted">{blurb}</div>
+        </div>
+        <span className="cr__mission-progress">
+          {doneCount}/{steps.length}
+        </span>
+      </div>
+      <ul className="cr__mission-steps">
+        {steps.map((s, i) => (
+          <MissionStep key={i} step={s} />
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function buildMissions({ stats, costReconciliation, cacheEconomics, insights, needsAttention }) {
+  const missions = [];
+
+  // Mission 1: Cut cost 20% -- the three cost levers, each with a live number.
+  // Done when caching pays off, spend reconciles, and unit cost isn't rising.
+  const recon = costReconciliation ?? {};
+  const billed = recon.billed_spend;
+  const unacc = recon.unaccounted;
+  const reconReady = billed != null && unacc != null && billed > 0;
+  const reconPct = reconReady ? (unacc / billed) * 100 : null;
+  const cacheVerdict = cacheEconomics?.verdict;
+  const cacheSavings = cacheEconomics?.savings;
+  const pc = stats?.per_conversation ?? {};
+  const costDelta = pc.cost_delta_pct;
+  missions.push({
+    id: "cut-cost",
+    icon: "💸",
+    title: "Cut cost 20%",
+    blurb: "The three levers that move AI spend, with live numbers.",
+    steps: [
+      {
+        label: "Prompt caching is paying off",
+        value:
+          cacheVerdict == null
+            ? "…"
+            : cacheVerdict === "helping"
+            ? `saving ${fmtUsd(cacheSavings, true)}`
+            : `costing ${fmtUsd(cacheSavings != null ? -cacheSavings : null, true)} extra`,
+        done: cacheVerdict == null ? null : cacheVerdict === "helping",
+        detail: "Flag the cache-miss pattern to your developer.",
+        href: "#panel-cache-economics",
+      },
+      {
+        label: "Every billed dollar is accounted for",
+        value: reconPct == null ? "…" : `${reconPct.toFixed(1)}% unaccounted`,
+        done: reconPct == null ? null : reconPct < RECON_OK_PCT,
+        detail: "Compare against the Anthropic dashboard for rejected or unlogged calls.",
+        href: "#panel-cost-reconciliation",
+      },
+      {
+        label: "Cost per conversation is falling",
+        value:
+          pc.cost == null
+            ? "…"
+            : `${fmtUsd(pc.cost, true)}/convo${
+                costDelta != null
+                  ? ` (${costDelta <= 0 ? "↓" : "↑"}${Math.abs(costDelta).toFixed(1)}% vs last month)`
+                  : ""
+              }`,
+        done: costDelta == null ? null : costDelta <= 0,
+        detail: "Find what got more expensive per chat.",
+      },
+    ],
+  });
+
+  // Mission 2: Find this week's worst conversations -- the needs-attention queue
+  // (low-scored + flagged chats) plus recurring failure themes. Done when the
+  // queue is empty: every bad chat reviewed and every theme addressed.
+  const chats = needsAttention?.results ?? [];
+  const lowScored = chats
+    .filter((c) => c.evaluation_score != null && c.evaluation_score < 75)
+    .sort((a, b) => a.evaluation_score - b.evaluation_score);
+  const flagged = chats.filter((c) => c.investigation_status === "flagged");
+  const themes = insights?.quality_themes ?? [];
+  missions.push({
+    id: "worst-convos",
+    icon: "🔍",
+    title: "Find this week's worst conversations",
+    blurb: "Every chat that needs your eyes, worst first.",
+    steps: [
+      {
+        label: "Low-scored chats reviewed",
+        value: needsAttention == null ? "…" : `${lowScored.length} below 75`,
+        done: needsAttention == null ? null : lowScored.length === 0,
+        chatLinks: lowScored.slice(0, 5),
+      },
+      {
+        label: "Flagged chats cleared",
+        value: needsAttention == null ? "…" : `${flagged.length} flagged`,
+        done: needsAttention == null ? null : flagged.length === 0,
+        chatLinks: flagged.slice(0, 5),
+      },
+      {
+        label: "Recurring failure themes addressed",
+        value: insights == null ? "…" : `${themes.length} themes`,
+        done: insights == null ? null : themes.length === 0,
+        themeLinks: themes.flatMap((t) => t.examples ?? []).slice(0, 5),
+      },
+    ],
+  });
+
+  // Mission 3: Audit advisor budget compliance.
+  // NOTE: v1 has no per-pick advisor budget telemetry -- the cost app never
+  // receives the shopper's stated budget or the advisor's picks. So this mission
+  // audits what the data supports: (1) eval coverage is high enough for the audit
+  // to mean anything, (2) no pricing/budget failure themes in this month's audit,
+  // (3) the worst chats are clean to spot-check. If advisor telemetry lands later,
+  // step 3 is where its check goes.
+  const coverage = stats?.eval_score?.coverage_pct;
+  const themeHits = themes.filter((t) => BUDGET_THEME_RE.test(`${t.name ?? ""} ${t.summary ?? ""}`));
+  const worst = [...chats]
+    .filter((c) => c.evaluation_score != null)
+    .sort((a, b) => a.evaluation_score - b.evaluation_score)
+    .slice(0, 3);
+  missions.push({
+    id: "budget-audit",
+    icon: "🧾",
+    title: "Audit advisor budget compliance",
+    blurb: "Confirm the advisor respects shopper budgets.",
+    steps: [
+      {
+        label: "Enough chats scored to audit",
+        value: coverage == null ? "…" : `${coverage}% scored`,
+        done: coverage == null ? null : coverage >= AUDIT_COVERAGE_PCT,
+        detail: `Below ${AUDIT_COVERAGE_PCT}% coverage the audit can't be trusted -- run batch evaluation first.`,
+      },
+      {
+        label: "Pricing/budget failure themes",
+        value: insights == null ? "…" : `${themeHits.length} found`,
+        done: insights == null ? null : themeHits.length === 0,
+        themeLinks: themeHits.flatMap((t) => t.examples ?? []).slice(0, 5),
+      },
+      {
+        label: "Worst-chat spot check",
+        value: needsAttention == null ? "…" : worst.length === 0 ? "nothing to check" : `${worst.length} chats to review`,
+        done: needsAttention == null ? null : chats.length === 0,
+        detail: "Open each and confirm the advisor stayed within the shopper's stated budget.",
+        chatLinks: worst,
+      },
+    ],
+  });
+
+  return missions;
+}
+
+function MissionsSection({ stats, costReconciliation, cacheEconomics, insights, needsAttention }) {
+  // stats loads first; missions read live values at render, so wait for it.
+  if (!stats) return null;
+  const missions = buildMissions({ stats, costReconciliation, cacheEconomics, insights, needsAttention });
+  return (
+    <section aria-label="Operator missions">
+      <div className="cr__section-eyebrow">
+        <span>🎯</span> Operator missions
+      </div>
+      <div className="cr__missions-grid">
+        {missions.map((m) => (
+          <MissionCard key={m.id} icon={m.icon} title={m.title} blurb={m.blurb} steps={m.steps} />
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function AttentionSection({ verdicts }) {
   // Verdicts still loading -- nothing to say yet.
   if (!verdicts) return null;
@@ -1586,6 +1813,7 @@ function HomeView() {
   const [commercialImpact, setCommercialImpact] = useState(null);
   const [cacheEconomics, setCacheEconomics] = useState(null);
   const [verdicts, setVerdicts] = useState(null);
+  const [needsAttention, setNeedsAttention] = useState(null);
   const [insights, setInsights] = useState(null);
   const [firstLoad, setFirstLoad] = useState(true);
   const [netError, setNetError] = useState(false);
@@ -1708,6 +1936,27 @@ function HomeView() {
     [navigate]
   );
 
+  const loadNeedsAttention = useCallback(
+    async (refresh) => {
+      try {
+        const params = new URLSearchParams();
+        params.set("filter", "needs_attention");
+        params.set("limit", String(NEEDS_ATTENTION_LIMIT));
+        if (refresh) params.set("refresh", "1");
+        const res = await fetch(`${API_URL}/api/cost/get_chat_ids/?${params.toString()}`, {
+          credentials: "include",
+        });
+        if (res.status === 401 || res.status === 403) return navigate("/");
+        setNeedsAttention(await res.json());
+      } catch {
+        // Non-critical panel -- the rest of the dashboard still works without it.
+      } finally {
+        setLoadProgress((p) => p + 1);
+      }
+    },
+    [navigate]
+  );
+
   const loadInsights = useCallback(
     async ({ month, refresh, poll = 0 } = {}) => {
       setNetError(false);
@@ -1757,8 +2006,9 @@ function HomeView() {
       loadCacheEconomics(arg, refresh);
       loadCommercialImpact(arg, refresh);
       loadVerdicts(arg, refresh);
+      loadNeedsAttention(refresh);
     },
-    [loadStats, loadInsights, loadCostReconciliation, loadCacheEconomics, loadCommercialImpact, loadVerdicts]
+    [loadStats, loadInsights, loadCostReconciliation, loadCacheEconomics, loadCommercialImpact, loadVerdicts, loadNeedsAttention]
   );
 
   useEffect(() => {
@@ -2029,6 +2279,15 @@ function HomeView() {
 
           {/* C3: 4. ATTENTION -- deterministic verdict cards */}
           <AttentionSection verdicts={verdicts} />
+
+          {/* C2: 5. MISSIONS -- guided checklists over live endpoints */}
+          <MissionsSection
+            stats={stats}
+            costReconciliation={costReconciliation}
+            cacheEconomics={cacheEconomics}
+            insights={iview}
+            needsAttention={needsAttention}
+          />
 
           {insights?.regenerating && (
             <p className="cr__notice">Refreshing this month&rsquo;s insights in the background…</p>

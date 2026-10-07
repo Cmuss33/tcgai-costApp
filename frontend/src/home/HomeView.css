@@ -1701,6 +1701,75 @@ section[aria-label="Needs your attention"] .cr__verdict-card {
   border-color: rgba(16, 185, 129, 0.3);
 }
 
+/* ---------- C2: operator missions ---------- */
+.cr__missions-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 12px;
+}
+
+.cr__mission-card {
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 12px;
+  padding: 12px 14px;
+}
+
+section[aria-label="Operator missions"] .cr__mission-card {
+  margin: 0 0 10px;
+}
+
+.cr__mission-card.is-done {
+  border-color: rgba(16, 185, 129, 0.3);
+}
+
+.cr__mission-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.cr__mission-head > div {
+  flex: 1;
+  min-width: 0;
+}
+
+.cr__mission-progress {
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.cr__mission-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cr__mission-step {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.cr__mission-step.is-done {
+  opacity: 0.75;
+}
+
+.cr__mission-check {
+  flex-shrink: 0;
+}
+
+.cr__mission-step-body {
+  flex: 1;
+  min-width: 0;
+}
+
 .cr__verdict-headline {
   font-size: 13px;
   font-weight: 700;
