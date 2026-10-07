@@ -1683,6 +1683,56 @@ section[aria-label] > .cr__section-eyebrow:first-child {
   color: #10b981;
 }
 
+/* C3: verdict cards in the attention section -- tone-coded borders, tight
+   mobile-friendly copy, alternatives tucked behind a <details>. */
+section[aria-label="Needs your attention"] .cr__verdict-card {
+  margin: 0 0 10px;
+}
+
+.cr__verdict-card--bad {
+  border-color: rgba(245, 158, 11, 0.35);
+}
+
+.cr__verdict-card--flat {
+  border-color: rgba(129, 140, 248, 0.35);
+}
+
+.cr__verdict-card--good {
+  border-color: rgba(16, 185, 129, 0.3);
+}
+
+.cr__verdict-headline {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 6px;
+  line-height: 1.4;
+}
+
+.cr__verdict-alts {
+  font-size: 12px;
+  color: var(--dim);
+  margin-top: 6px;
+}
+
+.cr__verdict-alts summary {
+  cursor: pointer;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.cr__verdict-link {
+  display: inline-block;
+  margin-top: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #818cf8;
+  text-decoration: none;
+}
+
 /* Responsive */
 @media (max-width: 1024px) {
   .cr__hero-kpi-grid {

@@ -929,6 +929,39 @@ def usage_by_key(request):
     return JsonResponse(payload)
 
 
+def _cost_reconciliation_for(month_start):
+    """Single-month reconciliation payload, shared by the cost_reconciliation
+    endpoint and C3's verdict cards: billed Anthropic spend (chat-key-scoped,
+    the same numerator cost_pc uses) vs. this month's summed per-chat/
+    per-message LOGGED token estimates. Returns the payload dict the view
+    JSON-serializes; no request parsing or cache handling here."""
+    current = current_month_start()
+
+    # Same one-fetch-per-month sharing as _build_stats above -- get_cost
+    # needs this month's whole-org rate regardless, and _logged_spend_split
+    # below needs the identical rate for its own pricing.
+    rates_resp = _rates_resp_for(month_start)
+    if month_start == current and (rates_resp.get("error") or not rates_resp.get("rates")):
+        prev_rates_resp = _rates_resp_for(prev_month(month_start))
+        if prev_rates_resp.get("rates"):
+            rates_resp = prev_rates_resp
+    spend, _, cost_err = _spend_for(month_start, rates_resp)
+    rates = _rates_from_resp(rates_resp) if spend is not None else {}
+    split = _logged_spend_split(month_start, rates)
+    logged_spend = round(split["real"] + split["bot"], 2)
+
+    return {
+        "month": month_start.strftime("%Y-%m"),
+        "billed_spend": spend,
+        "logged_spend": logged_spend,
+        "real_spend": round(split["real"], 2),
+        "bot_spend": round(split["bot"], 2),
+        "unaccounted": round(spend - logged_spend, 2) if spend is not None else None,
+        "chat_scope_is_app_wide": _chat_scope_is_app_wide(),
+        "cost_source_error": cost_err,
+    }
+
+
 @api_login_required
 def cost_reconciliation(request):
     """Billed Anthropic spend (chat-key-scoped -- the same numerator cost_pc
@@ -1012,32 +1045,83 @@ def cost_reconciliation(request):
         if cached is not None:
             return JsonResponse({**cached, "cached": True})
 
-    # Same one-fetch-per-month sharing as _build_stats above -- get_cost
-    # needs this month's whole-org rate regardless, and _logged_spend_split
-    # below needs the identical rate for its own pricing.
-    rates_resp = _rates_resp_for(month_start)
-    if month_start == current and (rates_resp.get("error") or not rates_resp.get("rates")):
-        prev_rates_resp = _rates_resp_for(prev_month(month_start))
-        if prev_rates_resp.get("rates"):
-            rates_resp = prev_rates_resp
-    spend, _, cost_err = _spend_for(month_start, rates_resp)
-    rates = _rates_from_resp(rates_resp) if spend is not None else {}
-    split = _logged_spend_split(month_start, rates)
-    logged_spend = round(split["real"] + split["bot"], 2)
-
-    payload = {
-        "month": month_start.strftime("%Y-%m"),
-        "billed_spend": spend,
-        "logged_spend": logged_spend,
-        "real_spend": round(split["real"], 2),
-        "bot_spend": round(split["bot"], 2),
-        "unaccounted": round(spend - logged_spend, 2) if spend is not None else None,
-        "chat_scope_is_app_wide": _chat_scope_is_app_wide(),
-        "cost_source_error": cost_err,
-    }
-    if not cost_err:
+    payload = _cost_reconciliation_for(month_start)
+    if not payload["cost_source_error"]:
         cache.set(key, payload, CURRENT_TTL if month_start == current else PAST_TTL)
     return JsonResponse(payload)
+
+
+def _cache_economics_for(month_start):
+    """Single-month cache-economics payload, shared by the cache_economics
+    endpoint and C3's verdict cards: reads-per-write reuse ratio plus the
+    estimated $ actually spent on cached input vs. a baseline pricing the
+    same tokens as though none had ever been cached. Returns the payload
+    dict the view JSON-serializes; no request parsing or cache handling
+    here. The deterministic `verdict` ("helping"/"hurting"/"no_data") is a
+    clean savings>0 check, not a judgment call, so it's computed here rather
+    than routed through the LLM-generated cost commentary elsewhere."""
+    buckets, usage_err = _chat_cache_buckets(month_start)
+    rates = _rates_for(month_start)
+
+    total_creation = sum(b["cache_creation_tokens"] for b in buckets.values())
+    total_read = sum(b["cache_read_tokens"] for b in buckets.values())
+    reads_per_write = round(total_read / total_creation, 2) if total_creation else None
+
+    actual_cost = 0.0
+    baseline_cost = 0.0
+    # "Investment" is the write premium over plain input (what you paid extra
+    # to put content in the cache); "return" is the read discount off plain
+    # input (what you got back for reading it). roi_multiple = return /
+    # investment, so a non-technical reader can read it as "$X back for
+    # every $1 spent enabling caching" instead of a token-count ratio.
+    investment = 0.0
+    returned = 0.0
+    priced_any = False
+    for model, tok in buckets.items():
+        rate = rates.get(model, {})
+        input_rate = rate.get("input")
+        if not input_rate:
+            continue
+        priced_any = True
+        uncached = tok["uncached_input_tokens"]
+        creation = tok["cache_creation_tokens"]
+        read = tok["cache_read_tokens"]
+        cache_creation_rate = rate.get("cache_creation")
+        cache_read_rate = rate.get("cache_read")
+        actual_cost += uncached * input_rate
+        actual_cost += creation * (cache_creation_rate or 0)
+        actual_cost += read * (cache_read_rate or 0)
+        baseline_cost += (uncached + creation + read) * input_rate
+        if cache_creation_rate is not None:
+            investment += creation * max(cache_creation_rate - input_rate, 0)
+        if cache_read_rate is not None:
+            returned += read * max(input_rate - cache_read_rate, 0)
+
+    savings = round(baseline_cost - actual_cost, 2) if priced_any else None
+    savings_pct = round(savings / baseline_cost * 100, 1) if priced_any and baseline_cost else None
+    roi_multiple = round(returned / investment, 2) if investment else None
+
+    if total_creation == 0 or not priced_any:
+        verdict = "no_data"
+    elif savings is not None and savings > 0:
+        verdict = "helping"
+    else:
+        verdict = "hurting"
+
+    return {
+        "month": month_start.strftime("%Y-%m"),
+        "cache_read_tokens": total_read,
+        "cache_creation_tokens": total_creation,
+        "reads_per_write": reads_per_write,
+        "actual_cost": round(actual_cost, 2) if priced_any else None,
+        "baseline_cost": round(baseline_cost, 2) if priced_any else None,
+        "savings": savings,
+        "savings_pct": savings_pct,
+        "roi_multiple": roi_multiple,
+        "verdict": verdict,
+        "chat_scope_is_app_wide": _chat_scope_is_app_wide(),
+        "cost_source_error": usage_err,
+    }
 
 
 @api_login_required
@@ -1161,72 +1245,8 @@ def cache_economics(request):
         if cached is not None:
             return JsonResponse({**cached, "cached": True})
 
-    buckets, usage_err = _chat_cache_buckets(month_start)
-    rates = _rates_for(month_start)
-
-    total_creation = sum(b["cache_creation_tokens"] for b in buckets.values())
-    total_read = sum(b["cache_read_tokens"] for b in buckets.values())
-    reads_per_write = round(total_read / total_creation, 2) if total_creation else None
-
-    actual_cost = 0.0
-    baseline_cost = 0.0
-    # "Investment" is the write premium over plain input (what you paid extra
-    # to put content in the cache); "return" is the read discount off plain
-    # input (what you got back for reading it). roi_multiple = return /
-    # investment, so a non-technical reader can read it as "$X back for
-    # every $1 spent enabling caching" instead of a token-count ratio.
-    investment = 0.0
-    returned = 0.0
-    priced_any = False
-    for model, tok in buckets.items():
-        rate = rates.get(model, {})
-        input_rate = rate.get("input")
-        if not input_rate:
-            continue
-        priced_any = True
-        uncached = tok["uncached_input_tokens"]
-        creation = tok["cache_creation_tokens"]
-        read = tok["cache_read_tokens"]
-        cache_creation_rate = rate.get("cache_creation")
-        cache_read_rate = rate.get("cache_read")
-        actual_cost += uncached * input_rate
-        actual_cost += creation * (cache_creation_rate or 0)
-        actual_cost += read * (cache_read_rate or 0)
-        baseline_cost += (uncached + creation + read) * input_rate
-        if cache_creation_rate is not None:
-            investment += creation * max(cache_creation_rate - input_rate, 0)
-        if cache_read_rate is not None:
-            returned += read * max(input_rate - cache_read_rate, 0)
-
-    savings = round(baseline_cost - actual_cost, 2) if priced_any else None
-    savings_pct = round(savings / baseline_cost * 100, 1) if priced_any and baseline_cost else None
-    roi_multiple = round(returned / investment, 2) if investment else None
-
-    # A deterministic, plain-language verdict for a non-technical reader --
-    # "is this worth it" is a clean number here, not a judgment call, so no
-    # LLM commentary is warranted (unlike CostCommentaryPanel's headline).
-    if total_creation == 0 or not priced_any:
-        verdict = "no_data"
-    elif savings is not None and savings > 0:
-        verdict = "helping"
-    else:
-        verdict = "hurting"
-
-    payload = {
-        "month": month_start.strftime("%Y-%m"),
-        "cache_read_tokens": total_read,
-        "cache_creation_tokens": total_creation,
-        "reads_per_write": reads_per_write,
-        "actual_cost": round(actual_cost, 2) if priced_any else None,
-        "baseline_cost": round(baseline_cost, 2) if priced_any else None,
-        "savings": savings,
-        "savings_pct": savings_pct,
-        "roi_multiple": roi_multiple,
-        "verdict": verdict,
-        "chat_scope_is_app_wide": _chat_scope_is_app_wide(),
-        "cost_source_error": usage_err,
-    }
-    if not usage_err:
+    payload = _cache_economics_for(month_start)
+    if not payload["cost_source_error"]:
         cache.set(key, payload, CURRENT_TTL if month_start == current else PAST_TTL)
     return JsonResponse(payload)
 

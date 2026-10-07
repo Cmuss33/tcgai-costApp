@@ -4880,3 +4880,245 @@ class GraderPromptTests(TestCase):
         for phrase in ["dialect", "slang", "typos", "never lower the score",
                        "inferred intent", "writing style"]:
             self.assertIn(phrase, prompt)
+
+
+class VerdictCardsEndpointTests(TestCase):
+    """C3 deterministic verdict cards: computed thresholds over the same
+    single-month computations the stats endpoints serve -- never
+    LLM-generated. Candidates with insufficient data are omitted; an empty
+    list with all_clear=True reproduces the dashboard's all-clear state."""
+
+    RATES = {"claude-haiku-4-5": {"input": 0.000001, "output": 0.000005}}
+
+    def setUp(self):
+        cache.clear()
+        self.user = User.objects.create_user(username="owner", password="pw")
+        self.this_month = _now().replace(day=1)
+        self.prev_month = (self.this_month.replace(day=1) - timedelta(days=1)).replace(day=1)
+
+    def tearDown(self):
+        cache.clear()
+
+    def _patch_adapter(self, spend=0.0, rates=None, usage=None):
+        get_cost = MagicMock(return_value=_cost_resp(spend))
+        get_model_rates = MagicMock(return_value={"rates": rates if rates is not None else {}})
+        get_usage_by_key = MagicMock(return_value=usage if usage is not None else {"keys": []})
+        p = patch.multiple("cost_management.views.llmprovider",
+                           get_cost=get_cost, get_model_rates=get_model_rates,
+                           get_usage_by_key=get_usage_by_key)
+        p.start()
+        self.addCleanup(p.stop)
+        return get_cost, get_model_rates, get_usage_by_key
+
+    def _chat(self, chat_id, month, tokens_in=0, tokens_out=0,
+              likely_automated=False, score=None, model="claude-haiku-4-5"):
+        chat = Chat.objects.create(
+            chat_id=chat_id, model=model, tokens_in=tokens_in, tokens_out=tokens_out,
+            likely_automated=likely_automated, evaluation_score=score,
+        )
+        Chat.objects.filter(pk=chat.pk).update(timestamp=month.replace(day=10))
+        return chat
+
+    def _hurting_usage(self):
+        return {"keys": [{
+            "api_key_id": "apikey_chat", "name": "chat",
+            "input_tokens": 1_001_000, "output_tokens": 0,
+            "by_model": {"m": {
+                "uncached_input_tokens": 0, "output_tokens": 0,
+                "cache_creation_tokens": 1_000_000, "cache_read_tokens": 1_000,
+            }},
+        }]}
+
+    def _hurting_rates(self):
+        return {"m": {
+            "input": 0.000001, "cache_creation": 0.000002, "cache_read": 0.0000005,
+        }}
+
+    def _ids(self, payload):
+        return [v["id"] for v in payload["verdicts"]]
+
+    def test_requires_login(self):
+        self.assertEqual(self.client.get("/api/cost/verdicts/").status_code, 401)
+
+    def test_invalid_month_is_400(self):
+        self.client.force_login(self.user)
+        self.assertEqual(self.client.get("/api/cost/verdicts/?month=nope").status_code, 400)
+
+    def test_all_clear_when_nothing_triggers(self):
+        # billed == logged (no recon gap), no cache data, one scored chat
+        # (below the sample minimum), no bot traffic.
+        self._patch_adapter(spend=3.5, rates=self.RATES)
+        self._chat("c-1", self.this_month, 1_000_000, 500_000, score=80)
+        self.client.force_login(self.user)
+
+        d = self.client.get("/api/cost/verdicts/").json()
+
+        self.assertEqual(d["month"], self.this_month.strftime("%Y-%m"))
+        self.assertEqual(d["verdicts"], [])
+        self.assertTrue(d["all_clear"])
+
+    def test_cache_hurting_card(self):
+        self._patch_adapter(spend=0.0, rates=self._hurting_rates(),
+                            usage=self._hurting_usage())
+        self.client.force_login(self.user)
+
+        d = self.client.get("/api/cost/verdicts/").json()
+
+        self.assertEqual(self._ids(d), ["cache-hurting"])
+        self.assertFalse(d["all_clear"])
+        card = d["verdicts"][0]
+        self.assertEqual(card["kind"], "cache")
+        self.assertEqual(card["tone"], "bad")
+        self.assertIn("caching", card["headline"].lower())
+        self.assertIn("primary", card)
+        self.assertTrue(card["alternatives"])
+        self.assertEqual(card["deep_link"], "panel-cache-economics")
+        for ev in card["evidence"]:
+            self.assertEqual(set(ev.keys()), {"kind", "metric", "value", "source"})
+            self.assertEqual(ev["kind"], "stat")
+            self.assertEqual(ev["source"], "cache_economics")
+        metrics = {ev["metric"] for ev in card["evidence"]}
+        self.assertIn("cache.savings", metrics)
+
+    def test_cache_no_data_is_omitted(self):
+        # No usage rows and no rates -> cache verdict "no_data" -> skip.
+        self._patch_adapter(spend=0.0)
+        self.client.force_login(self.user)
+
+        d = self.client.get("/api/cost/verdicts/").json()
+
+        self.assertEqual(d["verdicts"], [])
+        self.assertTrue(d["all_clear"])
+
+    def test_recon_unaccounted_card(self):
+        # billed 15.0, logged 3.5 -> 76.7% unaccounted, over the 5% bar.
+        self._patch_adapter(spend=15.0, rates=self.RATES)
+        self._chat("c-1", self.this_month, 1_000_000, 500_000)
+        self.client.force_login(self.user)
+
+        d = self.client.get("/api/cost/verdicts/").json()
+
+        self.assertEqual(self._ids(d), ["recon-unaccounted"])
+        card = d["verdicts"][0]
+        self.assertEqual(card["tone"], "bad")
+        self.assertIn("76.7%", card["headline"])
+        self.assertEqual(card["deep_link"], "panel-cost-reconciliation")
+        self.assertIn("primary", card)
+        metrics = {ev["metric"]: ev["value"] for ev in card["evidence"]}
+        self.assertEqual(metrics["recon.billed_spend"], 15.0)
+        self.assertEqual(metrics["recon.unaccounted"], round(15.0 - 3.5, 2))
+        self.assertEqual(metrics["recon.unaccounted_pct"], round(11.5 / 15.0 * 100, 1))
+
+    def test_recon_below_threshold_is_omitted(self):
+        # billed == logged -> 0% unaccounted, nothing to say.
+        self._patch_adapter(spend=3.5, rates=self.RATES)
+        self._chat("c-1", self.this_month, 1_000_000, 500_000)
+        self.client.force_login(self.user)
+
+        d = self.client.get("/api/cost/verdicts/").json()
+
+        self.assertNotIn("recon-unaccounted", self._ids(d))
+
+    def test_recon_skipped_when_billed_unavailable(self):
+        # Cost source down -> billed_spend None -> skip, don't invent.
+        get_cost = MagicMock(return_value={"error": "boom"})
+        get_model_rates = MagicMock(return_value={"rates": self.RATES})
+        get_usage_by_key = MagicMock(return_value={"keys": []})
+        p = patch.multiple("cost_management.views.llmprovider",
+                           get_cost=get_cost, get_model_rates=get_model_rates,
+                           get_usage_by_key=get_usage_by_key)
+        p.start()
+        self.addCleanup(p.stop)
+        self.client.force_login(self.user)
+
+        d = self.client.get("/api/cost/verdicts/").json()
+
+        self.assertNotIn("recon-unaccounted", self._ids(d))
+        self.assertTrue(d["all_clear"])
+
+    def test_eval_drop_card(self):
+        self._patch_adapter(spend=0.0)
+        for i in range(12):
+            self._chat(f"now-{i}", self.this_month, score=70)
+            self._chat(f"prev-{i}", self.prev_month, score=80)
+        self.client.force_login(self.user)
+
+        d = self.client.get("/api/cost/verdicts/").json()
+
+        self.assertEqual(self._ids(d), ["eval-drop"])
+        card = d["verdicts"][0]
+        self.assertEqual(card["tone"], "bad")
+        self.assertIn("10 points", card["headline"])
+        self.assertEqual(card["deep_link"], "panel-quality-themes")
+        metrics = {ev["metric"]: ev["value"] for ev in card["evidence"]}
+        self.assertEqual(metrics["eval.avg"], 70.0)
+        self.assertEqual(metrics["eval.prev_avg"], 80.0)
+        self.assertEqual(metrics["eval.scored"], 12)
+
+    def test_eval_drop_skipped_below_sample_minimum(self):
+        self._patch_adapter(spend=0.0)
+        for i in range(3):
+            self._chat(f"now-{i}", self.this_month, score=60)
+            self._chat(f"prev-{i}", self.prev_month, score=80)
+        self.client.force_login(self.user)
+
+        d = self.client.get("/api/cost/verdicts/").json()
+
+        self.assertNotIn("eval-drop", self._ids(d))
+
+    def test_eval_no_drop_no_card(self):
+        self._patch_adapter(spend=0.0)
+        for i in range(12):
+            self._chat(f"now-{i}", self.this_month, score=79)
+            self._chat(f"prev-{i}", self.prev_month, score=80)
+        self.client.force_login(self.user)
+
+        d = self.client.get("/api/cost/verdicts/").json()
+
+        self.assertNotIn("eval-drop", self._ids(d))
+        self.assertTrue(d["all_clear"])
+
+    def test_bot_share_drift_card(self):
+        # This month: bot 20.0 / real 1.0 -> 95.2%. Prev: bot 1.0 / real 20.0 -> 4.8%.
+        # Billed == logged so reconciliation stays quiet.
+        self._patch_adapter(spend=21.0, rates=self.RATES)
+        self._chat("bot-now", self.this_month, tokens_in=20_000_000, likely_automated=True)
+        self._chat("real-now", self.this_month, tokens_in=1_000_000)
+        self._chat("bot-prev", self.prev_month, tokens_in=1_000_000, likely_automated=True)
+        self._chat("real-prev", self.prev_month, tokens_in=20_000_000)
+        self.client.force_login(self.user)
+
+        d = self.client.get("/api/cost/verdicts/").json()
+
+        self.assertEqual(self._ids(d), ["bot-share-drift"])
+        card = d["verdicts"][0]
+        self.assertEqual(card["kind"], "bot-share")
+        self.assertEqual(card["tone"], "flat")
+        self.assertIn("95%", card["headline"])
+        self.assertIsNone(card["deep_link"])
+        metrics = {ev["metric"]: ev["value"] for ev in card["evidence"]}
+        self.assertEqual(metrics["bot_share.pct"], 95.2)
+        self.assertEqual(metrics["bot_share.prev_pct"], 4.8)
+
+    def test_bot_share_skipped_without_rates(self):
+        # No rates -> share is None, not zero -> skip, don't claim it's clean.
+        self._patch_adapter(spend=21.0, rates={})
+        self._chat("bot-now", self.this_month, tokens_in=20_000_000, likely_automated=True)
+        self.client.force_login(self.user)
+
+        d = self.client.get("/api/cost/verdicts/").json()
+
+        self.assertNotIn("bot-share-drift", self._ids(d))
+
+    def test_caches_and_refresh_bypasses(self):
+        get_cost, _, _ = self._patch_adapter(spend=0.0)
+        self.client.force_login(self.user)
+
+        self.client.get("/api/cost/verdicts/")
+        calls_after_first = get_cost.call_count
+        cached = self.client.get("/api/cost/verdicts/").json()
+        self.assertTrue(cached["cached"])
+        self.assertEqual(get_cost.call_count, calls_after_first)
+
+        self.client.get("/api/cost/verdicts/?refresh=1")
+        self.assertGreater(get_cost.call_count, calls_after_first)

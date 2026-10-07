@@ -4,6 +4,7 @@ from . import investigation_views
 from . import insights_views
 from . import stats_views
 from . import sso
+from . import verdicts
 
 urlpatterns = [
     path('sso_login/', sso.sso_login, name='sso_login'),
@@ -32,4 +33,5 @@ urlpatterns = [
     path('cost_reconciliation/', stats_views.cost_reconciliation, name='cost_reconciliation'),
     path('commercial_impact/', stats_views.commercial_impact, name='commercial_impact'),
     path('cache_economics/', stats_views.cache_economics, name='cache_economics'),
+    path('verdicts/', verdicts.verdict_cards, name='verdicts'),
 ]

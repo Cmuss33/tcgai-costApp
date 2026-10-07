@@ -7,7 +7,7 @@ const POLL_MS = 2500;
 const MAX_POLLS = 35;
 // stats, insights (first response only -- not each poll),
 // costReconciliation, cacheEconomics, commercialImpact
-const TOTAL_LOADERS = 5;
+const TOTAL_LOADERS = 6;
 
 const STATUS_LABELS = { out_of_stock: "out of stock", not_carried: "not carried", unknown: "unknown" };
 const ASSESSMENT_LABELS = {
@@ -1386,53 +1386,58 @@ function CommercialImpactHero({ data, isLifetime }) {
   );
 }
 
-/* ---------- C0: attention section -- daily glance; C3 verdict cards expand this later ---------- */
-function AttentionSection({ stats, costReconciliation, cacheEconomics }) {
-  const billed = costReconciliation?.billed_spend;
-  const unacc = costReconciliation?.unaccounted;
-  const reconReady = billed != null && unacc != null;
-  const reconPct = reconReady && billed > 0 ? (unacc / billed) * 100 : 0;
-  const reconBad = reconReady && reconPct > 5;
-  const cacheHurting = cacheEconomics?.verdict === "hurting";
-  const hasWarnings = reconBad || cacheHurting;
+/* ---------- C3: attention section -- deterministic verdict cards ---------- */
+const VERDICT_ICONS = { cache: "💾", reconciliation: "🧾", eval: "📉", "bot-share": "🤖" };
 
-  // Underlying data still loading -- nothing to say yet.
-  if (!stats && !reconReady && !cacheEconomics) return null;
+function VerdictCard({ card }) {
+  const icon = VERDICT_ICONS[card.kind] ?? "⚠️";
+  return (
+    <div className={`cr__verdict-card cr__verdict-card--${card.tone}`}>
+      <div className="cr__verdict-headline">
+        <span aria-hidden="true">{icon}</span>
+        <span>{card.headline}</span>
+      </div>
+      <div className="cr__verdict-item">{card.reason}</div>
+      <div className="cr__verdict-item">
+        <strong>{card.primary.label}:</strong> {card.primary.detail}
+      </div>
+      {card.alternatives?.length > 0 && (
+        <details className="cr__verdict-alts">
+          <summary>Other options</summary>
+          {card.alternatives.map((a, i) => (
+            <div className="cr__verdict-item" key={i}>
+              <strong>{a.label}:</strong> {a.detail}
+            </div>
+          ))}
+        </details>
+      )}
+      {card.deep_link && (
+        <a className="cr__verdict-link" href={`#${card.deep_link}`}>
+          See the numbers →
+        </a>
+      )}
+    </div>
+  );
+}
+
+function AttentionSection({ verdicts }) {
+  // Verdicts still loading -- nothing to say yet.
+  if (!verdicts) return null;
+  const cards = verdicts.verdicts ?? [];
 
   return (
     <section aria-label="Needs your attention">
       <div className="cr__section-eyebrow">
         <span>🔔</span> Needs your attention
       </div>
-      {reconBad && (
-        <div className="cr__triage-alert cr__triage-alert--warning">
-          <span>
-            🧾 <strong>{reconPct.toFixed(1)}% of your Anthropic bill</strong> ({fmtUsd(unacc, true)})
-            can&rsquo;t be matched to logged calls &mdash; rejected probes, failed requests, or calls
-            this app never received.
-          </span>
-        </div>
-      )}
-      {cacheHurting && (
-        <div className="cr__triage-alert cr__triage-alert--warning">
-          <span>
-            💾 <strong>Prompt caching cost you extra this month.</strong> Worth flagging to your
-            developer &mdash; the cached content isn&rsquo;t being reused enough to earn back what it
-            costs to write.
-          </span>
-        </div>
-      )}
-      {!hasWarnings && (
+      {cards.length === 0 ? (
         <div className="cr__triage-alert cr__triage-alert--good">
           <span>
             ✅ <strong>All clear.</strong> Nothing needs your attention right now.
           </span>
         </div>
-      )}
-      {reconReady && !reconBad && (
-        <p className="cr__prov">
-          ✓ Billed spend reconciles against your Anthropic invoice ({fmtUsd(unacc, true)} unaccounted).
-        </p>
+      ) : (
+        cards.map((v) => <VerdictCard key={v.id} card={v} />)
       )}
     </section>
   );
@@ -1580,6 +1585,7 @@ function HomeView() {
   const [costReconciliation, setCostReconciliation] = useState(null);
   const [commercialImpact, setCommercialImpact] = useState(null);
   const [cacheEconomics, setCacheEconomics] = useState(null);
+  const [verdicts, setVerdicts] = useState(null);
   const [insights, setInsights] = useState(null);
   const [firstLoad, setFirstLoad] = useState(true);
   const [netError, setNetError] = useState(false);
@@ -1681,6 +1687,27 @@ function HomeView() {
     [navigate]
   );
 
+  const loadVerdicts = useCallback(
+    async (month, refresh) => {
+      try {
+        const params = new URLSearchParams();
+        if (month) params.set("month", month);
+        if (refresh) params.set("refresh", "1");
+        const qs = params.toString();
+        const res = await fetch(`${API_URL}/api/cost/verdicts/${qs ? `?${qs}` : ""}`, {
+          credentials: "include",
+        });
+        if (res.status === 401 || res.status === 403) return navigate("/");
+        setVerdicts(await res.json());
+      } catch {
+        // Non-critical panel -- the rest of the dashboard still works without it.
+      } finally {
+        setLoadProgress((p) => p + 1);
+      }
+    },
+    [navigate]
+  );
+
   const loadInsights = useCallback(
     async ({ month, refresh, poll = 0 } = {}) => {
       setNetError(false);
@@ -1729,8 +1756,9 @@ function HomeView() {
       loadCostReconciliation(arg, refresh);
       loadCacheEconomics(arg, refresh);
       loadCommercialImpact(arg, refresh);
+      loadVerdicts(arg, refresh);
     },
-    [loadStats, loadInsights, loadCostReconciliation, loadCacheEconomics, loadCommercialImpact]
+    [loadStats, loadInsights, loadCostReconciliation, loadCacheEconomics, loadCommercialImpact, loadVerdicts]
   );
 
   useEffect(() => {
@@ -1740,7 +1768,7 @@ function HomeView() {
         if (!data.authenticated) navigate("/");
       })
       .catch(() => {
-        // The 5 loaders below handle their own network-error states.
+        // The 6 loaders below handle their own network-error states.
       });
 
     setLoadProgress(0);
@@ -1999,12 +2027,8 @@ function HomeView() {
             <CommandCenterHeroKpis stats={stats} cacheEconomics={cacheEconomics} isLifetime={isLifetime} />
           </section>
 
-          {/* C0: 4. ATTENTION -- daily glance; C3 verdict cards expand this later */}
-          <AttentionSection
-            stats={stats}
-            costReconciliation={costReconciliation}
-            cacheEconomics={cacheEconomics}
-          />
+          {/* C3: 4. ATTENTION -- deterministic verdict cards */}
+          <AttentionSection verdicts={verdicts} />
 
           {insights?.regenerating && (
             <p className="cr__notice">Refreshing this month&rsquo;s insights in the background…</p>
