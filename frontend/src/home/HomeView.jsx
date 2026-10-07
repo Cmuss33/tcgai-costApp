@@ -1280,39 +1280,6 @@ function RecommendationsSection({ requests, isLifetime }) {  const reqList = asL
   );
 }
 
-function DevOpsAccordion({ stats, cacheEconomics, costReconciliation, costCommentary, isLifetime, onRetryStats }) {
-  const [open, setOpen] = useState(false);
-
-  return (
-    <div className="cr__devops-section">
-      <button
-        type="button"
-        className="cr__devops-trigger"
-        onClick={() => setOpen((prev) => !prev)}
-        aria-expanded={open}
-      >
-        <span className="cr__devops-trigger-title">
-          <span>🛠️</span> DevOps &amp; API Billing Telemetry (Technical Breakdown)
-        </span>
-        <span style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
-          <span>{open ? "Hide technical audit" : "Show technical audit"}</span>
-          <span style={{ transform: open ? "rotate(180deg)" : "none", transition: "transform 0.2s" }}>▼</span>
-        </span>
-      </button>
-
-      {open && (
-        <div className="cr__devops-content">
-          <StatsBand stats={stats} isLifetime={isLifetime} onRetryStats={onRetryStats} />
-          <CacheEconomicsPanel data={cacheEconomics} isLifetime={isLifetime} />
-          <CostReconciliationPanel data={costReconciliation} isLifetime={isLifetime} />
-          {!isLifetime && <CostCommentaryPanel data={costCommentary} />}
-        </div>
-      )}
-    </div>
-  );
-}
-
-
 /* ---------- C5: commercial impact hero (Rufus-style plain numbers) ---------- */
 function CommercialImpactHero({ data, isLifetime }) {
   if (!data) return null;
@@ -2275,6 +2242,7 @@ function HomeView() {
           <section aria-label="What does it cost?">
             <div className="cr__section-eyebrow"><span>💳</span> What does it cost?</div>
             <CommandCenterHeroKpis stats={stats} cacheEconomics={cacheEconomics} isLifetime={isLifetime} />
+            {!isLifetime && <CostCommentaryPanel data={insights?.cost_commentary} />}
           </section>
 
           {/* C3: 4. ATTENTION -- deterministic verdict cards */}
@@ -2336,16 +2304,6 @@ function HomeView() {
               {insights.conversations_analyzed} so far).
             </p>
           )}
-
-          {/* DevOps & Technical Billing Telemetry (Collapsed by default) */}
-          <DevOpsAccordion
-            stats={stats}
-            cacheEconomics={cacheEconomics}
-            costReconciliation={costReconciliation}
-            costCommentary={insights?.cost_commentary}
-            isLifetime={isLifetime}
-            onRetryStats={handleRetryStats}
-          />
 
           {showFindings && (
             <p className="cr__prov">
