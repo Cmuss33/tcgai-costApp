@@ -5,9 +5,9 @@ import "./HomeView.css";
 const API_URL = import.meta.env.VITE_API_URL ?? "";
 const POLL_MS = 2500;
 const MAX_POLLS = 35;
-// stats, insights (first response only -- not each poll), usageByKey,
+// stats, insights (first response only -- not each poll),
 // costReconciliation, cacheEconomics, commercialImpact
-const TOTAL_LOADERS = 6;
+const TOTAL_LOADERS = 5;
 
 const GAP_LABELS = { catalog: "catalog", policy: "policy", capability: "capability", other: "other" };
 const STATUS_LABELS = { out_of_stock: "out of stock", not_carried: "not carried", unknown: "unknown" };
@@ -39,8 +39,6 @@ const fmtCompact = (n) => {
   if (n >= 1e4) return `${Math.round(n / 1e3)}K`;
   return nf.format(n);
 };
-const fmtPct = (n) => (n == null ? "—" : `${Math.round(n * 100)}%`);
-
 const formatCostSourceError = (error) => {
   if (!error) return "";
   if (typeof error === "string") {
@@ -305,11 +303,9 @@ function StatsBand({ stats, isLifetime, onRetryStats }) {
   const c = stats.conversations || {};
   const pc = stats.per_conversation || {};
   const ev = stats.eval_score || {};
-  const tk = stats.tokens || {};
   const spendSeries = (s.daily || []).map((d) => d.amount);
   const convDaily = c.daily || [];
   const botTotal = convDaily.reduce((sum, d) => sum + (d.bot_count || 0), 0);
-  const tokSeries = (tk.daily || []).map((d) => d.input + d.output);
 
   return (
     <>
@@ -392,16 +388,6 @@ function StatsBand({ stats, isLifetime, onRetryStats }) {
           deltaPct={ev.delta_pct}
           betterWhen="up"
         />
-        <Kpi
-          accent="--a-tok"
-          label="Tokens"
-          value={fmtCompact(tk.input)}
-          sub={`in (incl. cache) · ${fmtCompact(tk.output)} out · ${fmtPct(tk.cache_hit_rate)} cache hit`}
-          deltaPct={tk.input_delta_pct}
-          betterWhen="neutral"
-          spark={tokSeries}
-          sparkColor="#ff6ba0"
-        />
       </div>
 
       {convDaily.length > 0 && (
@@ -437,45 +423,13 @@ function StatsBand({ stats, isLifetime, onRetryStats }) {
 }
 
 /* ---------- per-key usage ---------- */
-function UsageByKeyPanel({ data, isLifetime }) {
-  const keys = data?.keys || [];
-  if (!data || keys.length === 0) return null;
-  return (
-    <CollapsiblePanel
-      id="panel-usage-keys"
-      title="Usage by API key"
-      accent="var(--a-tok)"
-      description={`Breakdown of AI token activity and estimated costs across each connected service or tool in your store's setup ${isLifetime ? "since June 1, 2026." : "this month."}`}
-      badge={<span className="cr__chip flat">{keys.length} {keys.length === 1 ? "key" : "keys"}</span>}
-    >
-      <div className="cr__note">
-        Token usage per Anthropic API key {isLifetime ? "since June 1, 2026" : "this month"}, from Anthropic&rsquo;s own usage
-        report. Cost is an estimate (tokens &times; {isLifetime ? "blended rates" : "this month&rsquo;s blended rate per model"}) &mdash; Anthropic&rsquo;s cost report can&rsquo;t break down by individual
-        key, only by workspace.
-      </div>
-      <table className="cr__want cr__keys">
-        <tbody>
-          {keys.map((k) => (
-            <tr key={k.api_key_id}>
-              <td className="cr__p">{k.name}</td>
-              <td className="cr__x">{fmtCompact(k.input_tokens)} in / {fmtCompact(k.output_tokens)} out</td>
-              <td className="cr__st">~{fmtUsd(k.estimated_cost, true)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </CollapsiblePanel>
-  );
-}
 
-/* ---------- prompt cache economics ---------- */
 function CacheEconomicsPanel({ data, isLifetime }) {
   // On a fetch/usage-source error, buckets come back empty (0 read / 0
   // written) same as a genuinely quiet month -- but claiming "not enough
   // data to tell" would be misleading when the real cause is an upstream
-  // error. Hide the panel instead, matching UsageByKeyPanel/
-  // CostReconciliationPanel's own "hide on error" convention (the
-  // StatsBand notice above already covers "Anthropic's API is having
+  // error. Hide the panel instead, matching CostReconciliationPanel's own "hide on error"
+  // convention (the StatsBand notice above already covers "Anthropic's API is having
   // issues" for the page).
   if (!data || data.cache_creation_tokens == null || data.cost_source_error) return null;
   const hasCost = data.actual_cost != null && data.baseline_cost != null;
@@ -1351,7 +1305,7 @@ function RecommendationsSection({ recs, gaps, requests, isLifetime }) {
   );
 }
 
-function DevOpsAccordion({ stats, cacheEconomics, usageByKey, costReconciliation, costCommentary, isLifetime, onRetryStats }) {
+function DevOpsAccordion({ stats, cacheEconomics, costReconciliation, costCommentary, isLifetime, onRetryStats }) {
   const [open, setOpen] = useState(false);
 
   return (
@@ -1375,7 +1329,6 @@ function DevOpsAccordion({ stats, cacheEconomics, usageByKey, costReconciliation
         <div className="cr__devops-content">
           <StatsBand stats={stats} isLifetime={isLifetime} onRetryStats={onRetryStats} />
           <CacheEconomicsPanel data={cacheEconomics} isLifetime={isLifetime} />
-          <UsageByKeyPanel data={usageByKey} isLifetime={isLifetime} />
           <CostReconciliationPanel data={costReconciliation} isLifetime={isLifetime} />
           {!isLifetime && <CostCommentaryPanel data={costCommentary} />}
         </div>
@@ -1406,7 +1359,7 @@ function CommercialImpactHero({ data, isLifetime }) {
         <div className="cr__labor-card cr__labor-card--spend">
           <div className="cr__labor-card-top">
             <span className="cr__labor-label">AI Spend</span>
-            <span style={{ fontSize: "15px" }}>\uD83E\uDD16</span>
+            <span style={{ fontSize: "15px" }}>🤖</span>
           </div>
           <div className="cr__labor-val">{spend}</div>
           <div className="cr__labor-sub">
@@ -1417,7 +1370,7 @@ function CommercialImpactHero({ data, isLifetime }) {
         <div className="cr__labor-card cr__labor-card--savings">
           <div className="cr__labor-card-top">
             <span className="cr__labor-label">Chat-Influenced Revenue</span>
-            <span style={{ fontSize: "15px" }}>\uD83D\uDCB0</span>
+            <span style={{ fontSize: "15px" }}>💰</span>
           </div>
           <div className="cr__labor-val cr__labor-val--savings">{revenue}</div>
           <div className="cr__labor-sub">
@@ -1428,7 +1381,7 @@ function CommercialImpactHero({ data, isLifetime }) {
         <div className="cr__labor-card cr__labor-card--labor">
           <div className="cr__labor-card-top">
             <span className="cr__labor-label">Return per $1 of AI Spend</span>
-            <span style={{ fontSize: "15px" }}>\uD83D\uDCC8</span>
+            <span style={{ fontSize: "15px" }}>📈</span>
           </div>
           <div className="cr__labor-val">{rpd}</div>
           <div className="cr__labor-sub">Revenue back for every $1 of AI spend</div>
@@ -1436,8 +1389,8 @@ function CommercialImpactHero({ data, isLifetime }) {
 
         <div className="cr__labor-card cr__labor-card--hours">
           <div className="cr__labor-card-top">
-            <span className="cr__labor-label">Conversations \u2192 Purchase</span>
-            <span style={{ fontSize: "15px" }}>\uD83D\uDED2</span>
+            <span className="cr__labor-label">Conversations → Purchase</span>
+            <span style={{ fontSize: "15px" }}>🛒</span>
           </div>
           <div className="cr__labor-val">{convRate}</div>
           <div className="cr__labor-sub">{convSub}</div>
@@ -1455,6 +1408,58 @@ function CommercialImpactHero({ data, isLifetime }) {
         </p>
       )}
     </div>
+  );
+}
+
+/* ---------- C0: attention section -- daily glance; C3 verdict cards expand this later ---------- */
+function AttentionSection({ stats, costReconciliation, cacheEconomics }) {
+  const billed = costReconciliation?.billed_spend;
+  const unacc = costReconciliation?.unaccounted;
+  const reconReady = billed != null && unacc != null;
+  const reconPct = reconReady && billed > 0 ? (unacc / billed) * 100 : 0;
+  const reconBad = reconReady && reconPct > 5;
+  const cacheHurting = cacheEconomics?.verdict === "hurting";
+  const hasWarnings = reconBad || cacheHurting;
+
+  // Underlying data still loading -- nothing to say yet.
+  if (!stats && !reconReady && !cacheEconomics) return null;
+
+  return (
+    <section aria-label="Needs your attention">
+      <div className="cr__section-eyebrow">
+        <span>🔔</span> Needs your attention
+      </div>
+      {reconBad && (
+        <div className="cr__triage-alert cr__triage-alert--warning">
+          <span>
+            🧾 <strong>{reconPct.toFixed(1)}% of your Anthropic bill</strong> ({fmtUsd(unacc, true)})
+            can&rsquo;t be matched to logged calls &mdash; rejected probes, failed requests, or calls
+            this app never received.
+          </span>
+        </div>
+      )}
+      {cacheHurting && (
+        <div className="cr__triage-alert cr__triage-alert--warning">
+          <span>
+            💾 <strong>Prompt caching cost you extra this month.</strong> Worth flagging to your
+            developer &mdash; the cached content isn&rsquo;t being reused enough to earn back what it
+            costs to write.
+          </span>
+        </div>
+      )}
+      {!hasWarnings && (
+        <div className="cr__triage-alert cr__triage-alert--good">
+          <span>
+            ✅ <strong>All clear.</strong> Nothing needs your attention right now.
+          </span>
+        </div>
+      )}
+      {reconReady && !reconBad && (
+        <p className="cr__prov">
+          ✓ Billed spend reconciles against your Anthropic invoice ({fmtUsd(unacc, true)} unaccounted).
+        </p>
+      )}
+    </section>
   );
 }
 
@@ -1597,7 +1602,6 @@ function HomeView() {
 
   const [stats, setStats] = useState(null);
   const [statsError, setStatsError] = useState(false);
-  const [usageByKey, setUsageByKey] = useState(null);
   const [costReconciliation, setCostReconciliation] = useState(null);
   const [commercialImpact, setCommercialImpact] = useState(null);
   const [cacheEconomics, setCacheEconomics] = useState(null);
@@ -1638,26 +1642,6 @@ function HomeView() {
     [navigate]
   );
 
-  const loadUsageByKey = useCallback(
-    async (month, refresh) => {
-      try {
-        const params = new URLSearchParams();
-        if (month) params.set("month", month);
-        if (refresh) params.set("refresh", "1");
-        const qs = params.toString();
-        const res = await fetch(`${API_URL}/api/cost/get_usage_by_key/${qs ? `?${qs}` : ""}`, {
-          credentials: "include",
-        });
-        if (res.status === 401 || res.status === 403) return navigate("/");
-        setUsageByKey(await res.json());
-      } catch {
-        // Non-critical panel -- the rest of the dashboard still works without it.
-      } finally {
-        setLoadProgress((p) => p + 1);
-      }
-    },
-    [navigate]
-  );
 
   const loadCostReconciliation = useCallback(
     async (month, refresh) => {
@@ -1767,12 +1751,11 @@ function HomeView() {
       setLoadProgress(0);
       loadInsights({ month: arg, refresh });
       await loadStats(arg, refresh);
-      loadUsageByKey(arg, refresh);
       loadCostReconciliation(arg, refresh);
       loadCacheEconomics(arg, refresh);
       loadCommercialImpact(arg, refresh);
     },
-    [loadStats, loadInsights, loadUsageByKey, loadCostReconciliation, loadCacheEconomics, loadCommercialImpact]
+    [loadStats, loadInsights, loadCostReconciliation, loadCacheEconomics, loadCommercialImpact]
   );
 
   useEffect(() => {
@@ -2002,32 +1985,52 @@ function HomeView() {
             <p className="cr__notice">Couldn&rsquo;t load spend &amp; usage. Try Refresh.</p>
           )}
 
-          {/* Executive Hero Row: Top 4 KPI Cards (Trust Gauge, Shopper Volume, Unit Cost, Operating Cost) */}
-          <CommandCenterHeroKpis stats={stats} cacheEconomics={cacheEconomics} isLifetime={isLifetime} />
+          {/* C0: 1. MONEY -- commercial impact leads, labor savings alongside */}
+          <section aria-label="Is it making you money?">
+            <div className="cr__section-eyebrow"><span>💵</span> Is it making you money?</div>
+            <CommercialImpactHero data={commercialImpact} isLifetime={isLifetime} />
+            <LaborSavingsHero stats={stats} isLifetime={isLifetime} />
+          </section>
 
-          {/* Command Center 2-Column Grid: Shopper Inventory Demand Radar + Customer Intent & Bot Accuracy */}
-          <div className="cr__command-center-grid">
-            <ShopperDemandRadar
-              demand={iview?.product_demand}
-              oneOffs={iview?.product_demand_one_offs}
-              isLifetime={isLifetime}
-            />
-            <CustomerIntentDonut
-              topRequests={iview?.top_requests}
-              headline={iview?.headline}
-              recommendation={iview?.recommendations?.[0]}
-              isLifetime={isLifetime}
-            />
-          </div>
+          {/* C0: 2. TRUST -- quality summary + what shoppers are telling you */}
+          <section aria-label="Are your customers in good hands?">
+            <div className="cr__section-eyebrow"><span>🛡️</span> Are your customers in good hands?</div>
+            <TrustScorecardHero stats={stats} isLifetime={isLifetime} />
+            <div className="cr__command-center-grid">
+              <ShopperDemandRadar
+                demand={iview?.product_demand}
+                oneOffs={iview?.product_demand_one_offs}
+                isLifetime={isLifetime}
+              />
+              <CustomerIntentDonut
+                topRequests={iview?.top_requests}
+                headline={iview?.headline}
+                recommendation={iview?.recommendations?.[0]}
+                isLifetime={isLifetime}
+              />
+            </div>
+            {showFindings && (
+              <RecommendationsSection
+                recs={iview.recommendations}
+                gaps={iview.unmet_needs}
+                requests={iview.top_requests}
+                isLifetime={isLifetime}
+              />
+            )}
+          </section>
 
-          {/* Continuous Trust & Quality Audit Scorecard & Triage */}
-          <TrustScorecardHero stats={stats} isLifetime={isLifetime} />
+          {/* C0: 3. COST -- demoted below money and trust */}
+          <section aria-label="What does it cost?">
+            <div className="cr__section-eyebrow"><span>💳</span> What does it cost?</div>
+            <CommandCenterHeroKpis stats={stats} cacheEconomics={cacheEconomics} isLifetime={isLifetime} />
+          </section>
 
-          {/* Retail Labor Cost Savings & Economics */}
-          <LaborSavingsHero stats={stats} isLifetime={isLifetime} />
-
-          {/* C5: Commercial Impact -- Rufus-style plain numbers */}
-          <CommercialImpactHero data={commercialImpact} isLifetime={isLifetime} />
+          {/* C0: 4. ATTENTION -- daily glance; C3 verdict cards expand this later */}
+          <AttentionSection
+            stats={stats}
+            costReconciliation={costReconciliation}
+            cacheEconomics={cacheEconomics}
+          />
 
           {insights?.regenerating && (
             <p className="cr__notice">Refreshing this month&rsquo;s insights in the background…</p>
@@ -2077,21 +2080,10 @@ function HomeView() {
             </p>
           )}
 
-          {/* Shopper Topics & AI Strategic Recommendations */}
-          {showFindings && (
-            <RecommendationsSection
-              recs={iview.recommendations}
-              gaps={iview.unmet_needs}
-              requests={iview.top_requests}
-              isLifetime={isLifetime}
-            />
-          )}
-
           {/* DevOps & Technical Billing Telemetry (Collapsed by default) */}
           <DevOpsAccordion
             stats={stats}
             cacheEconomics={cacheEconomics}
-            usageByKey={usageByKey}
             costReconciliation={costReconciliation}
             costCommentary={insights?.cost_commentary}
             isLifetime={isLifetime}
