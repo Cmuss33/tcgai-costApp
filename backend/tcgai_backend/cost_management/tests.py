@@ -12,7 +12,7 @@ from django.core.management import call_command
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
-from .models import AttributedOrder, Chat, Message
+from .models import AttributedOrder, Chat, Message, AlertRule, AlertFiring, OperatorPreference
 from .issue_trackers import GitHubIssueTracker, IssueRef, IssueTrackerError, LinearIssueTracker
 
 
@@ -5122,3 +5122,352 @@ class VerdictCardsEndpointTests(TestCase):
 
         self.client.get("/api/cost/verdicts/?refresh=1")
         self.assertGreater(get_cost.call_count, calls_after_first)
+
+
+class AlertRulesTests(TestCase):
+    """C4 alerts + preference memory: DB-backed rules, fire-once-per-breach
+    semantics, cooldowns, Slack payload shape, and the settings API."""
+
+    def setUp(self):
+        cache.clear()
+        self.user = User.objects.create_user(username="owner", password="pw")
+        # The 0020 data migration seeds 4 default rules; each test below
+        # starts from a clean slate (seed coverage has its own test).
+        AlertRule.objects.all().delete()
+
+    def tearDown(self):
+        cache.clear()
+
+    def test_seed_migration_creates_conservative_defaults(self):
+        import importlib
+
+        migration = importlib.import_module(
+            "cost_management.migrations.0020_seed_default_alert_rules"
+        )
+        from django.apps import apps as django_apps
+
+        migration.seed_rules(django_apps, None)
+        rules = {r.rule_type: r for r in AlertRule.objects.all()}
+        self.assertEqual(
+            sorted(rules),
+            ["cache_hit_rate_drop", "cost_per_conversation", "eval_score_drop", "spend_anomaly"],
+        )
+        self.assertTrue(all(r.enabled for r in rules.values()))
+        # Conservative bars: above what the C3 verdicts flag.
+        self.assertGreaterEqual(rules["eval_score_drop"].threshold, 5.0)
+        self.assertGreaterEqual(rules["cost_per_conversation"].threshold, 0.10)
+
+    def _mkrule(self, **kw):
+        params = {
+            "rule_type": "cost_per_conversation",
+            "name": "Cost check",
+            "threshold": 0.10,
+            "cooldown_hours": 24,
+            "enabled": True,
+        }
+        params.update(kw)
+        return AlertRule.objects.create(**params)
+
+    def _breached_metrics(self, value=0.25):
+        """Patch every metric function to report a breach at `value`."""
+        ev = [{"kind": "stat", "metric": "cost.per_conversation",
+               "value": value, "source": "monthly_stats"}]
+        p = patch.multiple(
+            "cost_management.alerts",
+            _metric_cost_per_conversation=MagicMock(return_value=(True, value, None, ev)),
+            _metric_spend_anomaly=MagicMock(return_value=(True, value, None, ev)),
+            _metric_cache_drop=MagicMock(return_value=(True, value, None, ev)),
+            _metric_eval_drop=MagicMock(return_value=(True, value, "headline", ev)),
+        )
+        p.start()
+        self.addCleanup(p.stop)
+
+    def _recovered_metrics(self):
+        p = patch.multiple(
+            "cost_management.alerts",
+            _metric_cost_per_conversation=MagicMock(return_value=(False, 0.01, None, [])),
+            _metric_spend_anomaly=MagicMock(return_value=(False, 0.01, None, [])),
+            _metric_cache_drop=MagicMock(return_value=(False, 0.01, None, [])),
+            _metric_eval_drop=MagicMock(return_value=(False, 0.01, None, [])),
+        )
+        p.start()
+        self.addCleanup(p.stop)
+
+    # -- auth -----------------------------------------------------------
+    def test_requires_login(self):
+        for method, url in [
+            ("get", "/api/cost/alert_rules/"),
+            ("post", "/api/cost/alert_rules/"),
+            ("put", "/api/cost/alert_rules/1/"),
+            ("delete", "/api/cost/alert_rules/1/"),
+            ("post", "/api/cost/alert_firings/1/acknowledge/"),
+            ("get", "/api/cost/preferences/"),
+        ]:
+            resp = getattr(self.client, method)(url)
+            self.assertEqual(resp.status_code, 401, f"{method} {url}")
+
+    # -- settings API CRUD ----------------------------------------------
+    def test_create_rule(self):
+        self.client.force_login(self.user)
+        resp = self.client.post(
+            "/api/cost/alert_rules/",
+            data=json.dumps({"rule_type": "spend_anomaly", "name": "Spend watch",
+                             "threshold": 2.0, "cooldown_hours": 48}),
+            content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, 201)
+        body = resp.json()["rule"]
+        self.assertEqual(body["rule_type"], "spend_anomaly")
+        self.assertEqual(body["threshold"], 2.0)
+        self.assertEqual(body["cooldown_hours"], 48)
+        self.assertTrue(body["enabled"])
+        self.assertFalse(body["breached"])
+        self.assertIn("unit", body)
+
+    def test_create_rule_defaults_name(self):
+        self.client.force_login(self.user)
+        resp = self.client.post(
+            "/api/cost/alert_rules/",
+            data=json.dumps({"rule_type": "eval_score_drop", "threshold": 8.0}),
+            content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, 201)
+        self.assertTrue(resp.json()["rule"]["name"])
+
+    def test_create_rule_rejects_bad_input(self):
+        self.client.force_login(self.user)
+        for payload in [
+            {"rule_type": "nope", "threshold": 1.0},
+            {"rule_type": "spend_anomaly", "threshold": -2.0},
+            {"rule_type": "spend_anomaly", "threshold": "x"},
+            {"rule_type": "spend_anomaly", "threshold": 2.0, "cooldown_hours": 0},
+        ]:
+            resp = self.client.post(
+                "/api/cost/alert_rules/", data=json.dumps(payload),
+                content_type="application/json",
+            )
+            self.assertEqual(resp.status_code, 400, payload)
+
+    def test_update_rule_threshold_without_deploy(self):
+        self.client.force_login(self.user)
+        rule = self._mkrule(threshold=0.10)
+        resp = self.client.put(
+            f"/api/cost/alert_rules/{rule.id}/",
+            data=json.dumps({"threshold": 0.50, "cooldown_hours": 72,
+                             "enabled": False, "name": "Renamed"}),
+            content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        rule.refresh_from_db()
+        self.assertEqual(rule.threshold, 0.50)
+        self.assertEqual(rule.cooldown_hours, 72)
+        self.assertFalse(rule.enabled)
+        self.assertEqual(rule.name, "Renamed")
+
+    def test_update_rule_type_is_immutable(self):
+        self.client.force_login(self.user)
+        rule = self._mkrule()
+        resp = self.client.put(
+            f"/api/cost/alert_rules/{rule.id}/",
+            data=json.dumps({"rule_type": "spend_anomaly", "threshold": 0.10}),
+            content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        rule.refresh_from_db()
+        self.assertEqual(rule.rule_type, "cost_per_conversation")
+
+    def test_delete_rule(self):
+        self.client.force_login(self.user)
+        rule = self._mkrule()
+        resp = self.client.delete(f"/api/cost/alert_rules/{rule.id}/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(AlertRule.objects.filter(id=rule.id).exists())
+
+    def test_list_rules_includes_state(self):
+        self.client.force_login(self.user)
+        self._mkrule()
+        body = self.client.get("/api/cost/alert_rules/").json()
+        self.assertEqual(len(body["rules"]), 1)
+        self.assertIn("rule_types", body)
+        self.assertIn("recent_firings", body)
+
+    # -- firing semantics ------------------------------------------------
+    def test_breach_fires_exactly_once_with_evidence(self):
+        from cost_management.alerts import evaluate_all_rules
+
+        self._mkrule(threshold=0.10)
+        self._breached_metrics(value=0.25)
+        summary = evaluate_all_rules()
+        self.assertEqual(summary["fired"], 1)
+        firings = AlertFiring.objects.all()
+        self.assertEqual(firings.count(), 1)
+        firing = firings[0]
+        self.assertEqual(firing.metric_value, 0.25)
+        self.assertTrue(firing.headline)
+        # C1-idiom evidence citations travel with the firing.
+        self.assertEqual(firing.evidence[0]["metric"], "cost.per_conversation")
+        self.assertTrue(AlertRule.objects.get().breached)
+
+    def test_no_refire_while_still_breached(self):
+        from cost_management.alerts import evaluate_all_rules
+
+        self._mkrule(threshold=0.10)
+        self._breached_metrics(value=0.25)
+        evaluate_all_rules()
+        summary = evaluate_all_rules()
+        self.assertEqual(summary["fired"], 0)
+        self.assertEqual(AlertFiring.objects.count(), 1)
+
+    def test_rebreach_within_cooldown_suppressed(self):
+        from cost_management.alerts import evaluate_all_rules
+
+        rule = self._mkrule(threshold=0.10, cooldown_hours=24)
+        self._breached_metrics(value=0.25)
+        evaluate_all_rules()
+        # Breach clears, then restarts inside the cooldown window.
+        self._recovered_metrics()
+        evaluate_all_rules()
+        rule.refresh_from_db()
+        self.assertFalse(rule.breached)
+        self._breached_metrics(value=0.30)
+        summary = evaluate_all_rules()
+        self.assertEqual(summary["fired"], 0)
+        self.assertEqual(AlertFiring.objects.count(), 1)
+
+    def test_rebreach_after_cooldown_fires(self):
+        from cost_management.alerts import evaluate_all_rules
+
+        rule = self._mkrule(threshold=0.10, cooldown_hours=24)
+        self._breached_metrics(value=0.25)
+        evaluate_all_rules()
+        self._recovered_metrics()
+        evaluate_all_rules()
+        # Age the firing past the cooldown, then re-breach.
+        AlertFiring.objects.update(
+            fired_at=timezone.now() - timezone.timedelta(hours=25)
+        )
+        self._breached_metrics(value=0.30)
+        summary = evaluate_all_rules()
+        self.assertEqual(summary["fired"], 1)
+        self.assertEqual(AlertFiring.objects.count(), 2)
+
+    def test_disabled_rule_never_fires(self):
+        from cost_management.alerts import evaluate_all_rules
+
+        self._mkrule(threshold=0.10, enabled=False)
+        self._breached_metrics(value=0.25)
+        summary = evaluate_all_rules()
+        self.assertEqual(summary["fired"], 0)
+        self.assertEqual(AlertFiring.objects.count(), 0)
+
+    def test_month_rollover_resets_breach_flags(self):
+        from cost_management.alerts import _maybe_reset_month
+
+        rule = self._mkrule()
+        rule.breached = True
+        rule.save(update_fields=["breached"])
+        OperatorPreference.objects.create(
+            key="alerts_last_eval_month", value={"month": "2020-01"}
+        )
+        _maybe_reset_month(timezone.now().date().replace(day=1))
+        rule.refresh_from_db()
+        self.assertFalse(rule.breached)
+
+    # -- C3 evaluator reuse ----------------------------------------------
+    def test_eval_verdict_threshold_override(self):
+        from cost_management.verdicts import _eval_verdict
+
+        ctx = {"eval_avg": 92.0, "prev_eval_avg": 95.0, "scored": 20}
+        self.assertIsNone(_eval_verdict(ctx))  # 3pt drop < default 5
+        card = _eval_verdict(ctx, drop_points=2.0)
+        self.assertIsNotNone(card)
+        self.assertEqual(card["id"], "eval-drop")
+        self.assertTrue(card["evidence"])
+
+    # -- Slack delivery ----------------------------------------------------
+    def test_slack_post_payload_shape(self):
+        from cost_management import alerts as alerts_mod
+
+        with patch.dict(os.environ, {"SLACK_ALERTS_WEBHOOK_URL": "https://hooks.slack.test/x"}):
+            with patch("urllib.request.urlopen") as mock_open:
+                mock_resp = MagicMock()
+                mock_resp.status = 200
+                mock_open.return_value.__enter__.return_value = mock_resp
+                ok = alerts_mod._post_slack(
+                    "Cost per conversation hit $0.25",
+                    ["Rule: Cost check", "• `cost.per_conversation` = `0.25`"],
+                    "panel-cost-commentary",
+                )
+        self.assertTrue(ok)
+        req = mock_open.call_args[0][0]
+        payload = json.loads(req.data.decode())
+        self.assertIn("Cost per conversation hit $0.25", payload["text"])
+        self.assertIn("panel-cost-commentary", payload["text"])
+        self.assertIn("cost.per_conversation", payload["text"])
+
+    def test_slack_unset_webhook_fails_silent(self):
+        from cost_management import alerts as alerts_mod
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("SLACK_ALERTS_WEBHOOK_URL", None)
+            with patch("urllib.request.urlopen") as mock_open:
+                ok = alerts_mod._post_slack("h", [], None)
+        self.assertFalse(ok)
+        mock_open.assert_not_called()
+
+    def test_slack_transport_error_fails_silent(self):
+        from cost_management import alerts as alerts_mod
+
+        with patch.dict(os.environ, {"SLACK_ALERTS_WEBHOOK_URL": "https://hooks.slack.test/x"}):
+            with patch("urllib.request.urlopen", side_effect=Exception("boom")):
+                ok = alerts_mod._post_slack("h", [], None)
+        self.assertFalse(ok)
+
+    # -- acknowledge -------------------------------------------------------
+    def test_acknowledge_firing(self):
+        self.client.force_login(self.user)
+        rule = self._mkrule()
+        firing = AlertFiring.objects.create(
+            rule=rule, metric_value=0.25, headline="breach", evidence=[]
+        )
+        resp = self.client.post(f"/api/cost/alert_firings/{firing.id}/acknowledge/")
+        self.assertEqual(resp.status_code, 200)
+        firing.refresh_from_db()
+        self.assertIsNotNone(firing.acknowledged_at)
+        # Idempotent: acknowledging twice keeps the first timestamp.
+        first = firing.acknowledged_at
+        resp = self.client.post(f"/api/cost/alert_firings/{firing.id}/acknowledge/")
+        self.assertEqual(resp.status_code, 200)
+        firing.refresh_from_db()
+        self.assertEqual(firing.acknowledged_at, first)
+
+    # -- preferences ---------------------------------------------------------
+    def test_preferences_crud(self):
+        self.client.force_login(self.user)
+        # Empty to start.
+        self.assertEqual(
+            self.client.get("/api/cost/preferences/").json(), {"preferences": {}}
+        )
+        # Upsert.
+        resp = self.client.put(
+            "/api/cost/preferences/",
+            data=json.dumps({"key": "dashboard_month", "value": "2026-09"}),
+            content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        body = self.client.get("/api/cost/preferences/").json()
+        self.assertEqual(body["preferences"]["dashboard_month"], "2026-09")
+        # Delete.
+        resp = self.client.delete("/api/cost/preferences/dashboard_month/")
+        self.assertEqual(resp.status_code, 200)
+        body = self.client.get("/api/cost/preferences/").json()
+        self.assertEqual(body, {"preferences": {}})
+
+    def test_preferences_reject_bad_input(self):
+        self.client.force_login(self.user)
+        resp = self.client.put(
+            "/api/cost/preferences/",
+            data=json.dumps({"value": "x"}),
+            content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, 400)

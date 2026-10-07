@@ -177,16 +177,18 @@ def _reconciliation_verdict(ctx):
     }
 
 
-def _eval_verdict(ctx):
+def _eval_verdict(ctx, drop_points=EVAL_DROP_POINTS):
     """Average evaluation score dropped meaningfully vs last month, on a
-    big-enough scored sample. Missing previous average means skip."""
+    big-enough scored sample. Missing previous average means skip.
+    drop_points is overridable so C4 alert rules can reuse this exact signal
+    with an operator-editable threshold (default: the C3 verdict bar)."""
     avg = ctx["eval_avg"]
     prev_avg = ctx["prev_eval_avg"]
     scored = ctx["scored"]
     if avg is None or prev_avg is None or scored < EVAL_MIN_SCORED:
         return None
     drop = prev_avg - avg
-    if drop < EVAL_DROP_POINTS:
+    if drop < drop_points:
         return None
     return {
         "id": "eval-drop",

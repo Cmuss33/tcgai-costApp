@@ -15,3 +15,16 @@ services:
       - type: rewrite
         source: /*
         destination: /index.html
+
+  # C4a: hourly alert-rule evaluation. NOTE: this cron needs the same env as
+  # the backend web service -- set DATABASE_URL (required) and
+  # SLACK_ALERTS_WEBHOOK_URL (incoming webhook for #p-agent-operations-platform;
+  # alerts are recorded in the DB even when it is unset) on this service in
+  # the Render dashboard. Render does not let a cron service inherit env vars
+  # from the web service automatically.
+  - type: cron
+    name: tcgai-costapp-alerts
+    runtime: python
+    buildCommand: pip install -r backend/tcgai_backend/requirements.txt
+    startCommand: cd backend/tcgai_backend && python manage.py evaluate_alerts
+    schedule: "0 * * * *"

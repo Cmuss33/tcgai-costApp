@@ -176,3 +176,76 @@ class AttributedOrder(models.Model):
 
     def __str__(self):
         return f"{self.shop} order {self.order_id} -> chat {self.chat_id_raw}"
+
+
+class AlertRule(models.Model):
+    """C4a: an operator-configured alert rule. Thresholds live in the DB so
+    they are editable from the dashboard settings surface without a deploy.
+
+    Threshold units depend on rule_type:
+      cost_per_conversation -- USD/conversation; breach when cost > threshold
+      spend_anomaly          -- multiple of trailing baseline; breach when
+                                month-to-date spend > expected * threshold
+      cache_hit_rate_drop    -- percentage points; breach when the cache
+                                savings_pct falls > threshold vs last month
+      eval_score_drop        -- absolute score points; breach when the avg
+                                evaluation score falls > threshold vs last month
+    """
+
+    RULE_TYPES = [
+        ("cost_per_conversation", "Cost per conversation above $X"),
+        ("spend_anomaly", "Spend anomaly vs trailing baseline"),
+        ("cache_hit_rate_drop", "Cache savings-rate drop"),
+        ("eval_score_drop", "Eval score drop"),
+    ]
+
+    rule_type = models.CharField(max_length=32, choices=RULE_TYPES, db_index=True)
+    name = models.CharField(max_length=255)
+    threshold = models.FloatField()
+    cooldown_hours = models.IntegerField(default=24)
+    enabled = models.BooleanField(default=True, db_index=True)
+    # Rising-edge state: True while the metric is currently breaching, so the
+    # evaluator fires once per breach episode (plus the cooldown backstop).
+    breached = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["rule_type", "name"]
+
+    def __str__(self):
+        state = "breaching" if self.breached else "ok"
+        return f"AlertRule {self.name} [{self.rule_type} > {self.threshold}] ({state})"
+
+
+class AlertFiring(models.Model):
+    """C4a: one fired alert -- the durable history behind "fire once per
+    breach". acknowledged_at tracks the operator's dismissal (C4b visible
+    memory); the most recent firing per rule also drives the cooldown."""
+
+    rule = models.ForeignKey(AlertRule, on_delete=models.CASCADE, related_name="firings")
+    fired_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    metric_value = models.FloatField(null=True, blank=True)
+    headline = models.TextField()
+    evidence = models.JSONField(null=True, blank=True)  # C1-idiom stat citations
+    acknowledged_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-fired_at"]
+
+    def __str__(self):
+        return f"AlertFiring {self.rule.name} @ {self.fired_at:%Y-%m-%d %H:%M}"
+
+
+class OperatorPreference(models.Model):
+    """C4b: visible preference memory. Single-operator app, so preferences
+    are keyed by name, shown on the dashboard settings surface, and editable
+    / deletable there -- never silent cookies. Known keys: dashboard_month
+    (last viewed YYYY-MM)."""
+
+    key = models.CharField(max_length=64, unique=True)
+    value = models.JSONField()
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"OperatorPreference {self.key}"
