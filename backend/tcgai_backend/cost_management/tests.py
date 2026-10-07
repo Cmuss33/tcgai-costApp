@@ -10,6 +10,7 @@ import requests
 from django.contrib.auth.models import User
 from django.core.management import call_command
 from django.test import TestCase, override_settings
+from django.utils import timezone
 
 from .models import AttributedOrder, Chat, Message
 from .issue_trackers import GitHubIssueTracker, IssueRef, IssueTrackerError, LinearIssueTracker
@@ -2535,8 +2536,11 @@ class CostCommentaryTests(TestCase):
         self.assertIn("15.0", prompt)
         self.assertIn("50.0", prompt)
         self.assertIn("Fixed a cache-token undercount", prompt)
-        self.assertIn("Measurement fix", prompt)
-        self.assertIn("NEVER invent a cause", prompt)
+        # C1: the prompt lists the raw category value so citations match it
+        # exactly for deterministic verification.
+        self.assertIn("[measurement_fix]", prompt)
+        self.assertIn("spend.total", prompt)
+        self.assertIn("NEVER invent", prompt)
 
     def test_prompt_notes_when_no_changelog_entries_exist(self):
         from cost_management.cost_commentary import _build_cost_commentary_prompt
@@ -4639,3 +4643,240 @@ class ReportRecommendationsTests(TestCase):
         d = response.json()
         self.assertEqual(d["recommendations"], [])
         self.assertIsNone(d["generated_at"])
+
+
+class CostCommentaryCitationTests(TestCase):
+    """ENG-199 C1a: citation-carrying cost commentary. Every driver claim
+    must cite a real changelog row or dashboard figure; _verify_citations
+    checks deterministically (no LLM) and drops anything unverified."""
+
+    def setUp(self):
+        from datetime import date
+        from .cost_commentary import _stat_metrics_table
+        from .models import CostMethodologyChange
+        self.stats = {
+            "spend": {"total": 12.5, "prev_total": 10.0, "delta_pct": 25.0},
+            "conversations": {"total": 200, "prev_total": 100, "delta_pct": 100.0},
+            "per_conversation": {"cost": 0.0625, "prev_cost": 0.1, "cost_delta_pct": -37.5},
+            "tokens": {"cache_hit_rate": 0.42},
+        }
+        self.change = CostMethodologyChange(
+            date=date(2026, 9, 16),
+            category="measurement_fix",
+            description="Fixed double-counting of cache reads",
+        )
+        self.table = _stat_metrics_table(self.stats)
+
+    def test_prompt_names_metrics_and_requires_citations(self):
+        from .cost_commentary import _build_cost_commentary_prompt
+        prompt = _build_cost_commentary_prompt(self.stats, [self.change], "September 2026")
+        # citable metric table with exact figures
+        self.assertIn("spend.total = 12.5", prompt)
+        self.assertIn("conversations.delta_pct = 100.0", prompt)
+        # changelog rows with exact date + raw category
+        self.assertIn("2026-09-16 [measurement_fix]", prompt)
+        # structured citation instruction
+        self.assertIn('"citations"', prompt)
+        self.assertIn("EMPTY citations array", prompt)
+        self.assertIn("unexplained", prompt)
+
+    def test_valid_changelog_citation_passes(self):
+        from .cost_commentary import _verify_citations
+        core = {"drivers": [{
+            "type": "measurement_artifact",
+            "description": "Cache double-count fixed",
+            "citations": [{"kind": "changelog", "date": "2026-09-16", "category": "measurement_fix"}],
+        }]}
+        out = _verify_citations(core, self.stats, [self.change])
+        d = out["drivers"][0]
+        self.assertTrue(d["cited"])
+        self.assertEqual(d["type"], "measurement_artifact")
+        self.assertEqual(out["claims_total"], 1)
+        self.assertEqual(out["claims_cited"], 1)
+        self.assertEqual(out["grounding_rate"], 1.0)
+
+    def test_changelog_citation_wrong_date_or_category_dropped(self):
+        from .cost_commentary import _verify_citations
+        for bad in [
+            {"kind": "changelog", "date": "2026-09-17", "category": "measurement_fix"},
+            {"kind": "changelog", "date": "2026-09-16", "category": "new_feature"},
+        ]:
+            core = {"drivers": [{
+                "type": "measurement_artifact", "description": "x", "citations": [bad],
+            }]}
+            out = _verify_citations(core, self.stats, [self.change])
+            d = out["drivers"][0]
+            self.assertEqual(d["citations"], [])
+            self.assertFalse(d["cited"])
+            # no evidence -> no claim: downgraded
+            self.assertEqual(d["type"], "unexplained")
+
+    def test_valid_stat_citation_passes(self):
+        from .cost_commentary import _verify_citations
+        core = {"drivers": [{
+            "type": "real_usage_change",
+            "description": "Volume doubled",
+            "citations": [{"kind": "stat", "metric": "conversations.total", "value": 200}],
+        }]}
+        out = _verify_citations(core, self.stats, [self.change])
+        self.assertTrue(out["drivers"][0]["cited"])
+
+    def test_stat_citation_wrong_value_or_metric_dropped(self):
+        from .cost_commentary import _verify_citations
+        for bad in [
+            {"kind": "stat", "metric": "conversations.total", "value": 201},
+            {"kind": "stat", "metric": "spend.bogus", "value": 12.5},
+            {"kind": "bogus", "metric": "spend.total", "value": 12.5},
+        ]:
+            core = {"drivers": [{
+                "type": "real_usage_change", "description": "x", "citations": [bad],
+            }]}
+            out = _verify_citations(core, self.stats, [self.change])
+            self.assertFalse(out["drivers"][0]["cited"])
+            self.assertEqual(out["drivers"][0]["type"], "unexplained")
+
+    def test_float_tolerance(self):
+        from .cost_commentary import _verify_citations
+        core = {"drivers": [{
+            "type": "real_usage_change", "description": "x",
+            "citations": [{"kind": "stat", "metric": "per_conversation.cost", "value": 0.0625000001}],
+        }]}
+        out = _verify_citations(core, self.stats, [self.change])
+        self.assertTrue(out["drivers"][0]["cited"])
+
+    def test_legacy_changelog_date_converted(self):
+        from .cost_commentary import _verify_citations
+        core = {"drivers": [{
+            "type": "measurement_artifact",
+            "description": "Old payload",
+            "changelog_date": "2026-09-16",
+        }]}
+        out = _verify_citations(core, self.stats, [self.change])
+        d = out["drivers"][0]
+        self.assertTrue(d["cited"])
+        self.assertEqual(d["citations"][0]["kind"], "changelog")
+
+    def test_grounding_counts(self):
+        from .cost_commentary import _verify_citations
+        core = {"drivers": [
+            {"type": "real_usage_change", "description": "a",
+             "citations": [{"kind": "stat", "metric": "spend.total", "value": 12.5}]},
+            {"type": "unexplained", "description": "b", "citations": []},
+            {"type": "measurement_artifact", "description": "c",
+             "citations": [{"kind": "changelog", "date": "2099-01-01", "category": "incident"}]},
+        ]}
+        out = _verify_citations(core, self.stats, [self.change])
+        self.assertEqual(out["claims_total"], 3)
+        self.assertEqual(out["claims_cited"], 1)
+        self.assertEqual(out["grounding_rate"], round(1 / 3, 3))
+        # the invented changelog date is dropped and the driver downgraded
+        self.assertEqual(out["drivers"][2]["type"], "unexplained")
+
+    def test_commentary_for_applies_verification(self):
+        from . import cost_commentary as cc
+        from unittest.mock import patch
+        from django.core.cache import cache
+        cache.clear()
+        stats = dict(self.stats, month="September 2026",
+                     conversations={"total": 200, "prev_total": 100, "delta_pct": 100.0})
+        fake_core = {"headline": "h", "assessment": "real_increase", "drivers": [
+            {"type": "measurement_artifact", "description": "invented cause",
+             "citations": [{"kind": "changelog", "date": "2020-01-01", "category": "incident"}]},
+        ]}
+        with patch.object(cc, "_build_stats", return_value=stats), \
+             patch.object(cc, "_changelog_for_window", return_value=[self.change]), \
+             patch.object(cc, "_generate_cost_commentary", return_value=fake_core):
+            from datetime import date
+            result = cc.cost_commentary_for(date(2026, 9, 1))
+        d = result["drivers"][0]
+        self.assertFalse(d["cited"])
+        self.assertEqual(d["type"], "unexplained")
+        self.assertEqual(result["claims_cited"], 0)
+        cache.clear()
+
+
+class QualityThemeTests(TestCase):
+    """ENG-199 C1b: cited quality themes from flagged/low-scored chats."""
+
+    def test_transcript_carries_quality_attributes(self):
+        from .insights_views import _build_transcript
+        from .models import Chat
+        chat = Chat(chat_id="c1", model="m", evaluation_score=42,
+                    investigation_status="flagged")
+        text, _ = _build_transcript(chat, [])
+        self.assertIn('evaluation_score="42"', text)
+        self.assertIn('flagged="true"', text)
+        self.assertIn('id="c1"', text)
+
+    def test_transcript_omits_absent_attributes(self):
+        from .insights_views import _build_transcript
+        from .models import Chat
+        chat = Chat(chat_id="c2", model="m", evaluation_score=None,
+                    investigation_status="unflagged")
+        text, _ = _build_transcript(chat, [])
+        self.assertNotIn("evaluation_score=", text)
+        self.assertNotIn("flagged=", text)
+
+    def test_sanitize_drops_invented_example_ids(self):
+        from .insights_views import _sanitize_quality_theme_examples
+        core = {"quality_themes": [
+            {"name": "T1", "summary": "s",
+             "examples": ["real-1", "invented-9", "real-2"]},
+            {"name": "T2", "summary": "s", "examples": ["invented-9"]},
+            "not-a-dict",
+        ]}
+        out = _sanitize_quality_theme_examples(core, {"real-1", "real-2"})
+        self.assertEqual(len(out["quality_themes"]), 1)
+        self.assertEqual(out["quality_themes"][0]["examples"], ["real-1", "real-2"])
+
+    def test_prompt_asks_for_quality_themes(self):
+        from .insights_views import _build_prompt, LOW_SCORE_THRESHOLD
+        prompt = _build_prompt(['<conversation id="a" evaluation_score="40">\nHi\n</conversation>'],
+                               "September 2026", 1)
+        self.assertIn("quality_themes", prompt)
+        self.assertIn(str(LOW_SCORE_THRESHOLD), prompt)
+        self.assertIn('flagged="true"', prompt)
+
+    def test_quality_themes_in_list_fields(self):
+        from .insights_views import _LIST_FIELDS, _sanitize_report, REPORT_INSIGHTS_TOOL
+        self.assertIn("quality_themes", _LIST_FIELDS)
+        self.assertIn("quality_themes", REPORT_INSIGHTS_TOOL["input_schema"]["required"])
+        # sanitize keeps the field and drops malformed shapes
+        out = _sanitize_report({"quality_themes": "nope", "headline": "h",
+                                "top_requests": [], "unmet_needs": [],
+                                "product_demand": [], "recommendations": []})
+        self.assertEqual(out["quality_themes"], [])
+
+
+class GraderPromptTests(TestCase):
+    """ENG-199 C1c: the chat grader must not penalize dialect, slang,
+    typos, code-switching, or non-standard grammar."""
+
+    def test_prompt_has_dialect_robustness_wording(self):
+        from . import views
+        from .models import Chat, Message
+        from unittest.mock import patch, MagicMock
+        chat = Chat.objects.create(chat_id="g1", model="m", timestamp=timezone.now())
+        Message.objects.create(chat=chat, content="u want dis card??",
+                               llm_formatted_message="u want dis card??",
+                               returned_content="Yes, we have it.",
+                               llm_formatted_returned_message="Yes, we have it.",
+                               tokens_in=10, tokens_out=10,
+                               timestamp=timezone.now())
+        captured = {}
+
+        def fake_create(**kwargs):
+            captured["prompt"] = kwargs["messages"][0]["content"]
+            m = MagicMock()
+            m.content = [MagicMock(text="100")]
+            return m
+
+        with patch("anthropic.Anthropic") as mock_client:
+            mock_client.return_value.messages.create.side_effect = fake_create
+            with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "x"}):
+                score = views.score_single_chat(chat)
+        self.assertEqual(score, 100)
+        prompt = captured["prompt"].lower()
+        for phrase in ["dialect", "slang", "typos", "never lower the score",
+                       "inferred intent", "writing style"]:
+            self.assertIn(phrase, prompt)

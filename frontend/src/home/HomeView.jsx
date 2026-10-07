@@ -551,15 +551,37 @@ function CostCommentaryPanel({ data }) {
         maintained changelog of known measurement changes &mdash; never a guess.
       </div>
       {data.headline && <p>{data.headline}</p>}
+      {typeof data.grounding_rate === "number" && data.claims_total > 0 && (
+        <div className="cr__note">
+          Evidence check: {data.claims_cited} of {data.claims_total} claims cite a
+          real changelog entry or dashboard figure.
+        </div>
+      )}
       {drivers.length > 0 && (
         <ul className="cr__drivers">
-          {drivers.map((d, i) => (
-            <li key={i}>
-              <span className="cr__badge">{DRIVER_LABELS[d.type] ?? d.type}</span>{" "}
-              {d.description}
-              {d.changelog_date && <span className="cr__muted"> ({d.changelog_date})</span>}
-            </li>
-          ))}
+          {drivers.map((d, i) => {
+            const citations = asList(d.citations);
+            return (
+              <li key={i}>
+                <span className="cr__badge">{DRIVER_LABELS[d.type] ?? d.type}</span>{" "}
+                {d.description}
+                {d.changelog_date && <span className="cr__muted"> ({d.changelog_date})</span>}
+                {citations.length > 0 && (
+                  <div className="cr__cite">
+                    Evidence:{" "}
+                    {citations.map((c, j) => (
+                      <span key={j}>
+                        {c.kind === "changelog"
+                          ? `changelog ${c.date} [${c.category}]`
+                          : `${c.metric} = ${String(c.value)}`}
+                        {j < citations.length - 1 ? "; " : ""}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </li>
+            );
+          })}
         </ul>
       )}
     </CollapsiblePanel>
@@ -1202,8 +1224,34 @@ function DemandRadarHero({ demand, oneOffs, isLifetime }) {
   );
 }
 
-function RecommendationsSection({ requests, isLifetime }) {
-  const reqList = asList(requests);
+/* C1: cited quality themes -- recurring failure patterns from the month's
+   low-scored and flagged conversations. Every theme links to the real chats
+   behind it; the backend drops any example id that wasn't in the analyzed
+   sample, so a theme with no links can't appear. */
+function QualityThemesPanel({ themes }) {
+  const list = asList(themes);
+  if (list.length === 0) return null;
+  return (
+    <CollapsiblePanel
+      id="panel-quality-themes"
+      title="Where the bot struggled"
+      accent="var(--a-eval)"
+      description="Recurring failure patterns from this month's low-scored and flagged conversations — each theme links to the real chats behind it."
+    >
+      <ul className="cr__drivers">
+        {list.map((t, i) => (
+          <li key={i}>
+            <strong>{t.name}</strong>
+            {t.summary && <span className="cr__muted"> — {t.summary}</span>}
+            <ExampleLinks ids={t.examples} />
+          </li>
+        ))}
+      </ul>
+    </CollapsiblePanel>
+  );
+}
+
+function RecommendationsSection({ requests, isLifetime }) {  const reqList = asList(requests);
   const maxReq = Math.max(1, ...reqList.map((r) => r.count || 0));
 
   if (reqList.length === 0) return null;
@@ -1936,6 +1984,7 @@ function HomeView() {
                 isLifetime={isLifetime}
               />
             </div>
+            {showFindings && <QualityThemesPanel themes={iview.quality_themes} />}
             {showFindings && (
               <RecommendationsSection
                 requests={iview.top_requests}
