@@ -12,7 +12,7 @@ from django.core.management import call_command
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
-from .models import AttributedOrder, Chat, Message, AlertRule, AlertFiring, OperatorPreference
+from .models import AttributedOrder, Chat, Message, AlertRule, AlertFiring, OperatorPreference, AdvisorTelemetry
 from .issue_trackers import GitHubIssueTracker, IssueRef, IssueTrackerError, LinearIssueTracker
 
 
@@ -5471,3 +5471,223 @@ class AlertRulesTests(TestCase):
             content_type="application/json",
         )
         self.assertEqual(resp.status_code, 400)
+
+
+def make_telemetry_payload(chat_id="conv-tel-1", **overrides):
+    payload = {
+        "chat_id": chat_id,
+        "shop": "test-shop.myshopify.com",
+        "surface": "chat",
+        "stated_budget": "60.00",
+        "currency": "USD",
+        "picks": [
+            {"key": "p1", "title": "Hero Card", "price": "45.00", "is_hero": True},
+            {"key": "p2", "title": "Add-on Sleeves", "price": "12.00", "is_hero": False},
+        ],
+        "emitted_at": "2026-10-07T10:00:00Z",
+    }
+    payload.update(overrides)
+    return payload
+
+
+class AdvisorTelemetryTests(TestCase):
+    """C6: advisor budget telemetry ingest + deterministic budget audit."""
+
+    def setUp(self):
+        cache.clear()
+        self.user = User.objects.create_user(username="owner", password="pw")
+
+    def tearDown(self):
+        cache.clear()
+
+    # -- endpoint validation -------------------------------------------
+    def test_missing_fields_are_400(self):
+        for payload in (
+            make_telemetry_payload(chat_id=""),
+            make_telemetry_payload(shop=""),
+            make_telemetry_payload(picks=[]),
+            make_telemetry_payload(picks="notalist"),
+            make_telemetry_payload(picks=[{"key": "x"}]),  # no priced entries
+        ):
+            response = self.client.post(
+                "/api/cost/log_advisor_telemetry/",
+                data=json.dumps(payload),
+                content_type="application/json",
+            )
+            self.assertEqual(response.status_code, 400, payload)
+
+    def test_happy_path_creates_row_and_links_chat(self):
+        Chat.objects.create(chat_id="conv-tel-1", model="claude-haiku-4-5")
+        response = self.client.post(
+            "/api/cost/log_advisor_telemetry/",
+            data=json.dumps(make_telemetry_payload()),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "success")
+        self.assertTrue(response.json()["created"])
+
+        row = AdvisorTelemetry.objects.get(chat_id_raw="conv-tel-1")
+        self.assertEqual(row.chat.chat_id, "conv-tel-1")
+        self.assertEqual(float(row.stated_budget), 60.00)
+        self.assertEqual(len(row.picks), 2)
+        self.assertEqual(row.picks[0]["price"], 45.00)
+        self.assertEqual(row.surface, "chat")
+
+    def test_reemit_same_run_updates_instead_of_duplicating(self):
+        for i, payload in enumerate(
+            (
+                make_telemetry_payload(),
+                make_telemetry_payload(stated_budget="70.00"),
+            )
+        ):
+            response = self.client.post(
+                "/api/cost/log_advisor_telemetry/",
+                data=json.dumps(payload),
+                content_type="application/json",
+            )
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()["created"], i == 0)
+
+        qs = AdvisorTelemetry.objects.filter(chat_id_raw="conv-tel-1")
+        self.assertEqual(qs.count(), 1)
+        self.assertEqual(float(qs.get().stated_budget), 70.00)
+
+    def test_unknown_chat_id_still_stored_unlinked(self):
+        # Telemetry must never be lost: a chat_id with no Chat row stores
+        # with chat=NULL so the audit can surface it as `unlinked_telemetry`
+        # (join-key drift canary, same discipline as C5).
+        response = self.client.post(
+            "/api/cost/log_advisor_telemetry/",
+            data=json.dumps(make_telemetry_payload(chat_id="never-logged")),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        row = AdvisorTelemetry.objects.get(chat_id_raw="never-logged")
+        self.assertIsNone(row.chat)
+
+    def test_bad_surface_falls_back_to_chat(self):
+        response = self.client.post(
+            "/api/cost/log_advisor_telemetry/",
+            data=json.dumps(make_telemetry_payload(surface="sms")),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(AdvisorTelemetry.objects.get().surface, "chat")
+
+    # -- pure audit function --------------------------------------------
+    def test_audit_compliant_hero_under_budget(self):
+        from .budget_audit import audit_chat_compliance
+
+        result = audit_chat_compliance(
+            [{"title": "Hero", "price": "45.00"}, {"title": "Addon", "price": "12.00"}],
+            "60.00",
+        )
+        self.assertTrue(result["budget_known"])
+        self.assertTrue(result["compliant"])
+        self.assertEqual(result["hero_price"], 45.00)
+        self.assertEqual(result["over_budget_addons"], [])
+
+    def test_audit_non_compliant_hero_over_budget(self):
+        from .budget_audit import audit_chat_compliance
+
+        result = audit_chat_compliance([{"title": "Hero", "price": "75.00"}], "60.00")
+        self.assertTrue(result["budget_known"])
+        self.assertFalse(result["compliant"])
+
+    def test_audit_unknown_budget_is_never_a_violation(self):
+        from .budget_audit import audit_chat_compliance
+
+        for budget in (None, "not-a-number"):
+            result = audit_chat_compliance([{"title": "Hero", "price": "999.00"}], budget)
+            self.assertFalse(result["budget_known"])
+            self.assertTrue(result["compliant"])
+
+    def test_audit_over_budget_addons_flagged_informationally(self):
+        from .budget_audit import audit_chat_compliance
+
+        result = audit_chat_compliance(
+            [
+                {"title": "Hero", "price": "40.00"},
+                {"title": "Pricey Addon", "price": "80.00"},
+            ],
+            "60.00",
+        )
+        # Hero governs compliance; the add-on is informational only.
+        self.assertTrue(result["compliant"])
+        self.assertEqual(len(result["over_budget_addons"]), 1)
+        self.assertEqual(result["over_budget_addons"][0]["title"], "Pricey Addon")
+        self.assertEqual(result["over_budget_addons"][0]["over_by"], 20.00)
+
+    def test_audit_empty_picks_is_not_a_violation(self):
+        from .budget_audit import audit_chat_compliance
+
+        result = audit_chat_compliance([], "60.00")
+        self.assertTrue(result["budget_known"])
+        self.assertTrue(result["compliant"])
+        self.assertIsNone(result["hero_price"])
+
+    # -- monthly aggregate endpoint --------------------------------------
+    def _seed_month(self):
+        month_start = _now().replace(day=1)
+        # 4 real chats this month (denominator for emit coverage).
+        for cid in ("c1", "c2", "c3", "c4"):
+            Chat.objects.create(chat_id=cid, model="m")
+        AdvisorTelemetry.objects.filter().delete()
+        rows = [
+            # compliant: hero 45 <= budget 60, linked
+            ("c1", "chat", "60.00", [{"title": "Hero", "price": "45.00"}]),
+            # violation: hero 75 > budget 60, linked
+            ("c2", "chat", "60.00", [{"title": "Hero", "price": "75.00"}]),
+            # unknown budget: never a violation, linked
+            ("c3", "ai_curator", None, [{"title": "Hero", "price": "10.00"}]),
+            # violation, unlinked chat (canary)
+            ("ghost", "chat", "20.00", [{"title": "Hero", "price": "50.00"}]),
+        ]
+        for chat_id_raw, surface, budget, picks in rows:
+            chat = Chat.objects.filter(chat_id=chat_id_raw).first()
+            AdvisorTelemetry.objects.create(
+                chat=chat,
+                chat_id_raw=chat_id_raw,
+                shop="test-shop.myshopify.com",
+                surface=surface,
+                stated_budget=budget,
+                picks=picks,
+            )
+        return month_start
+
+    def test_budget_audit_endpoint_numbers(self):
+        self._seed_month()
+        self.client.force_login(self.user)
+        body = self.client.get("/api/cost/budget_audit/").json()
+
+        self.assertEqual(body["telemetry_chats"], 4)
+        self.assertEqual(body["budget_stated_chats"], 3)
+        self.assertEqual(body["non_compliant_chats"], 2)
+        # 1 of 3 budget-stated chats compliant -> 33.3%.
+        self.assertEqual(body["compliance_rate"], 33.3)
+        # Violations sorted worst-first, capped, with transcript ids.
+        self.assertEqual(len(body["violations"]), 2)
+        self.assertEqual(body["violations"][0]["chat_id"], "ghost")
+        self.assertEqual(body["violations"][0]["over_by"], 30.00)
+        self.assertEqual(body["violations"][1]["chat_id"], "c2")
+        # Coverage: 4 telemetry chats / 4 real conversations.
+        self.assertEqual(body["emit_coverage_pct"], 100.0)
+        self.assertEqual(body["unlinked_telemetry"], 1)
+
+    def test_budget_audit_empty_month(self):
+        self.client.force_login(self.user)
+        body = self.client.get("/api/cost/budget_audit/").json()
+        self.assertEqual(body["telemetry_chats"], 0)
+        self.assertEqual(body["non_compliant_chats"], 0)
+        self.assertIsNone(body["compliance_rate"])
+        self.assertEqual(body["violations"], [])
+
+    def test_budget_audit_requires_login(self):
+        response = self.client.get("/api/cost/budget_audit/")
+        self.assertIn(response.status_code, (401, 403))
+
+    def test_budget_audit_rejects_bad_month(self):
+        self.client.force_login(self.user)
+        response = self.client.get("/api/cost/budget_audit/?month=nope")
+        self.assertEqual(response.status_code, 400)

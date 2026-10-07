@@ -1,9 +1,10 @@
 from django.http import JsonResponse
 from .llm_provider_adapter_implementations import AnthropicAdapter
-from .models import AttributedOrder, Chat, Message
+from .models import AdvisorTelemetry, AttributedOrder, Chat, Message
 from django.views.decorators.http import require_http_methods
 from django.views.decorators.csrf import csrf_exempt
 import json
+import logging
 import math
 from decimal import Decimal, InvalidOperation
 from django.contrib.auth import authenticate, login, logout
@@ -19,6 +20,8 @@ from .api_auth import api_login_required
 from .month_utils import CONVERSATION_START_DATE, real_chats
 
 llmprovider = AnthropicAdapter()
+
+logger = logging.getLogger(__name__)
 
 import re
 import random
@@ -650,6 +653,96 @@ def log_attribution(request):
                     "influence_score": influence_score,
                 },
             )
+        return JsonResponse({"status": "success", "created": created})
+    except Exception as e:
+        return JsonResponse({"status": "error", "message": str(e)}, status=400)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def log_advisor_telemetry(request):
+    """Fire-and-forget advisor budget telemetry ingestion from the chatbot's
+    Sales Advisor (emitted next to its `advisor_shown` events, both surfaces).
+    Same unauthenticated shape as log_attribution: the chatbot posts
+    server-side with no session, so this route is csrf_exempt and login-free
+    by design -- it only ever writes AdvisorTelemetry rows.
+
+    Idempotent on (chat_id, surface, emitted_at): re-emits of the same advisor
+    run update the row instead of duplicating it. Telemetry for a chat_id with
+    no Chat row is still stored (chat left null) -- the budget audit surfaces
+    those rows as `unlinked_telemetry`, a canary for join-key drift.
+    """
+    try:
+        data = json.loads(request.body)
+        chat_id = data.get("chat_id")
+        shop = str(data.get("shop") or "")
+        picks = data.get("picks")
+        if not chat_id or not shop or not isinstance(picks, list) or not picks:
+            return JsonResponse(
+                {"status": "error",
+                 "message": "chat_id, shop, and a non-empty picks list are required"},
+                status=400,
+            )
+
+        def _dec(value):
+            try:
+                return Decimal(str(value)) if value is not None else None
+            except (InvalidOperation, ValueError, TypeError):
+                return None
+
+        stated_budget = _dec(data.get("stated_budget"))
+
+        clean_picks = []
+        for p in picks:
+            if not isinstance(p, dict):
+                continue
+            price = _dec(p.get("price"))
+            if price is None:
+                continue
+            clean_picks.append(
+                {
+                    "key": str(p.get("key") or "")[:255],
+                    "title": str(p.get("title") or "")[:500],
+                    "price": float(price),
+                    "is_hero": bool(p.get("is_hero")),
+                }
+            )
+        if not clean_picks:
+            return JsonResponse(
+                {"status": "error", "message": "picks contained no priced entries"},
+                status=400,
+            )
+
+        surface = str(data.get("surface") or "chat")[:20]
+        if surface not in ("chat", "ai_curator"):
+            surface = "chat"
+
+        emitted_at = data.get("emitted_at")
+        if isinstance(emitted_at, str):
+            try:
+                emitted_at = parse_datetime(emitted_at)
+            except (ValueError, TypeError):
+                emitted_at = None
+
+        chat = Chat.objects.filter(chat_id=str(chat_id)).first()
+
+        with transaction.atomic():
+            obj, created = AdvisorTelemetry.objects.update_or_create(
+                chat_id_raw=str(chat_id),
+                surface=surface,
+                emitted_at=emitted_at,
+                defaults={
+                    "chat": chat,
+                    "shop": shop,
+                    "stated_budget": stated_budget,
+                    "currency": str(data.get("currency") or "USD")[:3].upper(),
+                    "picks": clean_picks,
+                },
+            )
+        logger.info(
+            "[telemetry] advisor_telemetry_ingested chat=%s shop=%s surface=%s picks=%d created=%s",
+            obj.chat_id_raw, shop, surface, len(clean_picks), created,
+        )
         return JsonResponse({"status": "success", "created": created})
     except Exception as e:
         return JsonResponse({"status": "error", "message": str(e)}, status=400)

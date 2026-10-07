@@ -178,6 +178,61 @@ class AttributedOrder(models.Model):
         return f"{self.shop} order {self.order_id} -> chat {self.chat_id_raw}"
 
 
+class AdvisorTelemetry(models.Model):
+    """Per-advisor-run budget telemetry emitted by the chatbot's Sales Advisor.
+
+    Ingested via POST /api/cost/log_advisor_telemetry/ (fire-and-forget, same
+    unauthenticated shape as log_attribution/), emitted next to the chatbot's
+    `advisor_shown` events on both surfaces (chat, ai_curator). Powers the C6
+    budget-compliance audit: the C2 "Audit advisor budget compliance" mission
+    checks that the advisor's BUDGET CONSTRAINT RULE (hero pick at or below
+    the shopper's stated budget) holds in production.
+
+    The join key is chatbot conversation_id == Chat.chat_id (posted as
+    chat_id). `chat` stays nullable: telemetry can arrive for a chat_id that
+    was never logged, and that must not lose the row -- the budget audit
+    surfaces those rows as `unlinked_telemetry`, a canary for join-key drift
+    (same discipline as C5's unlinked_orders).
+
+    `stated_budget` is null when the shopper stated no budget or the parse was
+    ambiguous -- the chatbot never guesses. The audit treats null budget as
+    "unknown", never as a violation.
+    """
+
+    SURFACE_CHOICES = [("chat", "Chat"), ("ai_curator", "AI Curator")]
+
+    chat = models.ForeignKey(
+        Chat, null=True, blank=True, on_delete=models.SET_NULL,
+        to_field="chat_id", related_name="advisor_telemetry",
+    )
+    chat_id_raw = models.CharField(max_length=255, db_index=True)
+    shop = models.CharField(max_length=255, db_index=True, default="")
+    surface = models.CharField(max_length=20, choices=SURFACE_CHOICES, default="chat")
+    stated_budget = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    currency = models.CharField(max_length=3, default="USD")
+    # [{key, title, price, is_hero}] in advisor order; hero is picks[0].
+    picks = models.JSONField(default=list)
+    emitted_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            # Re-emits of the same advisor run are idempotent: the natural
+            # dedupe key (chat_id, surface, emitted_at) updates the row.
+            models.UniqueConstraint(
+                fields=["chat_id_raw", "surface", "emitted_at"],
+                name="unique_advisor_telemetry_emit",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["shop", "created_at"]),
+        ]
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.shop} {self.surface} telemetry -> chat {self.chat_id_raw}"
+
+
 class AlertRule(models.Model):
     """C4a: an operator-configured alert rule. Thresholds live in the DB so
     they are editable from the dashboard settings surface without a deploy.

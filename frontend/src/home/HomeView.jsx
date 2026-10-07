@@ -7,7 +7,7 @@ const POLL_MS = 2500;
 const MAX_POLLS = 35;
 // stats, insights (first response only -- not each poll),
 // costReconciliation, cacheEconomics, commercialImpact
-const TOTAL_LOADERS = 7;
+const TOTAL_LOADERS = 8;
 
 const STATUS_LABELS = { out_of_stock: "out of stock", not_carried: "not carried", unknown: "unknown" };
 const ASSESSMENT_LABELS = {
@@ -1395,8 +1395,6 @@ function VerdictCard({ card }) {
    live responses at render; nothing is hardcoded in copy (mission-rot guard:
    if an endpoint changes, the steps follow it). */
 const RECON_OK_PCT = 5; // same bar as the C3 reconciliation verdict
-const AUDIT_COVERAGE_PCT = 80; // min scored-chat coverage for a meaningful budget audit
-const BUDGET_THEME_RE = /budget|over-?budget|pric/i; // pricing/budget failure themes
 const NEEDS_ATTENTION_LIMIT = 50;
 
 function MissionChatLinks({ chats }) {
@@ -1405,7 +1403,7 @@ function MissionChatLinks({ chats }) {
     <div className="cr__ex">
       {chats.map((c) => (
         <Link key={c.chat_id} to={`/chats?chat=${encodeURIComponent(c.chat_id)}`}>
-          {c.evaluation_score != null ? `${c.evaluation_score}%` : "flagged"}
+          {c.label ?? (c.evaluation_score != null ? `${c.evaluation_score}%` : "flagged")}
         </Link>
       ))}
     </div>
@@ -1461,7 +1459,7 @@ function MissionCard({ icon, title, blurb, steps }) {
   );
 }
 
-function buildMissions({ stats, costReconciliation, cacheEconomics, insights, needsAttention }) {
+function buildMissions({ stats, costReconciliation, cacheEconomics, insights, needsAttention, budgetAudit }) {
   const missions = [];
 
   // Mission 1: Cut cost 20% -- the three cost levers, each with a live number.
@@ -1552,19 +1550,15 @@ function buildMissions({ stats, costReconciliation, cacheEconomics, insights, ne
     ],
   });
 
-  // Mission 3: Audit advisor budget compliance.
-  // NOTE: v1 has no per-pick advisor budget telemetry -- the cost app never
-  // receives the shopper's stated budget or the advisor's picks. So this mission
-  // audits what the data supports: (1) eval coverage is high enough for the audit
-  // to mean anything, (2) no pricing/budget failure themes in this month's audit,
-  // (3) the worst chats are clean to spot-check. If advisor telemetry lands later,
-  // step 3 is where its check goes.
-  const coverage = stats?.eval_score?.coverage_pct;
-  const themeHits = themes.filter((t) => BUDGET_THEME_RE.test(`${t.name ?? ""} ${t.summary ?? ""}`));
-  const worst = [...chats]
-    .filter((c) => c.evaluation_score != null)
-    .sort((a, b) => a.evaluation_score - b.evaluation_score)
-    .slice(0, 3);
+  // Mission 3: Audit advisor budget compliance -- REAL checks over C6 telemetry.
+  // The chatbot emits per-run telemetry (stated shopper budget + picks with
+  // prices); this mission audits the advisor's BUDGET CONSTRAINT RULE (hero
+  // pick at or below the stated budget) against it. Done when telemetry is
+  // flowing and no budget-stated chat has an over-budget hero pick. A null
+  // stated budget is "unknown", never a violation -- the chatbot never guesses.
+  const ba = budgetAudit ?? null;
+  const baReady = ba != null;
+  const violations = ba?.violations ?? [];
   missions.push({
     id: "budget-audit",
     icon: "🧾",
@@ -1572,23 +1566,36 @@ function buildMissions({ stats, costReconciliation, cacheEconomics, insights, ne
     blurb: "Confirm the advisor respects shopper budgets.",
     steps: [
       {
-        label: "Enough chats scored to audit",
-        value: coverage == null ? "…" : `${coverage}% scored`,
-        done: coverage == null ? null : coverage >= AUDIT_COVERAGE_PCT,
-        detail: `Below ${AUDIT_COVERAGE_PCT}% coverage the audit can't be trusted -- run batch evaluation first.`,
+        label: "Telemetry flowing from the advisor",
+        value: !baReady
+          ? "…"
+          : ba.telemetry_chats === 0
+            ? "none yet"
+            : `${ba.telemetry_chats} chats (${ba.emit_coverage_pct ?? "—"}% of conversations)`,
+        done: !baReady ? null : ba.telemetry_chats > 0,
+        detail: "No telemetry means the chatbot emitter isn't reaching the cost app -- check the advisor_shown emit path.",
       },
       {
-        label: "Pricing/budget failure themes",
-        value: insights == null ? "…" : `${themeHits.length} found`,
-        done: insights == null ? null : themeHits.length === 0,
-        themeLinks: themeHits.flatMap((t) => t.examples ?? []).slice(0, 5),
+        label: "Hero picks within stated budgets",
+        value: !baReady
+          ? "…"
+          : ba.budget_stated_chats === 0
+            ? "no stated budgets yet"
+            : ba.non_compliant_chats === 0
+              ? `${ba.compliance_rate}% compliant`
+              : `${ba.non_compliant_chats} over-budget`,
+        done: !baReady ? null : ba.non_compliant_chats === 0,
+        detail: "The budget constraint governs the hero pick; over-budget add-ons are informational only.",
+        chatLinks: violations.map((v) => ({
+          chat_id: v.chat_id,
+          label: `+$${v.over_by.toFixed(2)} over`,
+        })),
       },
       {
-        label: "Worst-chat spot check",
-        value: needsAttention == null ? "…" : worst.length === 0 ? "nothing to check" : `${worst.length} chats to review`,
-        done: needsAttention == null ? null : chats.length === 0,
-        detail: "Open each and confirm the advisor stayed within the shopper's stated budget.",
-        chatLinks: worst,
+        label: "Telemetry join health",
+        value: !baReady ? "…" : `${ba.unlinked_telemetry} unlinked`,
+        done: !baReady ? null : ba.unlinked_telemetry === 0,
+        detail: "Unlinked rows are telemetry for chat ids the cost app never logged -- a join-key drift canary.",
       },
     ],
   });
@@ -1596,10 +1603,10 @@ function buildMissions({ stats, costReconciliation, cacheEconomics, insights, ne
   return missions;
 }
 
-function MissionsSection({ stats, costReconciliation, cacheEconomics, insights, needsAttention }) {
+function MissionsSection({ stats, costReconciliation, cacheEconomics, insights, needsAttention, budgetAudit }) {
   // stats loads first; missions read live values at render, so wait for it.
   if (!stats) return null;
-  const missions = buildMissions({ stats, costReconciliation, cacheEconomics, insights, needsAttention });
+  const missions = buildMissions({ stats, costReconciliation, cacheEconomics, insights, needsAttention, budgetAudit });
   return (
     <section aria-label="Operator missions">
       <div className="cr__section-eyebrow">
@@ -2054,6 +2061,7 @@ function HomeView() {
   const [cacheEconomics, setCacheEconomics] = useState(null);
   const [verdicts, setVerdicts] = useState(null);
   const [needsAttention, setNeedsAttention] = useState(null);
+  const [budgetAudit, setBudgetAudit] = useState(null);
   const [insights, setInsights] = useState(null);
   const [firstLoad, setFirstLoad] = useState(true);
   const [netError, setNetError] = useState(false);
@@ -2197,6 +2205,28 @@ function HomeView() {
     [navigate]
   );
 
+  // C6: budget-compliance audit over advisor telemetry -- feeds the C2 mission.
+  const loadBudgetAudit = useCallback(
+    async (month, refresh) => {
+      try {
+        const params = new URLSearchParams();
+        if (month) params.set("month", month);
+        if (refresh) params.set("refresh", "1");
+        const qs = params.toString();
+        const res = await fetch(`${API_URL}/api/cost/budget_audit/${qs ? `?${qs}` : ""}`, {
+          credentials: "include",
+        });
+        if (res.status === 401 || res.status === 403) return navigate("/");
+        setBudgetAudit(await res.json());
+      } catch {
+        // Non-critical panel -- the rest of the dashboard still works without it.
+      } finally {
+        setLoadProgress((p) => p + 1);
+      }
+    },
+    [navigate]
+  );
+
   const loadInsights = useCallback(
     async ({ month, refresh, poll = 0 } = {}) => {
       setNetError(false);
@@ -2247,8 +2277,9 @@ function HomeView() {
       loadCommercialImpact(arg, refresh);
       loadVerdicts(arg, refresh);
       loadNeedsAttention(refresh);
+      loadBudgetAudit(arg, refresh);
     },
-    [loadStats, loadInsights, loadCostReconciliation, loadCacheEconomics, loadCommercialImpact, loadVerdicts, loadNeedsAttention]
+    [loadStats, loadInsights, loadCostReconciliation, loadCacheEconomics, loadCommercialImpact, loadVerdicts, loadNeedsAttention, loadBudgetAudit]
   );
 
   useEffect(() => {
@@ -2535,6 +2566,7 @@ function HomeView() {
             cacheEconomics={cacheEconomics}
             insights={iview}
             needsAttention={needsAttention}
+            budgetAudit={budgetAudit}
           />
 
           {/* C4: 6. ALERTS & PREFERENCES -- operator alert rules + visible memory */}
