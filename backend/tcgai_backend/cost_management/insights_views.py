@@ -53,6 +53,11 @@ MAX_DEMAND_ITEMS = 10
 MAX_TOP_REQUESTS = 8
 MAX_UNMET_NEEDS = 8
 MAX_RECOMMENDATIONS = 6
+MAX_QUALITY_THEMES = 5
+# Matches the "needs attention" definition used by the investigation queue
+# (views.py) and the dashboard's low_score_count (stats_views.py):
+# evaluation_score below 75 means the grader judged the bot's answers poor.
+LOW_SCORE_THRESHOLD = 75
 _IMPACT_ORDER = {"high": 0, "medium": 1, "low": 2}
 
 REPORT_INSIGHTS_TOOL = {
@@ -131,6 +136,19 @@ REPORT_INSIGHTS_TOOL = {
                     "required": ["title", "detail", "impact", "addresses", "evidence_count", "examples"],
                 },
             },
+            "quality_themes": {
+                "type": "array",
+                "maxItems": MAX_QUALITY_THEMES,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "summary": {"type": "string"},
+                        "examples": {"type": "array", "items": {"type": "string"}},
+                    },
+                    "required": ["name", "summary", "examples"],
+                },
+            },
             # Declared LAST on the theory that field order nudges generation
             # order. Kept, but not fully trusted on its own: a *second* live
             # failure (2026-09-17, after this reorder was already live) still
@@ -142,7 +160,8 @@ REPORT_INSIGHTS_TOOL = {
             "headline": {"type": "string"},
         },
         "required": [
-            "top_requests", "unmet_needs", "product_demand", "recommendations", "headline",
+            "top_requests", "unmet_needs", "product_demand", "recommendations",
+            "quality_themes", "headline",
         ],
     },
 }
@@ -195,7 +214,15 @@ def _format_products_shown(products_shown):
     return line
 
 
-def _build_transcript(chat_id, messages):
+def _build_transcript(chat, messages):
+    """Render one conversation for the insights prompt.
+
+    C1: the <conversation> tag carries the grader's quality signals as
+    attributes -- evaluation_score when the chat has been scored, and
+    flagged="true" when it's in the investigation queue. The quality_themes
+    instruction tells the model to draw its failure-pattern themes only from
+    conversations carrying these attributes, so every cited theme is
+    evidence-grounded in a chat the grader (or a human) already marked."""
     lines = []
     had_customer_text = False
     for message in messages:
@@ -208,7 +235,12 @@ def _build_transcript(chat_id, messages):
         if shown:
             lines.append(shown)
     body = "\n".join(lines)[:MAX_CHARS_PER_CONVO]
-    return f'<conversation id="{chat_id}">\n{body}\n</conversation>', had_customer_text
+    attrs = f'id="{chat.chat_id}"'
+    if chat.evaluation_score is not None:
+        attrs += f' evaluation_score="{chat.evaluation_score}"'
+    if chat.investigation_status == "flagged":
+        attrs += ' flagged="true"'
+    return f'<conversation {attrs}>\n{body}\n</conversation>', had_customer_text
 
 
 def _available_months():
@@ -233,7 +265,7 @@ def _for_storage(payload):
     return {key: value for key, value in payload.items() if key not in _RUNTIME_ONLY_KEYS}
 
 
-_LIST_FIELDS = ("top_requests", "unmet_needs", "product_demand", "recommendations")
+_LIST_FIELDS = ("top_requests", "unmet_needs", "product_demand", "recommendations", "quality_themes")
 
 
 def _sanitize_report(core):
@@ -278,6 +310,26 @@ def _trim_findings(core):
     return core
 
 
+def _sanitize_quality_theme_examples(core, valid_ids):
+    """C1: every quality theme must cite real chats from the analyzed sample.
+    The model is told to draw examples only from low-scored/flagged
+    conversations, but tool-call arguments aren't schema-validated -- drop
+    any example id that isn't in this month's analyzed sample (an invented
+    citation), and drop themes left with no valid examples at all (a theme
+    with no evidence is a claim without grounding)."""
+    core = {**core}
+    themes = []
+    for theme in core.get("quality_themes") or []:
+        if not isinstance(theme, dict):
+            continue
+        examples = [e for e in (theme.get("examples") or []) if e in valid_ids]
+        if not examples:
+            continue
+        themes.append({**theme, "examples": examples[:3]})
+    core["quality_themes"] = themes[:MAX_QUALITY_THEMES]
+    return core
+
+
 def _build_prompt(transcripts, month_label, total_conversations):
     """Pure string-building, split out from _generate_insights so the
     grounding instruction below can be tested without a real API call.
@@ -318,7 +370,17 @@ def _build_prompt(transcripts, month_label, total_conversations):
         "impact (high/medium/low), a short effort note, the gap or demand it "
         "addresses, and how many conversations it would help. Order by impact, "
         "then by evidence.\n"
-        "- headline: only once the four lists above are filled in, summarize the "
+        "- quality_themes: recurring failure patterns visible specifically in "
+        "conversations marked with a low evaluation_score (below "
+        f"{LOW_SCORE_THRESHOLD}) or flagged=\"true\" -- the chats where the bot "
+        "actually failed, not the month's general topics. Each theme needs a "
+        "name, a one-sentence summary of the failure pattern, and 2-3 example "
+        "conversation ids drawn ONLY from conversations carrying an "
+        "evaluation_score attribute or flagged=\"true\" -- every example must "
+        "be a real id from the transcripts above. Leave this empty if no "
+        "conversation has a low score or flag; never invent themes from "
+        "well-scored chats.\n"
+        "- headline: only once the five lists above are filled in, summarize the "
         "month in at most two plain sentences using ONLY facts that already "
         "appear in those lists. Lead with the verdict — is the bot earning its "
         "keep, weighing cost against volume and quality — then name the single "
@@ -394,7 +456,7 @@ def _build_payload(month_start):
     with_customer_text = 0
     for chat in chats:
         messages = list(chat.message_set.all())
-        text, had_customer_text = _build_transcript(chat.chat_id, messages)
+        text, had_customer_text = _build_transcript(chat, messages)
         transcripts.append(text)
         if had_customer_text:
             with_customer_text += 1
@@ -405,7 +467,10 @@ def _build_payload(month_start):
     last_exc = None
     for _attempt in range(INSIGHTS_MAX_ATTEMPTS):
         try:
-            candidate = _trim_findings(_sanitize_report(_generate_insights(transcripts, label, len(chats))))
+            candidate = _sanitize_quality_theme_examples(
+                _trim_findings(_sanitize_report(_generate_insights(transcripts, label, len(chats)))),
+                {chat.chat_id for chat in chats},
+            )
             if not candidate["headline"] and not any(candidate[field] for field in _LIST_FIELDS):
                 # Observed live (2026-09-17): the model can complete normally
                 # (no truncation, no malformed shape -- _sanitize_report's

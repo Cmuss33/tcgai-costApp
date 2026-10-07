@@ -49,6 +49,7 @@ def score_single_chat(chat):
     Evaluate the following conversation and assign a numeric accuracy score (1-100) for the assistant's responses. Respond with only the number.
     If the assistant's answer is related to the question, regardless of if it is positive or negative (for example, not having required item in stock or not being able to return an item) give 100. 
     If it is not related, or the assistant doesn't know the answer, give a lower number. 
+    The shopper may write with dialect, slang, abbreviations, typos, code-switching, or non-standard grammar -- NEVER lower the score for the shopper's writing style. If you can understand what the shopper is asking for, grade the assistant's response against that inferred intent, not against the polish of the shopper's writing. A shopper who writes informally but gets a correct, helpful answer deserves the same score as one who writes formally.
     Do NOT include any text or explanation.
 
     Conversation:
