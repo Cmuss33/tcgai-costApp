@@ -9,9 +9,7 @@ const MAX_POLLS = 35;
 // costReconciliation, cacheEconomics, commercialImpact
 const TOTAL_LOADERS = 5;
 
-const GAP_LABELS = { catalog: "catalog", policy: "policy", capability: "capability", other: "other" };
 const STATUS_LABELS = { out_of_stock: "out of stock", not_carried: "not carried", unknown: "unknown" };
-const PRIO_LABELS = { high: "High impact", medium: "Medium", low: "Low" };
 const ASSESSMENT_LABELS = {
   real_increase: "Real increase",
   real_decrease: "Real decrease",
@@ -1204,104 +1202,33 @@ function DemandRadarHero({ demand, oneOffs, isLifetime }) {
   );
 }
 
-function RecommendationsSection({ recs, gaps, requests, isLifetime }) {
+function RecommendationsSection({ requests, isLifetime }) {
   const reqList = asList(requests);
-  const gapList = asList(gaps);
-  const recList = asList(recs);
   const maxReq = Math.max(1, ...reqList.map((r) => r.count || 0));
 
-  const addressedGaps = new Set();
-  const mergedRecs = recList.map((r) => {
-    const matched = gapList.find(
-      (g) => g.gap === r.addresses || (g.gap && r.addresses && g.gap.toLowerCase() === r.addresses.toLowerCase())
-    );
-    if (matched) addressedGaps.add(matched.gap);
-    return { ...r, matchedGap: matched };
-  });
-
-  const remainingGaps = gapList.filter((g) => !addressedGaps.has(g.gap));
-
+  if (reqList.length === 0) return null;
   return (
-    <>
-      {reqList.length > 0 && (
-        <div className="cr__panel" style={{ marginTop: 0, marginBottom: "20px", "--accent": "var(--a-convo)" }}>
-          <h2>Top shopper topics &amp; questions</h2>
-          <div className="cr__note">
-            What collectors asked the assistant most frequently {isLifetime ? "since June 1, 2026" : "this month"}.
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "12px", marginTop: "12px" }}>
-            {reqList.map((r) => (
-              <div className="cr__bar-row" key={r.topic} style={{ margin: 0 }}>
-                <div className="cr__nm">{r.topic}</div>
-                <div className="cr__fig">
-                  {r.count}
-                  {r.share_pct != null && <span> · {r.share_pct}%</span>}
-                </div>
-                <div className="cr__track">
-                  <div className="cr__fill" style={{ width: `${Math.round(((r.count || 0) / maxReq) * 100)}%` }} />
-                </div>
-                <ExampleLinks ids={r.examples} />
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {mergedRecs.length > 0 && (
-        <div className="cr__panel" style={{ "--accent": "var(--a-eval)", marginBottom: "24px" }}>
-          <h2>Where to invest next</h2>
-          <div className="cr__note">
-            Highest-impact opportunities and recommended actions synthesized by AI, ranked by evidence.
-          </div>
-          {mergedRecs.map((r) => {
-            const mg = r.matchedGap;
-            const allExamples = Array.from(new Set([...(r.examples || []), ...(mg?.examples || [])]));
-            return (
-              <div className="cr__rec" key={r.title}>
-                <div className="cr__rh">
-                  <span className={`cr__prio ${r.impact}`}>{PRIO_LABELS[r.impact] ?? r.impact}</span>
-                  <span className="cr__title">{r.title}</span>
-                  {r.effort && <span className="cr__effort">· {r.effort}</span>}
-                </div>
-                <p>{r.detail}</p>
-                {mg && (
-                  <div className="cr__rec-gap" data-t={mg.gap_type}>
-                    <div className="cr__rec-gap-header">
-                      <span className="cr__badge">{GAP_LABELS[mg.gap_type] ?? mg.gap_type}</span>
-                      <span className="cr__rec-gap-title">Shopper gap: {mg.gap}</span>
-                    </div>
-                    {mg.summary && <p className="cr__rec-gap-summary">{mg.summary}</p>}
-                  </div>
-                )}
-                <div className="cr__foot">
-                  {r.evidence_count != null && <span>{r.evidence_count} conversations</span>}
-                  <ExampleLinks ids={allExamples} />
-                </div>
-              </div>
-            );
-          })}
-
-          {remainingGaps.length > 0 && (
-            <div className="cr__other-gaps">
-              <h3 className="cr__other-gaps-title">Other customer gaps identified</h3>
-              <div className="cr__other-gaps-grid">
-                {remainingGaps.map((n) => (
-                  <div className="cr__gap" data-t={n.gap_type} key={n.gap}>
-                    <div className="cr__gh">
-                      <span className="cr__badge">{GAP_LABELS[n.gap_type] ?? n.gap_type}</span>
-                      <span className="cr__cnt">{n.count} chats</span>
-                    </div>
-                    <h4>{n.gap}</h4>
-                    <p>{n.summary}</p>
-                    <ExampleLinks ids={n.examples} />
-                  </div>
-                ))}
-              </div>
+    <div className="cr__panel" style={{ marginTop: 0, marginBottom: "20px", "--accent": "var(--a-convo)" }}>
+      <h2>Top shopper topics &amp; questions</h2>
+      <div className="cr__note">
+        What collectors asked the assistant most frequently {isLifetime ? "since June 1, 2026" : "this month"}.
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "12px", marginTop: "12px" }}>
+        {reqList.map((r) => (
+          <div className="cr__bar-row" key={r.topic} style={{ margin: 0 }}>
+            <div className="cr__nm">{r.topic}</div>
+            <div className="cr__fig">
+              {r.count}
+              {r.share_pct != null && <span> · {r.share_pct}%</span>}
             </div>
-          )}
-        </div>
-      )}
-    </>
+            <div className="cr__track">
+              <div className="cr__fill" style={{ width: `${Math.round(((r.count || 0) / maxReq) * 100)}%` }} />
+            </div>
+            <ExampleLinks ids={r.examples} />
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -2011,8 +1938,6 @@ function HomeView() {
             </div>
             {showFindings && (
               <RecommendationsSection
-                recs={iview.recommendations}
-                gaps={iview.unmet_needs}
                 requests={iview.top_requests}
                 isLifetime={isLifetime}
               />
