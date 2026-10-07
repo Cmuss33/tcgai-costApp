@@ -25,6 +25,7 @@ urlpatterns = [
     path('get_avg_conversations_per_day/', views.get_avg_conversations_per_day, name="get_avg_conversations_per_day"),
     path('flag_chat/', investigation_views.flag_chat, name='flag_chat'),
     path('insights_summary/', insights_views.insights_summary, name='insights_summary'),
+    path('report_recommendations/', insights_views.report_recommendations, name='report_recommendations'),
     path('monthly_stats/', stats_views.monthly_stats, name='monthly_stats'),
     path('get_model_rates/', stats_views.model_rates, name='get_model_rates'),
     path('get_usage_by_key/', stats_views.usage_by_key, name='get_usage_by_key'),

@@ -4,6 +4,7 @@ from datetime import timedelta
 
 from django.conf import settings
 from django.db.models import Prefetch
+from django.views.decorators.http import require_http_methods
 from .api_auth import api_login_required
 from django.core.cache import cache
 from django.http import JsonResponse
@@ -19,6 +20,7 @@ from .month_utils import (
     month_range as _month_range,
     next_month as _next_month,
     parse_month_param as _parse_month_param,
+    prev_month as _prev_month,
     real_chats as _real_chats,
 )
 
@@ -735,3 +737,60 @@ def insights_summary(request):
         # Serve the last saved result now; a refresh is running in the background.
         return _finalize({**snapshot.payload, "regenerating": True}, current_start)
     return _finalize({"generating": True, "progress": _get_progress(current_start)}, current_start)
+
+
+@require_http_methods(["GET"])
+def report_recommendations(request):
+    """Secret-gated monthly recommendations feed for the chatbot's monthly
+    Slack report (the customer-intent-report flow).
+
+    Mirrors that endpoint's own ``?secret=`` server-to-server pattern -- no
+    session auth here because ``api_login_required`` can't work cross-service.
+    Prof sets ``COSTAPP_REPORT_SECRET`` on Render; the chatbot sends the same
+    value as ``COST_APP_REPORT_SECRET``.
+
+    GET params: ``secret`` (required), ``month=YYYY-MM`` (default: prior month).
+    Serves the frozen ``InsightsSnapshot`` recommendations for the month --
+    the same "where to invest next" data removed from the dashboard in C0's
+    follow-up (cost app PR #72).
+
+    Fail-soft by design: no snapshot -> 200 with an empty list. This must
+    never break the chatbot's monthly post.
+    """
+    import hmac
+
+    expected = os.environ.get("COSTAPP_REPORT_SECRET")
+    if not expected:
+        return JsonResponse({"error": "Server misconfiguration"}, status=500)
+    provided = request.GET.get("secret") or ""
+    if not hmac.compare_digest(provided, expected):
+        return JsonResponse({"error": "Unauthorized"}, status=401)
+
+    month_param = request.GET.get("month")
+    if month_param:
+        month_start = _parse_month_param(month_param)
+        if month_start is None:
+            return JsonResponse({"error": "invalid month; expected YYYY-MM"}, status=400)
+    else:
+        month_start = _prev_month(_current_month_start())
+
+    snap = InsightsSnapshot.objects.filter(month=month_start).first()
+    recs = []
+    generated_at = None
+    if snap is not None:
+        generated_at = snap.payload.get("generated_at")
+        for r in snap.payload.get("recommendations") or []:
+            if not isinstance(r, dict) or not r.get("title"):
+                continue
+            recs.append({
+                "title": r.get("title"),
+                "detail": r.get("detail") or "",
+                "impact": r.get("impact") or "",
+                "effort": r.get("effort") or "",
+            })
+
+    return JsonResponse({
+        "month": month_start.strftime("%Y-%m"),
+        "recommendations": recs,
+        "generated_at": generated_at,
+    })

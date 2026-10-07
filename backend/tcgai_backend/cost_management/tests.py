@@ -4544,3 +4544,98 @@ class CommercialImpactTests(TestCase):
         self.client.force_login(self.user)
         response = self.client.get("/api/cost/commercial_impact/?month=nope")
         self.assertEqual(response.status_code, 400)
+
+
+class ReportRecommendationsTests(TestCase):
+    """ENG-205: secret-gated monthly recommendations feed for the chatbot's
+    monthly Slack report. Serves the frozen InsightsSnapshot recommendations
+    for a month -- the same "where to invest next" data removed from the
+    dashboard (PR #72). Fail-soft: no snapshot -> 200 with []."""
+
+    def setUp(self):
+        from .month_utils import current_month_start, prev_month
+        self.prev_month = prev_month(current_month_start())
+        self.prev_label = self.prev_month.strftime("%Y-%m")
+        self.url = "/api/cost/report_recommendations/"
+        # The endpoint must never depend on ambient env in tests.
+        os.environ.pop("COSTAPP_REPORT_SECRET", None)
+
+    def _snapshot(self, month, recommendations):
+        from .models import InsightsSnapshot
+        return InsightsSnapshot.objects.create(
+            month=month,
+            payload={
+                "recommendations": recommendations,
+                "generated_at": "2026-09-15T10:00:00+00:00",
+            },
+            conversations_analyzed=40,
+        )
+
+    def _recs(self):
+        return [
+            {
+                "title": "Restock OP-05",
+                "detail": "Shoppers keep asking",
+                "impact": "high",
+                "effort": "low",
+                "addresses": "catalog gap",
+                "evidence_count": 12,
+                "examples": ["chat-1"],
+            },
+            {"detail": "x"},  # missing title -> dropped
+            "not a dict",  # malformed -> dropped
+        ]
+
+    def test_missing_secret_env_returns_500(self):
+        response = self.client.get(self.url, {"secret": "anything"})
+        self.assertEqual(response.status_code, 500)
+
+    def test_wrong_secret_returns_401(self):
+        with patch.dict(os.environ, {"COSTAPP_REPORT_SECRET": "s3cr3t"}):
+            response = self.client.get(self.url, {"secret": "wrong"})
+            self.assertEqual(response.status_code, 401)
+
+    def test_missing_secret_param_returns_401(self):
+        with patch.dict(os.environ, {"COSTAPP_REPORT_SECRET": "s3cr3t"}):
+            response = self.client.get(self.url)
+            self.assertEqual(response.status_code, 401)
+
+    def test_defaults_to_prior_month_snapshot(self):
+        self._snapshot(self.prev_month, self._recs())
+        with patch.dict(os.environ, {"COSTAPP_REPORT_SECRET": "s3cr3t"}):
+            d = self.client.get(self.url, {"secret": "s3cr3t"}).json()
+        self.assertEqual(d["month"], self.prev_label)
+        self.assertEqual(len(d["recommendations"]), 1)
+        rec = d["recommendations"][0]
+        # Slack-safe shape: only the fields the report needs
+        self.assertEqual(
+            rec,
+            {"title": "Restock OP-05", "detail": "Shoppers keep asking",
+             "impact": "high", "effort": "low"},
+        )
+        self.assertEqual(d["generated_at"], "2026-09-15T10:00:00+00:00")
+
+    def test_month_param_respected(self):
+        from .month_utils import prev_month
+        older = prev_month(self.prev_month)
+        self._snapshot(older, [{"title": "Old rec", "detail": "d"}])
+        self._snapshot(self.prev_month, [{"title": "New rec", "detail": "d"}])
+        with patch.dict(os.environ, {"COSTAPP_REPORT_SECRET": "s3cr3t"}):
+            d = self.client.get(
+                self.url, {"secret": "s3cr3t", "month": older.strftime("%Y-%m")}
+            ).json()
+        self.assertEqual(d["month"], older.strftime("%Y-%m"))
+        self.assertEqual(d["recommendations"][0]["title"], "Old rec")
+
+    def test_invalid_month_returns_400(self):
+        with patch.dict(os.environ, {"COSTAPP_REPORT_SECRET": "s3cr3t"}):
+            response = self.client.get(self.url, {"secret": "s3cr3t", "month": "nope"})
+        self.assertEqual(response.status_code, 400)
+
+    def test_no_snapshot_returns_empty_200(self):
+        with patch.dict(os.environ, {"COSTAPP_REPORT_SECRET": "s3cr3t"}):
+            response = self.client.get(self.url, {"secret": "s3cr3t"})
+        self.assertEqual(response.status_code, 200)
+        d = response.json()
+        self.assertEqual(d["recommendations"], [])
+        self.assertIsNone(d["generated_at"])
