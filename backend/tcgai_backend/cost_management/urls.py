@@ -6,6 +6,7 @@ from . import stats_views
 from . import sso
 from . import verdicts
 from . import alerts_views
+from . import budget_audit
 
 urlpatterns = [
     path('sso_login/', sso.sso_login, name='sso_login'),
@@ -13,6 +14,8 @@ urlpatterns = [
     path('get_tokens/', views.get_tokens, name='get_cost'),
     path('log_message/', views.log_message, name='log_message'),
     path('log_attribution/', views.log_attribution, name='log_attribution'),
+    path('log_advisor_telemetry/', views.log_advisor_telemetry, name='log_advisor_telemetry'),
+    path('budget_audit/', budget_audit.budget_audit, name='budget_audit'),
     path('get_messages/', views.get_messages, name='get_messages'),
     path('get_chat_ids/', views.get_chat_ids, name='get_chat_ids'),
     path('get_messages_by_chat_id/<str:chat_id>/', views.get_messages_by_chat_id, name='get_messages_by_chat_id'),
