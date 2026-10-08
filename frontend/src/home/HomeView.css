@@ -97,6 +97,47 @@
   cursor: not-allowed;
 }
 
+/* Store filter dropdown (store attribution) */
+.cr__store-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--panel-2);
+  border: 1px solid var(--edge);
+  border-radius: 10px;
+  padding: 6px 12px;
+}
+.cr__store-filter label {
+  font-size: 14px;
+  cursor: pointer;
+}
+.cr__store-filter select {
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font-family: var(--font-m);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  outline: none;
+  max-width: 220px;
+}
+.cr__store-filter select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.cr__store-filter select option {
+  background: var(--panel-2);
+  color: var(--text);
+}
+.cr__store-filter-note {
+  font-family: var(--font-m);
+  font-size: 10.5px;
+  color: var(--faint);
+  max-width: 180px;
+  line-height: 1.35;
+}
+
 .cr__stepper { display: flex; align-items: center; gap: 12px; }
 .cr__stepper button {
   font-family: var(--font-m); font-size: 14px; color: var(--text); background: var(--panel-2);
