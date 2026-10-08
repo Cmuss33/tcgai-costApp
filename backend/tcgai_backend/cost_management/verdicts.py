@@ -36,6 +36,7 @@ from .stats_views import (
     _chat_qs,
     _cost_reconciliation_for,
     _eval_avg,
+    _logged_spend_split,
     _rates_from_resp,
     _rates_resp_for,
     _real_spend_for,
@@ -64,29 +65,35 @@ def _stat(metric, value, source):
     return {"kind": "stat", "metric": metric, "value": value, "source": source}
 
 
-def _bot_share_pct(month_start):
+def _bot_share_pct(month_start, shops=None):
     """Bot share of LOGGED spend as a percentage, or None when it can't be
     computed (no billed figure, no rates, or nothing priceable logged --
-    _real_spend_for degrades to (spend, None) in those cases)."""
+    _real_spend_for degrades to (spend, None) in those cases). With a shop
+    filter, billed spend is org-wide, so the share is computed directly
+    from the filtered population's logged spend."""
     rates_resp = _rates_resp_for(month_start)
-    spend, _, _ = _spend_for(month_start, rates_resp)
     rates = _rates_from_resp(rates_resp)
+    if shops:
+        split = _logged_spend_split(month_start, rates, shops=shops)
+        total = split["real"] + split["bot"]
+        return round(split["bot"] / total * 100, 1) if total else None
+    spend, _, _ = _spend_for(month_start, rates_resp)
     _, share = _real_spend_for(spend, month_start, rates)
     return round(share * 100, 1) if share is not None else None
 
 
-def _build_context(month_start):
+def _build_context(month_start, shops=None):
     """The small context dict every evaluator reads from."""
     previous = prev_month(month_start)
     return {
         "month_start": month_start,
-        "cache": _cache_economics_for(month_start),
-        "recon": _cost_reconciliation_for(month_start),
-        "eval_avg": _eval_avg(month_start),
-        "prev_eval_avg": _eval_avg(previous),
-        "scored": _chat_qs(month_start).filter(evaluation_score__isnull=False).count(),
-        "bot_share_pct": _bot_share_pct(month_start),
-        "prev_bot_share_pct": _bot_share_pct(previous),
+        "cache": _cache_economics_for(month_start, shops),
+        "recon": _cost_reconciliation_for(month_start, shops),
+        "eval_avg": _eval_avg(month_start, shops),
+        "prev_eval_avg": _eval_avg(previous, shops),
+        "scored": _chat_qs(month_start, shops).filter(evaluation_score__isnull=False).count(),
+        "bot_share_pct": _bot_share_pct(month_start, shops),
+        "prev_bot_share_pct": _bot_share_pct(previous, shops),
     }
 
 
@@ -258,10 +265,10 @@ def _bot_share_verdict(ctx):
 _EVALUATORS = (_cache_verdict, _reconciliation_verdict, _eval_verdict, _bot_share_verdict)
 
 
-def build_verdicts(month_start):
+def build_verdicts(month_start, shops=None):
     """Run every evaluator over one shared context; candidates with
     insufficient data are omitted, never invented."""
-    ctx = _build_context(month_start)
+    ctx = _build_context(month_start, shops)
     cards = [card for card in (ev(ctx) for ev in _EVALUATORS) if card is not None]
     return {
         "month": month_start.strftime("%Y-%m"),
@@ -278,6 +285,7 @@ def verdict_cards(request):
     secret-gated report pattern."""
     refresh = request.GET.get("refresh", "").lower() in ("1", "true", "yes")
     month_param = request.GET.get("month")
+    shops = request.GET.getlist("shop") or None
     current = current_month_start()
 
     month_start = current
@@ -288,6 +296,8 @@ def verdict_cards(request):
         month_start = parsed
 
     key = f"verdict_cards:{month_start:%Y-%m}"
+    if shops:
+        key += ":shop=" + ",".join(sorted(shops))
     if refresh:
         cache.delete(key)
         # The verdicts read through the shared single-month computations --
@@ -300,6 +310,6 @@ def verdict_cards(request):
         if cached is not None:
             return JsonResponse({**cached, "cached": True})
 
-    payload = build_verdicts(month_start)
+    payload = build_verdicts(month_start, shops)
     cache.set(key, payload, CURRENT_TTL if month_start == current else PAST_TTL)
     return JsonResponse(payload)
