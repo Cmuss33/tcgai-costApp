@@ -5941,3 +5941,73 @@ class MonthlyStatsShopFilterTests(TestCase):
         self.assertEqual(data["conversations"]["total"], 1)
         # bot's 100k tokens must not leak into the filtered spend
         self.assertAlmostEqual(data["spend"]["total"], 2.0)
+
+
+class ChatAdminAttributeToProductionShopTests(TestCase):
+    """Admin bulk action: attribute selected chats to the production shop.
+
+    Lets the owner bulk-attribute historical shop="" ("Unknown") chats to
+    the production shop instead of editing them one by one in the admin.
+    Only empty-shop rows are touched; already-tagged rows are left alone.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_superuser(
+            username="admin", password="pw", email="a@example.com"
+        )
+        self.client.force_login(self.user)
+
+    def _post_action(self, chat_ids):
+        return self.client.post(
+            "/admin/cost_management/chat/",
+            {
+                "action": "attribute_to_production_shop",
+                "_selected_action": chat_ids,
+            },
+            follow=True,
+        )
+
+    @override_settings(PRODUCTION_SHOPS=["pvpshoppe.myshopify.com"])
+    def test_attributes_only_empty_shop_rows(self):
+        Chat.objects.create(chat_id="unknown-1", model="m", shop="")
+        Chat.objects.create(chat_id="unknown-2", model="m", shop="")
+        Chat.objects.create(
+            chat_id="already-tagged", model="m", shop="test.myshopify.com"
+        )
+
+        response = self._post_action(["unknown-1", "unknown-2", "already-tagged"])
+        self.assertEqual(response.status_code, 200)
+
+        self.assertEqual(
+            Chat.objects.get(chat_id="unknown-1").shop, "pvpshoppe.myshopify.com"
+        )
+        self.assertEqual(
+            Chat.objects.get(chat_id="unknown-2").shop, "pvpshoppe.myshopify.com"
+        )
+        # already-tagged rows are never overwritten
+        self.assertEqual(
+            Chat.objects.get(chat_id="already-tagged").shop, "test.myshopify.com"
+        )
+
+    @override_settings(PRODUCTION_SHOPS=["pvpshoppe.myshopify.com"])
+    def test_reports_how_many_rows_were_updated(self):
+        Chat.objects.create(chat_id="unknown-1", model="m", shop="")
+        Chat.objects.create(chat_id="unknown-2", model="m", shop="")
+
+        response = self._post_action(["unknown-1"])
+        messages = list(response.context["messages"])
+        self.assertEqual(len(messages), 1)
+        self.assertIn("1", str(messages[0]))
+        self.assertIn("pvpshoppe.myshopify.com", str(messages[0]))
+
+    @override_settings(PRODUCTION_SHOPS=[])
+    def test_noop_with_error_message_when_production_shops_unset(self):
+        Chat.objects.create(chat_id="unknown-1", model="m", shop="")
+
+        response = self._post_action(["unknown-1"])
+        self.assertEqual(response.status_code, 200)
+        # nothing changed
+        self.assertEqual(Chat.objects.get(chat_id="unknown-1").shop, "")
+        messages = list(response.context["messages"])
+        self.assertEqual(len(messages), 1)
+        self.assertIn("PRODUCTION_SHOPS", str(messages[0]))
