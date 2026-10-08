@@ -15,6 +15,7 @@ from .llm_provider_adapter_implementations import app_api_key_ids, chat_api_key_
 from .models import AttributedOrder, Chat, Message
 from .month_utils import (
     CONVERSATION_START_DATE,
+    apply_shop_filter,
     current_month_start,
     lifetime_months,
     month_range,
@@ -25,6 +26,19 @@ from .month_utils import (
 
 CURRENT_TTL = 900       # 15 min — the current month's cost figures still move
 PAST_TTL = 86400        # a day — past months are effectively fixed
+
+
+def _shop_key_suffix(shops):
+    """Cache-key suffix isolating shop-filtered payloads from unfiltered ones."""
+    if not shops:
+        return ""
+    return ":shop=" + ",".join(sorted(shops))
+
+
+def _request_shops(request):
+    """Shop domains selected via repeatable ?shop= params; None = no filtering."""
+    shops = request.GET.getlist("shop")
+    return shops or None
 
 
 def _pct_delta(current, previous):
@@ -192,7 +206,7 @@ def _rate_for(rates, model):
     return rates[max(candidates, key=len)]
 
 
-def _logged_spend_split(month_start, rates):
+def _logged_spend_split(month_start, rates, shops=None):
     """{"real": $, "bot": $} -- this month's LOGGED (Chat/Message) token
     counts priced via `rates` and split by likely_automated. Chat.tokens_in/
     tokens_out are the non-cache totals (ENG-148 -- cache tokens are
@@ -206,10 +220,19 @@ def _logged_spend_split(month_start, rates):
     real = 0.0
     bot = 0.0
 
+    chat_rows = Chat.objects.filter(timestamp__gte=start_dt, timestamp__lt=end_dt)
+    msg_rows = Message.objects.filter(
+        chat__timestamp__gte=start_dt, chat__timestamp__lt=end_dt
+    )
+    if shops:
+        shop_list = list(shops)
+        chat_rows = chat_rows.filter(shop__in=shop_list)
+        msg_rows = msg_rows.filter(chat__shop__in=shop_list)
+
     for row in (
-        Chat.objects.filter(timestamp__gte=start_dt, timestamp__lt=end_dt)
-        .values("model", "likely_automated")
-        .annotate(tin=Sum("tokens_in"), tout=Sum("tokens_out"))
+        chat_rows.values("model", "likely_automated").annotate(
+            tin=Sum("tokens_in"), tout=Sum("tokens_out")
+        )
     ):
         rate = _rate_for(rates, row["model"])
         if not rate:
@@ -221,9 +244,9 @@ def _logged_spend_split(month_start, rates):
             real += cost
 
     for row in (
-        Message.objects.filter(chat__timestamp__gte=start_dt, chat__timestamp__lt=end_dt)
-        .values("model", "chat__likely_automated")
-        .annotate(ccreate=Sum("cache_creation_tokens"), cread=Sum("cache_read_tokens"))
+        msg_rows.values("model", "chat__likely_automated").annotate(
+            ccreate=Sum("cache_creation_tokens"), cread=Sum("cache_read_tokens")
+        )
     ):
         rate = _rate_for(rates, row["model"])
         if not rate:
@@ -271,6 +294,30 @@ def _real_spend_for(spend, month_start, rates):
     return spend * (1 - share), share
 
 
+def _shop_filtered_figures(month_start, rates, shops):
+    """(spend, tok_in, tok_out, cache_creation, cache_read) for a shop-filtered
+    population, priced from its own logged tokens. spend is real-only
+    (likely_automated excluded), mirroring real_spend's semantics -- used
+    wherever billed org-wide figures can't be attributed to shops."""
+    start_dt, end_dt = month_range(month_start)
+    chats = _chat_qs(month_start, shops)  # real-only, shop-filtered
+    tok = chats.aggregate(tin=Sum("tokens_in"), tout=Sum("tokens_out"))
+    cache = Message.objects.filter(
+        chat__timestamp__gte=start_dt,
+        chat__timestamp__lt=end_dt,
+        chat__likely_automated=False,
+        chat__shop__in=list(shops),
+    ).aggregate(cc=Sum("cache_creation_tokens"), cr=Sum("cache_read_tokens"))
+    split = _logged_spend_split(month_start, rates, shops=shops)
+    return {
+        "spend": round(split["real"], 2),
+        "tok_in": tok["tin"] or 0,
+        "tok_out": tok["tout"] or 0,
+        "cache_creation": cache["cc"] or 0,
+        "cache_read": cache["cr"] or 0,
+    }
+
+
 def _chat_scope_is_app_wide():
     """True when ANTHROPIC_CHAT_API_KEY_IDS isn't set -- chat_api_key_ids()
     then falls back to app_api_key_ids(), so cost_pc's numerator (and
@@ -314,12 +361,15 @@ def _chat_cache_buckets(month_start):
     return buckets, None
 
 
-def _chat_qs(month_start):
+def _chat_qs(month_start, shops=None):
     start_dt, end_dt = month_range(month_start)
-    return real_chats(Chat.objects.filter(timestamp__gte=start_dt, timestamp__lt=end_dt))
+    return apply_shop_filter(
+        real_chats(Chat.objects.filter(timestamp__gte=start_dt, timestamp__lt=end_dt)),
+        shops,
+    )
 
 
-def _daily_counts(month_start):
+def _daily_counts(month_start, shops=None):
     """Per-day conversation counts, split real vs. automated/bot (ENG-149/150
     -- see month_utils.real_chats). `count` is real-only, same population as
     the "Conversations" KPI/busiest-day logic below -- `bot_count` is purely
@@ -327,7 +377,10 @@ def _daily_counts(month_start):
     counts as a "real" conversation anywhere else."""
     start_dt, end_dt = month_range(month_start)
     rows = (
-        Chat.objects.filter(timestamp__gte=start_dt, timestamp__lt=end_dt)
+        apply_shop_filter(
+            Chat.objects.filter(timestamp__gte=start_dt, timestamp__lt=end_dt),
+            shops,
+        )
         .annotate(day=TruncDate("timestamp"))
         .values("day", "likely_automated")
         .annotate(count=Count("chat_id"))
@@ -353,14 +406,14 @@ def _daily_mean(qs, field):
     return round(sum(vals) / len(vals), 1) if vals else 0.0
 
 
-def _eval_avg(month_start):
-    qs = _chat_qs(month_start).filter(evaluation_score__isnull=False)
+def _eval_avg(month_start, shops=None):
+    qs = _chat_qs(month_start, shops).filter(evaluation_score__isnull=False)
     rows = qs.annotate(day=TruncDate("timestamp")).values("day").annotate(v=Avg("evaluation_score"))
     vals = [r["v"] for r in rows if r["v"] is not None]
     return round(sum(vals) / len(vals), 1) if vals else None
 
 
-def _build_stats(month_start):
+def _build_stats(month_start, shops=None):
     current = current_month_start()
     is_current = month_start == current
     previous = prev_month(month_start)
@@ -377,28 +430,49 @@ def _build_stats(month_start):
     if is_current and (rates_resp.get("error") or not rates_resp.get("rates")) and prev_rates_resp.get("rates"):
         rates_resp = prev_rates_resp
 
-    spend, spend_daily, cost_err = _spend_for(month_start, rates_resp)
-    prev_spend, _, _ = _spend_for(previous, prev_rates_resp)
-    tok_in, tok_out, tok_daily, cache_info, tok_err = _tokens_for(month_start)
-    prev_in, prev_out, _, _, _ = _tokens_for(previous)
+    rates = _rates_from_resp(rates_resp)
+    prev_rates = _rates_from_resp(prev_rates_resp)
+    if shops:
+        # Billed spend and usage-report tokens are org-wide and can't be
+        # attributed to shops; price the filtered population from its own
+        # logged tokens instead (same methodology as _logged_spend_split).
+        figs = _shop_filtered_figures(month_start, rates, shops)
+        prev_figs = _shop_filtered_figures(previous, prev_rates, shops)
+        spend, prev_spend = figs["spend"], prev_figs["spend"]
+        spend_daily, cost_err = [], None
+        real_spend, bot_share = spend, None
+        prev_real_spend = prev_spend
+        tok_in, tok_out = figs["tok_in"], figs["tok_out"]
+        prev_in, prev_out = prev_figs["tok_in"], prev_figs["tok_out"]
+        tok_daily, tok_err = [], None
+        cache_info = {
+            "creation_tokens": figs["cache_creation"],
+            "read_tokens": figs["cache_read"],
+            "hit_rate": round(figs["cache_read"] / figs["tok_in"], 3) if figs["tok_in"] else None,
+        }
+    else:
+        spend, spend_daily, cost_err = _spend_for(month_start, rates_resp)
+        prev_spend, _, _ = _spend_for(previous, prev_rates_resp)
+        tok_in, tok_out, tok_daily, cache_info, tok_err = _tokens_for(month_start)
+        prev_in, prev_out, _, _, _ = _tokens_for(previous)
 
-    convs = _chat_qs(month_start).count()
-    prev_convs = _chat_qs(previous).count()
-    daily_counts = _daily_counts(month_start)
+    convs = _chat_qs(month_start, shops).count()
+    prev_convs = _chat_qs(previous, shops).count()
+    daily_counts = _daily_counts(month_start, shops)
     busiest = max(daily_counts, key=lambda d: d["count"], default=None)
 
     days_in_month = calendar.monthrange(month_start.year, month_start.month)[1]
     days_elapsed = timezone.now().day if is_current else days_in_month
     per_day_avg = round(convs / days_elapsed, 1) if days_elapsed else 0.0
 
-    eval_avg = _eval_avg(month_start)
-    prev_eval = _eval_avg(previous)
-    scored = _chat_qs(month_start).filter(evaluation_score__isnull=False).count()
+    eval_avg = _eval_avg(month_start, shops)
+    prev_eval = _eval_avg(previous, shops)
+    scored = _chat_qs(month_start, shops).filter(evaluation_score__isnull=False).count()
 
-    in_pc = _daily_mean(_chat_qs(month_start), "tokens_in")
-    out_pc = _daily_mean(_chat_qs(month_start), "tokens_out")
-    prev_in_pc = _daily_mean(_chat_qs(previous), "tokens_in")
-    prev_out_pc = _daily_mean(_chat_qs(previous), "tokens_out")
+    in_pc = _daily_mean(_chat_qs(month_start, shops), "tokens_in")
+    out_pc = _daily_mean(_chat_qs(month_start, shops), "tokens_out")
+    prev_in_pc = _daily_mean(_chat_qs(previous, shops), "tokens_in")
+    prev_out_pc = _daily_mean(_chat_qs(previous, shops), "tokens_out")
 
     # Cost-weighted proration: billed spend this month includes the
     # ENG-149/150 bot's own traffic (same chat API key as real shoppers),
@@ -409,10 +483,9 @@ def _build_stats(month_start):
     # get_model_rates again -- _real_spend_for only touches `rates` at all
     # when `spend` isn't None, so this is exactly equivalent to the old
     # "only derive rates when there's a spend figure to prorate" guard.
-    rates = _rates_from_resp(rates_resp)
-    prev_rates = _rates_from_resp(prev_rates_resp)
-    real_spend, bot_share = _real_spend_for(spend, month_start, rates)
-    prev_real_spend, _prev_bot_share = _real_spend_for(prev_spend, previous, prev_rates)
+    if not shops:
+        real_spend, bot_share = _real_spend_for(spend, month_start, rates)
+        prev_real_spend, _prev_bot_share = _real_spend_for(prev_spend, previous, prev_rates)
 
     cost_pc = round(real_spend / convs, 4) if (real_spend is not None and convs) else None
     prev_cost_pc = round(prev_real_spend / prev_convs, 4) if (prev_real_spend is not None and prev_convs) else None
@@ -425,17 +498,17 @@ def _build_stats(month_start):
     net_savings = round(labor_value - (real_spend if real_spend is not None else 0.0), 2)
 
     # 24/7 After-hours coverage: inquiries received outside physical store hours (before 10:00 or after 19:00)
-    chat_timestamps = list(_chat_qs(month_start).values_list("timestamp", flat=True))
+    chat_timestamps = list(_chat_qs(month_start, shops).values_list("timestamp", flat=True))
     after_hours_count = sum(1 for ts in chat_timestamps if ts and (ts.hour < 10 or ts.hour >= 19))
     after_hours_pct = round((after_hours_count / convs * 100), 1) if convs else 0.0
 
     # Low score count: chats this month with evaluation_score < 75
-    low_score_count = _chat_qs(month_start).filter(
+    low_score_count = _chat_qs(month_start, shops).filter(
         evaluation_score__isnull=False, evaluation_score__lt=75
     ).count()
 
     projected = None
-    if is_current and spend is not None and timezone.now().day:
+    if not shops and is_current and spend is not None and timezone.now().day:
         projected = round(spend / timezone.now().day * days_in_month, 2)
 
     model_mix = [
@@ -444,7 +517,7 @@ def _build_stats(month_start):
             "conversations": row["c"],
             "share_pct": round(row["c"] / convs * 100, 1) if convs else 0.0,
         }
-        for row in _chat_qs(month_start).values("model").annotate(c=Count("chat_id")).order_by("-c")
+        for row in _chat_qs(month_start, shops).values("model").annotate(c=Count("chat_id")).order_by("-c")
     ]
 
     return {
@@ -454,6 +527,8 @@ def _build_stats(month_start):
         "currency": "USD",
         "workspace_id": os.environ.get('ANTHROPIC_WORKSPACE_ID') or None,
         "cost_source_error": cost_err or tok_err,
+        "shop_filtered": bool(shops),
+        "spend_source": "logged_estimate" if shops else "billed",
         "spend": {
             "total": spend,
             "prev_total": prev_spend,
@@ -526,7 +601,7 @@ def _build_stats(month_start):
 
 
 
-def _build_lifetime_stats():
+def _build_lifetime_stats(shops=None):
     months = lifetime_months()
 
     total_spend = 0.0
@@ -541,16 +616,25 @@ def _build_lifetime_stats():
             prev_rates_resp = _rates_resp_for(prev_month(m))
             if prev_rates_resp.get("rates"):
                 rates_resp = prev_rates_resp
-        m_spend, m_spend_daily, m_err = _spend_for(m, rates_resp)
-        if m_err and not cost_err:
-            cost_err = m_err
-        if m_spend is not None:
+        rates = _rates_from_resp(rates_resp)
+        if shops:
+            # Billed spend is org-wide; sum the shop-filtered population's
+            # own logged spend instead (real-only, like real_spend).
+            figs = _shop_filtered_figures(m, rates, shops)
+            m_spend, m_err = figs["spend"], None
             has_spend = True
             total_spend += m_spend
-            all_spend_daily.extend(m_spend_daily)
-            rates = _rates_from_resp(rates_resp)
-            m_real, _ = _real_spend_for(m_spend, m, rates)
-            total_real_spend += (m_real if m_real is not None else m_spend)
+            total_real_spend += m_spend
+        else:
+            m_spend, m_spend_daily, m_err = _spend_for(m, rates_resp)
+            if m_err and not cost_err:
+                cost_err = m_err
+            if m_spend is not None:
+                has_spend = True
+                total_spend += m_spend
+                all_spend_daily.extend(m_spend_daily)
+                m_real, _ = _real_spend_for(m_spend, m, rates)
+                total_real_spend += (m_real if m_real is not None else m_spend)
 
     spend = round(total_spend, 2) if has_spend else None
     real_spend = round(total_real_spend, 2) if has_spend else None
@@ -565,6 +649,15 @@ def _build_lifetime_stats():
     has_tokens = False
 
     for m in months:
+        if shops:
+            rates = _rates_from_resp(_rates_resp_for(m))
+            figs = _shop_filtered_figures(m, rates, shops)
+            has_tokens = True
+            total_in += figs["tok_in"]
+            total_out += figs["tok_out"]
+            total_creation += figs["cache_creation"]
+            total_read += figs["cache_read"]
+            continue
         m_in, m_out, m_daily, m_cache, m_err = _tokens_for(m)
         if m_err and not tok_err:
             tok_err = m_err
@@ -581,11 +674,17 @@ def _build_lifetime_stats():
     cache_hit_rate = round(total_read / total_in, 3) if total_in else None
     all_tok_daily.sort(key=lambda d: d.get("day", ""))
 
-    lifetime_qs = real_chats(Chat.objects.filter(timestamp__gte=CONVERSATION_START_DATE))
+    lifetime_qs = apply_shop_filter(
+        real_chats(Chat.objects.filter(timestamp__gte=CONVERSATION_START_DATE)),
+        shops,
+    )
     convs = lifetime_qs.count()
 
     rows = (
-        Chat.objects.filter(timestamp__gte=CONVERSATION_START_DATE)
+        apply_shop_filter(
+            Chat.objects.filter(timestamp__gte=CONVERSATION_START_DATE),
+            shops,
+        )
         .annotate(day=TruncDate("timestamp"))
         .values("day", "likely_automated")
         .annotate(count=Count("chat_id"))
@@ -647,6 +746,8 @@ def _build_lifetime_stats():
         "currency": "USD",
         "workspace_id": os.environ.get('ANTHROPIC_WORKSPACE_ID') or None,
         "cost_source_error": cost_err or tok_err,
+        "shop_filtered": bool(shops),
+        "spend_source": "logged_estimate" if shops else "billed",
         "spend": {
             "total": spend,
             "prev_total": None,
@@ -714,15 +815,16 @@ def monthly_stats(request):
     refresh = request.GET.get("refresh", "").lower() in ("1", "true", "yes")
     month_param = request.GET.get("month")
 
+    shops = _request_shops(request)
     if month_param == "lifetime":
-        key = "monthly_stats:lifetime"
+        key = "monthly_stats:lifetime" + _shop_key_suffix(shops)
         if refresh:
             cache.delete(key)
         else:
             cached = cache.get(key)
             if cached is not None:
                 return JsonResponse({**cached, "cached": True})
-        payload = _build_lifetime_stats()
+        payload = _build_lifetime_stats(shops)
         if not payload.get("cost_source_error") and not payload.get("error"):
             cache.set(key, payload, CURRENT_TTL)
         return JsonResponse(payload)
@@ -736,7 +838,7 @@ def monthly_stats(request):
             return JsonResponse({"error": "invalid month; expected YYYY-MM"}, status=400)
         month_start = parsed
 
-    key = f"monthly_stats:{month_start:%Y-%m}"
+    key = f"monthly_stats:{month_start:%Y-%m}" + _shop_key_suffix(shops)
     if refresh:
         cache.delete(key)
         cache.delete(f"model_rates:{month_start:%Y-%m}")
@@ -748,7 +850,7 @@ def monthly_stats(request):
         if cached is not None:
             return JsonResponse({**cached, "cached": True})
 
-    payload = _build_stats(month_start)
+    payload = _build_stats(month_start, shops)
     if not payload.get("cost_source_error") and not payload.get("error"):
         cache.set(key, payload, CURRENT_TTL if month_start == current else PAST_TTL)
     return JsonResponse(payload)
@@ -929,7 +1031,7 @@ def usage_by_key(request):
     return JsonResponse(payload)
 
 
-def _cost_reconciliation_for(month_start):
+def _cost_reconciliation_for(month_start, shops=None):
     """Single-month reconciliation payload, shared by the cost_reconciliation
     endpoint and C3's verdict cards: billed Anthropic spend (chat-key-scoped,
     the same numerator cost_pc uses) vs. this month's summed per-chat/
@@ -947,8 +1049,24 @@ def _cost_reconciliation_for(month_start):
             rates_resp = prev_rates_resp
     spend, _, cost_err = _spend_for(month_start, rates_resp)
     rates = _rates_from_resp(rates_resp) if spend is not None else {}
-    split = _logged_spend_split(month_start, rates)
+    split = _logged_spend_split(month_start, rates, shops=shops)
     logged_spend = round(split["real"] + split["bot"], 2)
+
+    if shops:
+        # Billed spend is org-wide and can't be split by shop; the logged
+        # side is still meaningful for the filtered population.
+        return {
+            "month": month_start.strftime("%Y-%m"),
+            "billed_spend": None,
+            "logged_spend": logged_spend,
+            "real_spend": round(split["real"], 2),
+            "bot_spend": round(split["bot"], 2),
+            "unaccounted": None,
+            "shop_filtered": True,
+            "shop_note": "Billed spend is org-wide and can't be split by shop.",
+            "chat_scope_is_app_wide": _chat_scope_is_app_wide(),
+            "cost_source_error": cost_err,
+        }
 
     return {
         "month": month_start.strftime("%Y-%m"),
@@ -975,9 +1093,10 @@ def cost_reconciliation(request):
     Search Curator/narrative/report included, not chat alone."""
     refresh = request.GET.get("refresh", "").lower() in ("1", "true", "yes")
     month_param = request.GET.get("month")
+    shops = _request_shops(request)
 
     if month_param == "lifetime":
-        key = "cost_reconciliation:lifetime"
+        key = "cost_reconciliation:lifetime" + _shop_key_suffix(shops)
         if refresh:
             cache.delete(key)
         else:
@@ -1002,14 +1121,14 @@ def cost_reconciliation(request):
             if m_cost_err and not cost_err:
                 cost_err = m_cost_err
             rates = _rates_from_resp(rates_resp) if spend is not None else {}
-            split = _logged_spend_split(m, rates)
+            split = _logged_spend_split(m, rates, shops=shops)
             total_real += split.get("real", 0.0)
             total_bot += split.get("bot", 0.0)
             if spend is not None:
                 has_billed = True
                 total_billed += spend
 
-        billed_spend = round(total_billed, 2) if has_billed else None
+        billed_spend = round(total_billed, 2) if has_billed and not shops else None
         logged_spend = round(total_real + total_bot, 2)
         payload = {
             "month": "lifetime",
@@ -1019,6 +1138,7 @@ def cost_reconciliation(request):
             "real_spend": round(total_real, 2),
             "bot_spend": round(total_bot, 2),
             "unaccounted": round(billed_spend - logged_spend, 2) if billed_spend is not None else None,
+            "shop_filtered": bool(shops),
             "chat_scope_is_app_wide": _chat_scope_is_app_wide(),
             "cost_source_error": cost_err,
         }
@@ -1035,7 +1155,7 @@ def cost_reconciliation(request):
             return JsonResponse({"error": "invalid month; expected YYYY-MM"}, status=400)
         month_start = parsed
 
-    key = f"cost_reconciliation:{month_start:%Y-%m}"
+    key = f"cost_reconciliation:{month_start:%Y-%m}" + _shop_key_suffix(shops)
     if refresh:
         cache.delete(key)
         cache.delete(f"spend_for:{month_start:%Y-%m}")
@@ -1045,13 +1165,44 @@ def cost_reconciliation(request):
         if cached is not None:
             return JsonResponse({**cached, "cached": True})
 
-    payload = _cost_reconciliation_for(month_start)
+    payload = _cost_reconciliation_for(month_start, shops)
     if not payload["cost_source_error"]:
         cache.set(key, payload, CURRENT_TTL if month_start == current else PAST_TTL)
     return JsonResponse(payload)
 
 
-def _cache_economics_for(month_start):
+def _shop_cache_buckets(month_start, shops):
+    """Per-model cache token buckets for a shop-filtered population, built
+    from Message rows (Chat.tokens_in stands in for uncached input -- the
+    usage report's per-key breakdown can't be split by shop)."""
+    start_dt, end_dt = month_range(month_start)
+    buckets = {}
+    rows = (
+        Message.objects.filter(
+            chat__timestamp__gte=start_dt,
+            chat__timestamp__lt=end_dt,
+            chat__likely_automated=False,
+            chat__shop__in=list(shops),
+        )
+        .values("model")
+        .annotate(
+            uncached=Sum("tokens_in"),
+            out=Sum("tokens_out"),
+            cc=Sum("cache_creation_tokens"),
+            cr=Sum("cache_read_tokens"),
+        )
+    )
+    for r in rows:
+        buckets[r["model"] or "unknown"] = {
+            "uncached_input_tokens": r["uncached"] or 0,
+            "output_tokens": r["out"] or 0,
+            "cache_creation_tokens": r["cc"] or 0,
+            "cache_read_tokens": r["cr"] or 0,
+        }
+    return buckets
+
+
+def _cache_economics_for(month_start, shops=None):
     """Single-month cache-economics payload, shared by the cache_economics
     endpoint and C3's verdict cards: reads-per-write reuse ratio plus the
     estimated $ actually spent on cached input vs. a baseline pricing the
@@ -1060,7 +1211,10 @@ def _cache_economics_for(month_start):
     here. The deterministic `verdict` ("helping"/"hurting"/"no_data") is a
     clean savings>0 check, not a judgment call, so it's computed here rather
     than routed through the LLM-generated cost commentary elsewhere."""
-    buckets, usage_err = _chat_cache_buckets(month_start)
+    if shops:
+        buckets, usage_err = _shop_cache_buckets(month_start, shops), None
+    else:
+        buckets, usage_err = _chat_cache_buckets(month_start)
     rates = _rates_for(month_start)
 
     total_creation = sum(b["cache_creation_tokens"] for b in buckets.values())
@@ -1119,6 +1273,7 @@ def _cache_economics_for(month_start):
         "savings_pct": savings_pct,
         "roi_multiple": roi_multiple,
         "verdict": verdict,
+        "shop_filtered": bool(shops),
         "chat_scope_is_app_wide": _chat_scope_is_app_wide(),
         "cost_source_error": usage_err,
     }
@@ -1148,9 +1303,10 @@ def cache_economics(request):
     the dashboard."""
     refresh = request.GET.get("refresh", "").lower() in ("1", "true", "yes")
     month_param = request.GET.get("month")
+    shops = _request_shops(request)
 
     if month_param == "lifetime":
-        key = "cache_economics:lifetime"
+        key = "cache_economics:lifetime" + _shop_key_suffix(shops)
         if refresh:
             cache.delete(key)
         else:
@@ -1169,9 +1325,12 @@ def cache_economics(request):
         usage_err = None
 
         for m in months:
-            buckets, m_err = _chat_cache_buckets(m)
-            if m_err and not usage_err:
-                usage_err = m_err
+            if shops:
+                buckets, m_err = _shop_cache_buckets(m, shops), None
+            else:
+                buckets, m_err = _chat_cache_buckets(m)
+                if m_err and not usage_err:
+                    usage_err = m_err
             rates = _rates_for(m)
             for model, tok in buckets.items():
                 creation = tok.get("cache_creation_tokens", 0)
@@ -1219,6 +1378,7 @@ def cache_economics(request):
             "savings_pct": savings_pct,
             "roi_multiple": roi_multiple,
             "verdict": verdict,
+            "shop_filtered": bool(shops),
             "chat_scope_is_app_wide": _chat_scope_is_app_wide(),
             "cost_source_error": usage_err,
         }
@@ -1235,7 +1395,7 @@ def cache_economics(request):
             return JsonResponse({"error": "invalid month; expected YYYY-MM"}, status=400)
         month_start = parsed
 
-    key = f"cache_economics:{month_start:%Y-%m}"
+    key = f"cache_economics:{month_start:%Y-%m}" + _shop_key_suffix(shops)
     if refresh:
         cache.delete(key)
         cache.delete(f"raw_usage_by_key:{month_start:%Y-%m}")
@@ -1245,7 +1405,7 @@ def cache_economics(request):
         if cached is not None:
             return JsonResponse({**cached, "cached": True})
 
-    payload = _cache_economics_for(month_start)
+    payload = _cache_economics_for(month_start, shops)
     if not payload["cost_source_error"]:
         cache.set(key, payload, CURRENT_TTL if month_start == current else PAST_TTL)
     return JsonResponse(payload)
@@ -1272,6 +1432,7 @@ def commercial_impact(request):
     $12B figure ships with "methodology undisclosed"; this panel shows its work.
     """
     month_param = request.GET.get("month")
+    shops = _request_shops(request)
     current = current_month_start()
 
     month_start = current
@@ -1282,15 +1443,24 @@ def commercial_impact(request):
         month_start = parsed
     start, end = month_range(month_start)
 
-    key = f"commercial_impact:{month_start:%Y-%m}"
+    key = f"commercial_impact:{month_start:%Y-%m}" + _shop_key_suffix(shops)
     cached = cache.get(key)
     if cached is not None:
         return JsonResponse({**cached, "cached": True})
 
     rates_resp = _rates_resp_for(month_start)
-    spend, _, cost_err = _spend_for(month_start, rates_resp)
+    rates = _rates_from_resp(rates_resp)
+    if shops:
+        # Billed spend is org-wide; price the filtered population from its
+        # own logged tokens instead.
+        spend = _shop_filtered_figures(month_start, rates, shops)["spend"]
+        cost_err = None
+    else:
+        spend, _, cost_err = _spend_for(month_start, rates_resp)
 
     orders = AttributedOrder.objects.filter(order_created_at__gte=start, order_created_at__lt=end)
+    if shops:
+        orders = orders.filter(shop__in=list(shops))
 
     revenue = sum((o.influenced_revenue for o in orders), Decimal("0"))
     by_currency = {}
@@ -1298,7 +1468,7 @@ def commercial_impact(request):
         by_currency[o.currency] = by_currency.get(o.currency, Decimal("0")) + o.influenced_revenue
     currency = max(by_currency, key=by_currency.get) if by_currency else "USD"
 
-    convs = _chat_qs(month_start).count()
+    convs = _chat_qs(month_start, shops).count()
     converting = orders.values("chat_id_raw").distinct().count()
     unlinked = orders.filter(chat__isnull=True).count()
 
@@ -1314,6 +1484,8 @@ def commercial_impact(request):
         "converting_conversations": converting,
         "conversion_rate": round(converting / convs, 4) if convs else None,
         "unlinked_orders": unlinked,
+        "shop_filtered": bool(shops),
+        "spend_source": "logged_estimate" if shops else "billed",
         "methodology": COMMERCIAL_IMPACT_METHODOLOGY,
         "data_as_of": timezone.now().isoformat(),
         "cost_source_error": cost_err,
