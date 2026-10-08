@@ -3,14 +3,30 @@
 // usage report for the month - never a hardcoded price list, so it stays
 // correct automatically if Anthropic changes prices.
 
-// Chat/message `model` values can carry a dated snapshot suffix
-// (e.g. "claude-haiku-4-5-20251001") while the rate map is keyed by
-// whatever model string Anthropic's reports used, so match by longest prefix.
+// Chat/message `model` values and rate-map keys can each carry a dated
+// snapshot suffix (e.g. "claude-haiku-4-5-20251001") -- or not. The chat
+// used to log the long form while Anthropic's reports keyed the short
+// form; since the claude-haiku-5-5 switch the chat logs the short form
+// while the reports may key the long one. So: strip any trailing
+// -YYYYMMDD suffix from both sides, then match when either normalized
+// string is a prefix of the other, longest normalized key wins.
+//
+// Note on prefix safety: "claude-haiku-5-5" starts with "claude-haiku-5",
+// so when both keys exist the longest-key rule picks the more specific
+// one. A key can still never cross-match an unrelated model -- matching
+// requires one side to be a strict string prefix of the other.
+const DATE_SUFFIX_RE = /-\d{8}$/;
+const stripDateSuffix = (s) => String(s).replace(DATE_SUFFIX_RE, "");
+
 export function getModelRate(rates, model) {
   if (!model || !rates) return null;
+  const normModel = stripDateSuffix(model);
   const key = Object.keys(rates)
-    .filter((k) => model.startsWith(k))
-    .sort((a, b) => b.length - a.length)[0];
+    .filter((k) => {
+      const nk = stripDateSuffix(k);
+      return normModel.startsWith(nk) || nk.startsWith(normModel);
+    })
+    .sort((a, b) => stripDateSuffix(b).length - stripDateSuffix(a).length)[0];
   return key ? rates[key] : null;
 }
 
