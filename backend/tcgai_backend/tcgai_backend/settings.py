@@ -154,6 +154,15 @@ COST_APP_PUBLIC_URL = os.environ.get('COST_APP_PUBLIC_URL', '')
 # -----------------------------
 # Shared secret with the AOP monitoring app -- must be set to the exact same
 # value in both deployments, or AOP-signed tokens will never verify here.
+# -----------------------------
+# Store attribution (shop filter)
+# -----------------------------
+# Shop domains treated as production. The dashboard's store filter defaults
+# to these; test-store traffic stays viewable via "All stores" but is
+# excluded from headline aggregates. Comma-separated; empty = no designation
+# (dashboard behaves exactly as before).
+PRODUCTION_SHOPS = [s.strip() for s in os.environ.get('PRODUCTION_SHOPS', '').split(',') if s.strip()]
+
 COSTAPP_SSO_SECRET = os.environ.get('COSTAPP_SSO_SECRET', '')
 # Which existing Django user AOP's dashboard link logs the browser in as.
 COSTAPP_SSO_USERNAME = os.environ.get('COSTAPP_SSO_USERNAME', '')
