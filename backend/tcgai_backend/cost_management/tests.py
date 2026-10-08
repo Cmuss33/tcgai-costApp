@@ -6011,3 +6011,37 @@ class ChatAdminAttributeToProductionShopTests(TestCase):
         messages = list(response.context["messages"])
         self.assertEqual(len(messages), 1)
         self.assertIn("PRODUCTION_SHOPS", str(messages[0]))
+
+
+class ChatAdminShopAttributionFilterTests(TestCase):
+    """The admin's "shop attribution" filter isolates the historical
+    shop="" ("Unknown") rows so they can be bulk-attributed -- the plain
+    "shop" values filter only lists known domains."""
+
+    def setUp(self):
+        self.user = User.objects.create_superuser(
+            username="admin", password="pw", email="a@example.com"
+        )
+        self.client.force_login(self.user)
+        Chat.objects.create(chat_id="unknown-1", model="m", shop="")
+        Chat.objects.create(chat_id="tagged-1", model="m", shop="pvpshoppe.myshopify.com")
+
+    def _changelist_ids(self, **params):
+        response = self.client.get("/admin/cost_management/chat/", params)
+        self.assertEqual(response.status_code, 200)
+        return {c.chat_id for c in response.context["cl"].result_list}
+
+    def test_unknown_option_shows_only_empty_shop_rows(self):
+        self.assertEqual(
+            self._changelist_ids(shop_attribution="unknown"), {"unknown-1"}
+        )
+
+    def test_known_option_excludes_empty_shop_rows(self):
+        self.assertEqual(
+            self._changelist_ids(shop_attribution="known"), {"tagged-1"}
+        )
+
+    def test_no_option_shows_everything(self):
+        self.assertEqual(
+            self._changelist_ids(), {"unknown-1", "tagged-1"}
+        )

@@ -4,6 +4,30 @@ from django.contrib import admin, messages
 from .models import Chat, CostMethodologyChange
 
 
+class ShopAttributionFilter(admin.SimpleListFilter):
+    """Split chats into attributed vs unattributed ("Unknown").
+
+    The plain "shop" values filter only lists known shop domains, giving
+    no way to isolate the historical shop="" rows for bulk attribution.
+    """
+
+    title = "shop attribution"
+    parameter_name = "shop_attribution"
+
+    def lookups(self, request, model_admin):
+        return (
+            ("unknown", "Unknown (no shop set)"),
+            ("known", "Attributed"),
+        )
+
+    def queryset(self, request, queryset):
+        if self.value() == "unknown":
+            return queryset.filter(shop="")
+        if self.value() == "known":
+            return queryset.exclude(shop="")
+        return queryset
+
+
 @admin.register(Chat)
 class ChatAdmin(admin.ModelAdmin):
     list_display = (
@@ -18,7 +42,13 @@ class ChatAdmin(admin.ModelAdmin):
         "timestamp",
     )
     list_editable = ("investigation_status", "likely_automated")
-    list_filter = ("likely_automated", "investigation_status", "model", "shop")
+    list_filter = (
+        ShopAttributionFilter,
+        "likely_automated",
+        "investigation_status",
+        "model",
+        "shop",
+    )
     search_fields = ("chat_id", "flag_reason", "github_issue_url", "linear_issue_url")
     readonly_fields = ("chat_id", "timestamp")
     actions = ("attribute_to_production_shop",)
