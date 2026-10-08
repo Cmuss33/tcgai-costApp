@@ -14,6 +14,7 @@ from django.utils import timezone
 
 from .models import AttributedOrder, Chat, Message, AlertRule, AlertFiring, OperatorPreference, AdvisorTelemetry
 from .issue_trackers import GitHubIssueTracker, IssueRef, IssueTrackerError, LinearIssueTracker
+from .month_utils import apply_shop_filter, real_chats
 
 
 PRODUCTS_SHOWN = {
@@ -5691,3 +5692,226 @@ class AdvisorTelemetryTests(TestCase):
         self.client.force_login(self.user)
         response = self.client.get("/api/cost/budget_audit/?month=nope")
         self.assertEqual(response.status_code, 400)
+
+
+class LogMessageShopTests(TestCase):
+    """Store attribution at ingest: the chatbot sends `shop` (its Shopify
+    domain) with each log_message payload. Missing shop must not break
+    ingestion -- it defaults to "" (unattributed, shown as "Unknown")."""
+
+    def _post(self, chat_id, shop=None):
+        payload = make_log_message_payload(chat_id)
+        if shop is not None:
+            payload["shop"] = shop
+        return self.client.post(
+            "/api/cost/log_message/",
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+    def test_stores_shop_when_present(self):
+        response = self._post("conv-shop-1", shop="pvpshoppe.myshopify.com")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            Chat.objects.get(chat_id="conv-shop-1").shop, "pvpshoppe.myshopify.com"
+        )
+
+    def test_shop_defaults_to_empty_when_absent(self):
+        response = self._post("conv-shop-2")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(Chat.objects.get(chat_id="conv-shop-2").shop, "")
+
+    def test_first_write_wins_for_shop(self):
+        self._post("conv-shop-3", shop="store-a.myshopify.com")
+        self._post("conv-shop-3", shop="store-b.myshopify.com")
+        self.assertEqual(
+            Chat.objects.get(chat_id="conv-shop-3").shop, "store-a.myshopify.com"
+        )
+
+
+class ApplyShopFilterTests(TestCase):
+    def test_no_shops_returns_queryset_unchanged(self):
+        Chat.objects.create(chat_id="s1", model="m", shop="a.myshopify.com")
+        Chat.objects.create(chat_id="s2", model="m", shop="b.myshopify.com")
+        for shops in (None, []):
+            qs = apply_shop_filter(Chat.objects.all(), shops)
+            self.assertEqual(
+                set(qs.values_list("chat_id", flat=True)), {"s1", "s2"}
+            )
+
+    def test_filters_to_given_shops(self):
+        Chat.objects.create(chat_id="s1", model="m", shop="a.myshopify.com")
+        Chat.objects.create(chat_id="s2", model="m", shop="b.myshopify.com")
+        qs = apply_shop_filter(Chat.objects.all(), ["a.myshopify.com"])
+        self.assertEqual(list(qs.values_list("chat_id", flat=True)), ["s1"])
+
+    def test_empty_string_matches_unattributed_rows(self):
+        Chat.objects.create(chat_id="s1", model="m", shop="")
+        Chat.objects.create(chat_id="s2", model="m", shop="a.myshopify.com")
+        qs = apply_shop_filter(Chat.objects.all(), [""])
+        self.assertEqual(list(qs.values_list("chat_id", flat=True)), ["s1"])
+
+    def test_composes_with_real_chats_bot_exclusion(self):
+        Chat.objects.create(chat_id="s1", model="m", shop="a.myshopify.com")
+        Chat.objects.create(
+            chat_id="s2", model="m", shop="a.myshopify.com", likely_automated=True
+        )
+        qs = apply_shop_filter(
+            real_chats(Chat.objects.all()), ["a.myshopify.com"]
+        )
+        self.assertEqual(list(qs.values_list("chat_id", flat=True)), ["s1"])
+
+
+class GetChatIdsShopFilterTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="owner", password="pw")
+        self.client.force_login(self.user)
+
+    def _mk(self, chat_id, shop):
+        payload = make_log_message_payload(chat_id)
+        payload["shop"] = shop
+        return self.client.post(
+            "/api/cost/log_message/",
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+    def test_filters_list_and_kpis_by_shop(self):
+        self.assertEqual(self._mk("sa1", "a.myshopify.com").status_code, 200)
+        self.assertEqual(self._mk("sb1", "b.myshopify.com").status_code, 200)
+
+        data = self.client.get("/api/cost/get_chat_ids/?shop=a.myshopify.com").json()
+        self.assertEqual(data["total"], 1)
+        self.assertEqual(data["results"][0]["chat_id"], "sa1")
+        self.assertEqual(data["kpis"]["total_conversations"], 1)
+
+    def test_no_shop_param_returns_everything(self):
+        self._mk("sa1", "a.myshopify.com")
+        self._mk("sb1", "b.myshopify.com")
+        data = self.client.get("/api/cost/get_chat_ids/").json()
+        self.assertEqual(data["total"], 2)
+
+    def test_multiple_shop_params(self):
+        self._mk("sa1", "a.myshopify.com")
+        self._mk("sb1", "b.myshopify.com")
+        self._mk("sc1", "c.myshopify.com")
+        data = self.client.get(
+            "/api/cost/get_chat_ids/?shop=a.myshopify.com&shop=b.myshopify.com"
+        ).json()
+        self.assertEqual(data["total"], 2)
+
+
+class ConfigViewTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="owner", password="pw")
+        self.client.force_login(self.user)
+
+    @override_settings(PRODUCTION_SHOPS=["a.myshopify.com", "b.myshopify.com"])
+    def test_returns_production_shops(self):
+        response = self.client.get("/api/cost/config/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json()["production_shops"],
+            ["a.myshopify.com", "b.myshopify.com"],
+        )
+
+    def test_defaults_to_empty_list(self):
+        response = self.client.get("/api/cost/config/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["production_shops"], [])
+
+
+class ShopsViewTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="owner", password="pw")
+        self.client.force_login(self.user)
+
+    def test_lists_distinct_shops_with_counts(self):
+        Chat.objects.create(chat_id="s1", model="m", shop="a.myshopify.com")
+        Chat.objects.create(chat_id="s2", model="m", shop="a.myshopify.com")
+        Chat.objects.create(chat_id="s3", model="m", shop="b.myshopify.com")
+        Chat.objects.create(chat_id="s4", model="m", shop="")
+        Chat.objects.create(
+            chat_id="bot", model="m", shop="a.myshopify.com", likely_automated=True
+        )
+
+        data = self.client.get("/api/cost/shops/").json()
+        by_shop = {r["shop"]: r["chat_count"] for r in data["shops"]}
+        # bot chats excluded (real_chats), unattributed "" included
+        self.assertEqual(
+            by_shop, {"a.myshopify.com": 2, "b.myshopify.com": 1, "": 1}
+        )
+
+
+class MonthlyStatsShopFilterTests(TestCase):
+    """Shop filter on monthly_stats: conversation-derived figures respect it;
+    spend switches from billed (org-wide) to a logged-token estimate for the
+    filtered population."""
+
+    # Deliberately large rates so logged spend survives the 2-decimal rounding.
+    RATES = {"rates": {"claude-haiku-4-5": {"input": 0.001, "output": 0.005}}}
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="owner", password="pw")
+        self.client.force_login(self.user)
+        cache.clear()
+
+    def _mk(self, chat_id, shop, tokens_in=1000, tokens_out=200):
+        return Chat.objects.create(
+            chat_id=chat_id,
+            model="claude-haiku-4-5",
+            shop=shop,
+            tokens_in=tokens_in,
+            tokens_out=tokens_out,
+        )
+
+    def _mocked(self):
+        return (
+            patch(
+                "cost_management.stats_views._tokens_for",
+                return_value=(5000, 1000, [], {"creation_tokens": 0, "read_tokens": 0, "hit_rate": None}, None),
+            ),
+            patch("cost_management.stats_views._spend_for", return_value=(0.05, [], None)),
+            patch(
+                "cost_management.stats_views._rates_resp_for",
+                return_value=self.RATES,
+            ),
+        )
+
+    def test_filtered_counts_and_logged_spend(self):
+        self._mk("a1", "a.myshopify.com")
+        self._mk("a2", "a.myshopify.com")
+        self._mk("b1", "b.myshopify.com")
+        p1, p2, p3 = self._mocked()
+        with p1, p2, p3:
+            data = self.client.get("/api/cost/monthly_stats/?shop=a.myshopify.com").json()
+        self.assertTrue(data["shop_filtered"])
+        self.assertEqual(data["spend_source"], "logged_estimate")
+        self.assertEqual(data["conversations"]["total"], 2)
+        # logged: 2000 in * 0.001 + 400 out * 0.005 = 4.0
+        self.assertAlmostEqual(data["spend"]["total"], 4.0)
+        self.assertAlmostEqual(data["per_conversation"]["cost"], 2.0)
+
+    def test_unfiltered_behavior_unchanged(self):
+        self._mk("a1", "a.myshopify.com")
+        self._mk("b1", "b.myshopify.com")
+        p1, p2, p3 = self._mocked()
+        with p1, p2, p3:
+            data = self.client.get("/api/cost/monthly_stats/").json()
+        self.assertFalse(data["shop_filtered"])
+        self.assertEqual(data["spend_source"], "billed")
+        self.assertEqual(data["conversations"]["total"], 2)
+        self.assertAlmostEqual(data["spend"]["total"], 0.05)
+
+    def test_bot_chats_still_excluded_when_filtered(self):
+        self._mk("a1", "a.myshopify.com")
+        Chat.objects.create(
+            chat_id="bot1", model="claude-haiku-4-5", shop="a.myshopify.com",
+            likely_automated=True, tokens_in=100000, tokens_out=50000,
+        )
+        p1, p2, p3 = self._mocked()
+        with p1, p2, p3:
+            data = self.client.get("/api/cost/monthly_stats/?shop=a.myshopify.com").json()
+        self.assertEqual(data["conversations"]["total"], 1)
+        # bot's 100k tokens must not leak into the filtered spend
+        self.assertAlmostEqual(data["spend"]["total"], 2.0)
