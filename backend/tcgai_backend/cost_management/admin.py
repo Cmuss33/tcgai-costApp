@@ -2,6 +2,7 @@ from django.conf import settings
 from django.contrib import admin, messages
 
 from .models import Chat, CostMethodologyChange
+from .month_utils import CONVERSATION_START_DATE
 
 
 class ShopAttributionFilter(admin.SimpleListFilter):
@@ -56,9 +57,11 @@ class ChatAdmin(admin.ModelAdmin):
     @admin.action(description="Attribute selected chats to production shop")
     def attribute_to_production_shop(self, request, queryset):
         """Bulk-attribute historical shop="" ("Unknown") chats to the
-        production shop. Only rows with an empty shop are touched --
-        already-tagged rows are never overwritten. No-ops with an error
-        message when PRODUCTION_SHOPS is not configured."""
+        production shop. Only rows with an empty shop AND a timestamp on or
+        after CONVERSATION_START_DATE (2026-06-01 -- earlier rows are
+        pre-launch dev/test traffic) are touched; already-tagged rows are
+        never overwritten. No-ops with an error message when
+        PRODUCTION_SHOPS is not configured."""
         production_shops = list(getattr(settings, "PRODUCTION_SHOPS", []) or [])
         if not production_shops:
             self.message_user(
@@ -68,7 +71,10 @@ class ChatAdmin(admin.ModelAdmin):
                 level=messages.ERROR,
             )
             return
-        updated = queryset.filter(shop="").update(shop=production_shops[0])
+        updated = (
+            queryset.filter(shop="", timestamp__gte=CONVERSATION_START_DATE)
+            .update(shop=production_shops[0])
+        )
         self.message_user(
             request,
             f"Attributed {updated} chat(s) to {production_shops[0]}.",

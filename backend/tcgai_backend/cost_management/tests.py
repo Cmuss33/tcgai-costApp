@@ -6012,6 +6012,31 @@ class ChatAdminAttributeToProductionShopTests(TestCase):
         self.assertEqual(len(messages), 1)
         self.assertIn("PRODUCTION_SHOPS", str(messages[0]))
 
+    @override_settings(PRODUCTION_SHOPS=["pvpshoppe.myshopify.com"])
+    def test_skips_chats_before_conversation_start_date(self):
+        from datetime import datetime, timezone
+
+        from .month_utils import CONVERSATION_START_DATE
+
+        old = Chat.objects.create(chat_id="pre-launch", model="m", shop="")
+        # force the timestamp back before 2026-06-01 (auto_now_add would
+        # otherwise stamp it with "now")
+        Chat.objects.filter(pk=old.pk).update(
+            timestamp=datetime(2026, 5, 15, tzinfo=timezone.utc)
+        )
+        Chat.objects.create(chat_id="unknown-1", model="m", shop="")
+
+        response = self._post_action(["pre-launch", "unknown-1"])
+        self.assertEqual(response.status_code, 200)
+
+        # pre-launch dev/test traffic is left alone
+        self.assertEqual(Chat.objects.get(chat_id="pre-launch").shop, "")
+        self.assertEqual(
+            Chat.objects.get(chat_id="unknown-1").shop, "pvpshoppe.myshopify.com"
+        )
+        messages = list(response.context["messages"])
+        self.assertIn("1", str(messages[0]))
+
 
 class ChatAdminShopAttributionFilterTests(TestCase):
     """The admin's "shop attribution" filter isolates the historical
