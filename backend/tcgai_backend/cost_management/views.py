@@ -17,7 +17,8 @@ from django.utils.dateparse import parse_datetime
 from django.utils.timezone import now
 from datetime import datetime, timedelta, timezone as dt_timezone
 from .api_auth import api_login_required
-from .month_utils import CONVERSATION_START_DATE, real_chats
+from .month_utils import CONVERSATION_START_DATE, apply_shop_filter, real_chats
+from django.conf import settings
 
 llmprovider = AnthropicAdapter()
 
@@ -224,6 +225,10 @@ def log_message(request):
         cache_creation_tokens = data.get('cache_creation_tokens') or 0
         cache_read_tokens = data.get('cache_read_tokens') or 0
         model = data.get('model')
+        # Store attribution (chatbot sends its Shopify domain; separate
+        # chatbot change). Missing/empty => "" (unattributed, "Unknown" in
+        # the dashboard). Never overwritten: first write wins, like `model`.
+        shop = data.get('shop') or ""
 
         if content == 'hi this is the probe':
             return JsonResponse({'status': 'error', 'message': 'this was a probe message'}, status=400)
@@ -242,7 +247,8 @@ def log_message(request):
 
         with transaction.atomic():
             chat, created = Chat.objects.select_for_update().get_or_create(
-                chat_id=chat_id, defaults={"model": model, "likely_automated": is_shadowtest}
+                chat_id=chat_id,
+                defaults={"model": model, "likely_automated": is_shadowtest, "shop": shop},
             )
             if not created and is_shadowtest and not chat.likely_automated:
                 chat.likely_automated = True
@@ -317,7 +323,10 @@ def log_message(request):
 @api_login_required
 def get_messages(request):
     try:
-        chats = real_chats(Chat.objects.filter(timestamp__gte=CONVERSATION_START_DATE))
+        chats = apply_shop_filter(
+            real_chats(Chat.objects.filter(timestamp__gte=CONVERSATION_START_DATE)),
+            request.GET.getlist("shop"),
+        )
         result = []
         for chat in chats:
             messages = Message.objects.filter(chat=chat).order_by('-timestamp')
@@ -350,7 +359,11 @@ def get_chat_ids(request):
         # they'd be the overwhelming majority of every page (see
         # flag_automated_chats and month_utils.real_chats).
         # Only include real conversations from June 1, 2026 onwards.
-        visible_chats = real_chats(Chat.objects.filter(timestamp__gte=CONVERSATION_START_DATE))
+        shops = request.GET.getlist("shop")
+        visible_chats = apply_shop_filter(
+            real_chats(Chat.objects.filter(timestamp__gte=CONVERSATION_START_DATE)),
+            shops,
+        )
 
         if filter_type == "needs_attention":
             visible_chats = visible_chats.filter(
@@ -405,7 +418,10 @@ def get_chat_ids(request):
         }
 
         # All-time / all-up KPIs across all real conversations since June 1, 2026
-        all_real = real_chats(Chat.objects.filter(timestamp__gte=CONVERSATION_START_DATE))
+        all_real = apply_shop_filter(
+            real_chats(Chat.objects.filter(timestamp__gte=CONVERSATION_START_DATE)),
+            shops,
+        )
         all_up = all_real.aggregate(
             audited_count=Count('chat_id', filter=Q(evaluation_score__isnull=False)),
             avg_score=Avg('evaluation_score'),
@@ -481,6 +497,30 @@ def login_view(request):
 
     return JsonResponse({"success": False}, status=401)
 
+@api_login_required
+def get_config(request):
+    """Dashboard bootstrap config: production shop designation for the
+    store filter. Driven by the PRODUCTION_SHOPS env var (comma-separated
+    shop domains); empty list = no designation, dashboard behaves as before."""
+    return JsonResponse({"production_shops": list(settings.PRODUCTION_SHOPS)})
+
+
+@api_login_required
+def get_shops(request):
+    """Distinct shops with real-conversation counts, for the dashboard's
+    store filter dropdown. Unattributed rows (shop="") are included so the
+    UI can offer them as "Unknown". Bot traffic excluded via real_chats."""
+    rows = (
+        real_chats(Chat.objects.filter(timestamp__gte=CONVERSATION_START_DATE))
+        .values("shop")
+        .annotate(chat_count=Count("chat_id"))
+        .order_by("-chat_count")
+    )
+    return JsonResponse(
+        {"shops": [{"shop": r["shop"], "chat_count": r["chat_count"]} for r in rows]}
+    )
+
+
 def auth_check(request):
     return JsonResponse({
         "authenticated": request.user.is_authenticated
@@ -511,7 +551,10 @@ def get_avg_eval_score(request):
         start_date = now() - timedelta(days=num_days)
 
         daily_counts = (
-            real_chats(Chat.objects.filter(timestamp__gte=start_date))
+            apply_shop_filter(
+                real_chats(Chat.objects.filter(timestamp__gte=start_date)),
+                request.GET.getlist("shop"),
+            )
             .annotate(day=TruncDate('timestamp'))
             .values('day')
             .annotate(avg_day_score=Avg('evaluation_score'))
@@ -532,7 +575,10 @@ def get_avg_tokens_in(request):
         start_date = now() - timedelta(days=num_days)
 
         daily_counts = (
-            real_chats(Chat.objects.filter(timestamp__gte=start_date))
+            apply_shop_filter(
+                real_chats(Chat.objects.filter(timestamp__gte=start_date)),
+                request.GET.getlist("shop"),
+            )
             .annotate(day=TruncDate('timestamp'))
             .values('day')
             .annotate(tok_in=Avg('tokens_in'))
@@ -553,7 +599,10 @@ def get_avg_tokens_out(request):
         start_date = now() - timedelta(days=num_days)
 
         daily_counts = (
-            real_chats(Chat.objects.filter(timestamp__gte=start_date))
+            apply_shop_filter(
+                real_chats(Chat.objects.filter(timestamp__gte=start_date)),
+                request.GET.getlist("shop"),
+            )
             .annotate(day=TruncDate('timestamp'))
             .values('day')
             .annotate(tok_out=Avg('tokens_out'))
@@ -574,7 +623,10 @@ def get_avg_conversations_per_day(request):
         start_date = now() - timedelta(days=num_days)
 
         daily_counts = (
-            real_chats(Chat.objects.filter(timestamp__gte=start_date))
+            apply_shop_filter(
+                real_chats(Chat.objects.filter(timestamp__gte=start_date)),
+                request.GET.getlist("shop"),
+            )
             .annotate(day=TruncDate('timestamp'))
             .values('day')
             .annotate(count=Count('chat_id'))
