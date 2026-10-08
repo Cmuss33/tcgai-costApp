@@ -18,6 +18,11 @@ class Chat(models.Model):
 
     chat_id = models.CharField(max_length=255, primary_key=True)
     model = models.TextField()
+    # Store attribution: the chatbot's Shopify domain for this conversation.
+    # Sent by the chatbot in the log_message payload (separate chatbot change);
+    # "" = unattributed (rows logged before the chatbot started sending it),
+    # shown as "Unknown" in the dashboard. First write wins, like `model`.
+    shop = models.CharField(max_length=255, db_index=True, default="")
     tokens_in = models.IntegerField(default=0)
     tokens_out = models.IntegerField(default=0)
     intent = models.TextField(default='NOT FOUND')
