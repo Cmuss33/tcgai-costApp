@@ -107,18 +107,19 @@ def audit_chat_compliance(picks, stated_budget):
     }
 
 
-def monthly_budget_audit(month_start):
+def monthly_budget_audit(month_start, shops=None):
     """Aggregate budget-compliance numbers for one month of telemetry.
 
     Rows are scoped by created_at (arrival month). Distinct chats are counted
     by chat_id_raw so unlinked rows (no Chat row) still count toward coverage.
     """
     start_dt, end_dt = month_range(month_start)
-    rows = list(
-        AdvisorTelemetry.objects.filter(
-            created_at__gte=start_dt, created_at__lt=end_dt
-        ).order_by("created_at")
+    telemetry_qs = AdvisorTelemetry.objects.filter(
+        created_at__gte=start_dt, created_at__lt=end_dt
     )
+    if shops:
+        telemetry_qs = telemetry_qs.filter(shop__in=list(shops))
+    rows = list(telemetry_qs.order_by("created_at"))
 
     # One row per chat: keep the latest emit per (chat_id_raw, surface).
     latest = {}
@@ -153,7 +154,7 @@ def monthly_budget_audit(month_start):
         else None
     )
 
-    total_convos = conversation_count(month_start)
+    total_convos = conversation_count(month_start, shops)
     emit_coverage_pct = (
         round(telemetry_chats / total_convos * 100, 1) if total_convos else None
     )
@@ -182,6 +183,7 @@ def budget_audit(request):
     """
     refresh = request.GET.get("refresh", "").lower() in ("1", "true", "yes")
     month_param = request.GET.get("month")
+    shops = request.GET.getlist("shop") or None
     current = current_month_start()
 
     month_start = current
@@ -192,6 +194,8 @@ def budget_audit(request):
         month_start = parsed
 
     key = f"budget_audit:{month_start:%Y-%m}"
+    if shops:
+        key += ":shop=" + ",".join(sorted(shops))
     if refresh:
         cache.delete(key)
     else:
@@ -199,6 +203,7 @@ def budget_audit(request):
         if cached is not None:
             return JsonResponse(cached)
 
-    payload = monthly_budget_audit(month_start)
+    payload = monthly_budget_audit(month_start, shops)
+    payload["shop_filtered"] = bool(shops)
     cache.set(key, payload, 300)
     return JsonResponse(payload)
