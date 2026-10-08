@@ -60,6 +60,21 @@ def real_chats(qs):
     return qs.filter(likely_automated=False).exclude(chat_id__icontains="shadowtest")
 
 
-def conversation_count(month_start):
+def apply_shop_filter(qs, shops):
+    """Restrict a Chat queryset to the given shop domains.
+
+    `shops` is a list of shop domain strings (from ?shop=, repeatable);
+    None/empty means no filtering. Composes with real_chats() -- apply it
+    to the already-real-only queryset so bot exclusions are never lost.
+    An empty-string entry matches unattributed (pre-migration) rows."""
+    if not shops:
+        return qs
+    return qs.filter(shop__in=list(shops))
+
+
+def conversation_count(month_start, shops=None):
     start_dt, end_dt = month_range(month_start)
-    return real_chats(Chat.objects.filter(timestamp__gte=start_dt, timestamp__lt=end_dt)).count()
+    return apply_shop_filter(
+        real_chats(Chat.objects.filter(timestamp__gte=start_dt, timestamp__lt=end_dt)),
+        shops,
+    ).count()
