@@ -352,10 +352,9 @@ def _chat_cache_buckets(month_start):
     show every key with usage) -- the chat_api_key_ids() filter is applied
     here, mirroring how stats_views.usage_by_key filters the same raw
     response to app_api_key_ids() one layer up. Model keys come straight
-    from Anthropic's usage report on both sides of this ratio (buckets and,
-    via _rates_for, rates), so an exact dict lookup is correct here --
-    unlike _rate_for's prefix match, which exists only to bridge our own
-    dated Chat.model strings against Anthropic's shorter rate keys."""
+    from Anthropic's usage report; consumers match them against the rate
+    map with _rate_for (never an exact dict lookup), since Anthropic
+    doesn't always key a model identically across its own reports."""
     resp = _raw_usage_by_key(month_start)
     if not isinstance(resp, dict) or resp.get("error"):
         err = resp.get("error") if isinstance(resp, dict) else "usage source unavailable"
@@ -1025,7 +1024,10 @@ def usage_by_key(request):
     for k in raw_keys:
         estimated_cost = 0.0
         for model, tok in k.get("by_model", {}).items():
-            rate = rates.get(model, {})
+            # _rate_for, not an exact dict lookup: Anthropic doesn't always
+            # key a model identically across its own reports (seen with
+            # claude-haiku-5-5), and the rate map keys are normalized.
+            rate = _rate_for(rates, model) or {}
             estimated_cost += tok.get("uncached_input_tokens", 0) * rate.get("input", 0)
             estimated_cost += tok.get("output_tokens", 0) * rate.get("output", 0)
             estimated_cost += tok.get("cache_creation_tokens", 0) * rate.get("cache_creation", 0)
@@ -1249,7 +1251,9 @@ def _cache_economics_for(month_start, shops=None):
     returned = 0.0
     priced_any = False
     for model, tok in buckets.items():
-        rate = rates.get(model, {})
+        # _rate_for, not an exact dict lookup: the usage report's model
+        # key and the rate map's key don't always match exactly.
+        rate = _rate_for(rates, model) or {}
         input_rate = rate.get("input")
         if not input_rate:
             continue

@@ -1,4 +1,5 @@
 from .api_clients import LLMAdapter
+import re
 import requests
 import os
 import random
@@ -160,6 +161,20 @@ def _anthropic_get(url, params=None, headers=None, max_retries=3, sleep_fn=time.
         sleep_fn(sleep_sec)
 
     return last_response
+
+
+# Trailing dated snapshot suffix on Anthropic model IDs, e.g. "-20251001"
+# in "claude-haiku-4-5-20251001". Stripped when joining the cost_report
+# against the usage_report in get_model_rates: the two reports don't
+# always key the same model identically (seen with claude-haiku-5-5 --
+# short in one, versioned in the other), and an exact join would silently
+# drop the rate entirely. Blending dated snapshots of one model is safe:
+# Anthropic doesn't reprice between snapshots.
+_MODEL_DATE_SUFFIX_RE = re.compile(r"-\d{8}$")
+
+
+def _norm_model_key(model):
+    return _MODEL_DATE_SUFFIX_RE.sub("", model or "")
 
 
 class AnthropicAdapter(LLMAdapter):
@@ -376,7 +391,7 @@ class AnthropicAdapter(LLMAdapter):
         cache_read_cents = {}
         for day_data in cost_response.json().get('data', []):
             for result in day_data.get('results', []):
-                model = result.get('model')
+                model = _norm_model_key(result.get('model'))
                 if not model or result.get('cost_type') != 'tokens':
                     continue
                 amount = float(result.get('amount') or 0)
@@ -399,7 +414,7 @@ class AnthropicAdapter(LLMAdapter):
         cache_read_tok = {}
         for day_data in usage_response.json().get('data', []):
             for result in day_data.get('results', []):
-                model = result.get('model')
+                model = _norm_model_key(result.get('model'))
                 if not model:
                     continue
                 input_tokens[model] = input_tokens.get(model, 0) + result.get('uncached_input_tokens', 0)

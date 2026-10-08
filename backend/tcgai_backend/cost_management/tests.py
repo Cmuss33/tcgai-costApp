@@ -2755,6 +2755,27 @@ class ModelRatesAdapterTests(TestCase):
 
         self.assertEqual(result["error"], "boom")
 
+    def test_cost_and_usage_key_formats_join(self):
+        # Anthropic doesn't always key a model identically in its cost vs
+        # usage reports (seen with claude-haiku-5-5: short in one, dated in
+        # the other). The join normalizes trailing -YYYYMMDD suffixes so the
+        # rate is still derived instead of silently dropped.
+        cost_resp = MagicMock(status_code=200, json=lambda: self._cost_report(
+            ("claude-haiku-5-5-20251008", "uncached_input_tokens", "100.0"),
+        ))
+        usage_resp = MagicMock(status_code=200, json=lambda: self._usage_report(
+            ("claude-haiku-5-5", 1_000_000, 0),
+        ))
+        from .llm_provider_adapter_implementations import AnthropicAdapter
+        with patch(
+            "cost_management.llm_provider_adapter_implementations.requests.get",
+            side_effect=[cost_resp, usage_resp],
+        ):
+            result = AnthropicAdapter().get_model_rates(year=2026, month=8)
+
+        self.assertIn("claude-haiku-5-5", result["rates"])
+        self.assertEqual(result["rates"]["claude-haiku-5-5"]["input"], 1.0 / 1_000_000)
+
 
 class WholeOrgRateDerivationTests(TestCase):
     """get_model_rates computes a $/token UNIT rate, not an absolute total --
@@ -3379,6 +3400,28 @@ class UsageByKeyEndpointTests(TestCase):
 
         self.assertEqual(d["keys"][0]["estimated_cost"], 1.0 + 2.5)
         self.assertTrue(d["estimated"])
+
+    def test_matches_rate_when_usage_and_rate_keys_differ(self):
+        # The usage report's model key and the rate map's key don't always
+        # match exactly (claude-haiku-5-5: short in usage, dated in rates).
+        # usage_by_key must use the same fuzzy _rate_for matching as the
+        # rest of the dashboard, not an exact dict lookup.
+        self._patch_adapter(
+            usage_return={"keys": [{
+                "api_key_id": "apikey_chat", "name": "prod-shopify-chatbot",
+                "input_tokens": 1_000_000, "output_tokens": 0,
+                "by_model": {"claude-haiku-5-5": {
+                    "uncached_input_tokens": 1_000_000, "output_tokens": 0,
+                    "cache_creation_tokens": 0, "cache_read_tokens": 0,
+                }},
+            }]},
+            rates_return={"rates": {"claude-haiku-5-5-20251008": {"input": 0.000002}}},
+        )
+        self.client.force_login(self.user)
+
+        d = self.client.get("/api/cost/get_usage_by_key/").json()
+
+        self.assertEqual(d["keys"][0]["estimated_cost"], 2.0)
 
     def test_estimated_cost_includes_cache_creation_and_read_at_their_own_rates(self):
         """Per-key cost must price cache tokens at their own rate (not the
