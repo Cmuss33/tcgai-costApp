@@ -152,6 +152,16 @@ LINEAR_PROJECT_ID = os.environ.get('LINEAR_PROJECT_ID', '')
 COST_APP_PUBLIC_URL = os.environ.get('COST_APP_PUBLIC_URL', '')
 
 # -----------------------------
+# Store attribution (shop filter)
+# -----------------------------
+# Shop domains treated as production. The dashboard's and the Quality &
+# Trust Inspector's store filters default to these; test-store traffic
+# stays viewable via "All stores" but is excluded from headline
+# aggregates. Comma-separated; empty = no designation (dashboard behaves
+# exactly as before).
+PRODUCTION_SHOPS = [s.strip() for s in os.environ.get('PRODUCTION_SHOPS', '').split(',') if s.strip()]
+
+# -----------------------------
 # AOP dashboard SSO bridge (cost_management/sso.py)
 # -----------------------------
 # Shared secret with the AOP monitoring app -- must be set to the exact same

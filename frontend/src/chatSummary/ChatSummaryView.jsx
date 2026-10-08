@@ -119,8 +119,47 @@ function ChatSummaryView() {
   const [activeFilter, setActiveFilter] = useState(searchParams.get("filter") || "all");
   const [searchQuery, setSearchQuery] = useState("");
 
+  // Store attribution filter (mirrors HomeView.jsx). selectedShops === null
+  // means "All stores" (no filtering). Defaults to PRODUCTION_SHOPS (from
+  // /api/cost/config/) when designated, otherwise all stores. Rows logged
+  // before the chatbot started sending `shop` carry shop="" ("Unknown").
+  const [shopOptions, setShopOptions] = useState([]);
+  const [productionShops, setProductionShops] = useState([]);
+  const [selectedShops, setSelectedShops] = useState(null);
+  const [shopConfigLoaded, setShopConfigLoaded] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const [cfgRes, shopsRes] = await Promise.all([
+          fetch(`${API_URL}/api/cost/config/`, { credentials: "include" }),
+          fetch(`${API_URL}/api/cost/shops/`, { credentials: "include" }),
+        ]);
+        if (cancelled) return;
+        const cfg = cfgRes.ok ? await cfgRes.json() : { production_shops: [] };
+        const shopsData = shopsRes.ok ? await shopsRes.json() : { shops: [] };
+        const prod = cfg.production_shops || [];
+        setProductionShops(prod);
+        setShopOptions(shopsData.shops || []);
+        // Default selection: production shops when designated, else all stores.
+        setSelectedShops(prod.length ? [...prod] : null);
+      } catch {
+        if (!cancelled) setSelectedShops(null);
+      } finally {
+        if (!cancelled) setShopConfigLoaded(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [API_URL]);
+
   // Fetch chats
   useEffect(() => {
+    // Wait for the store config so the first load already carries the
+    // right ?shop= params (production shops when designated).
+    if (!shopConfigLoaded) return;
     const params = new URLSearchParams({
       limit: String(pageSize),
       offset: String(offset),
@@ -130,6 +169,9 @@ function ChatSummaryView() {
     }
     if (searchQuery.trim()) {
       params.set("search", searchQuery.trim());
+    }
+    if (selectedShops && selectedShops.length) {
+      selectedShops.forEach((shop) => params.append("shop", shop));
     }
 
     setLoadingChats(true);
@@ -168,7 +210,7 @@ function ChatSummaryView() {
       .finally(() => {
         setLoadingChats(false);
       });
-  }, [API_URL, offset, pageSize, activeFilter, searchQuery, refreshKey]);
+  }, [API_URL, offset, pageSize, activeFilter, searchQuery, refreshKey, shopConfigLoaded, selectedShops]);
 
   // Deep link: /chats?chat=<id> auto-opens that chat's transcript modal
   useEffect(() => {
@@ -233,6 +275,26 @@ function ChatSummaryView() {
 
   const handleSearchChange = (e) => {
     setSearchQuery(e.target.value);
+    setOffset(0);
+  };
+
+  // Store filter dropdown value: "all" | "production" | a specific shop domain.
+  const shopSelectValue = (() => {
+    if (!selectedShops) return "all";
+    if (
+      productionShops.length &&
+      selectedShops.length === productionShops.length &&
+      selectedShops.every((shop) => productionShops.includes(shop))
+    )
+      return "production";
+    return selectedShops[0] ?? "all";
+  })();
+
+  const handleShopChange = (value) => {
+    let next = null; // "All stores" -- no filtering
+    if (value === "production") next = [...productionShops];
+    else if (value !== "all") next = [value]; // a shop domain, or "" for Unknown
+    setSelectedShops(next);
     setOffset(0);
   };
 
@@ -662,6 +724,29 @@ function ChatSummaryView() {
                 </>
               )}
             </button>
+          </div>
+
+          <div className="inspector-store-filter" role="group" aria-label="Store filter">
+            <label htmlFor="inspector-shop-filter" title="Filter conversations by store">
+              🏪
+            </label>
+            <select
+              id="inspector-shop-filter"
+              value={shopSelectValue}
+              onChange={(e) => handleShopChange(e.target.value)}
+              disabled={!shopConfigLoaded}
+              title="Filter conversations by store"
+            >
+              {productionShops.length > 0 && (
+                <option value="production">Production stores</option>
+              )}
+              <option value="all">All stores</option>
+              {shopOptions.map((o) => (
+                <option key={o.shop || "__unknown"} value={o.shop}>
+                  {o.shop || "Unknown"} ({o.chat_count})
+                </option>
+              ))}
+            </select>
           </div>
 
           <div className="inspector-search-wrap">
