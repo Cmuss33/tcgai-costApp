@@ -2077,10 +2077,51 @@ function HomeView() {
 
   const isLifetime = selectedMonth === "lifetime";
 
+  // Store attribution filter. selectedShops === null means "All stores" (no
+  // filtering, dashboard behaves exactly as before). The chatbot sends its
+  // Shopify domain as `shop` on each log_message payload; rows logged before
+  // that carry shop="" and show as "Unknown". Defaults to PRODUCTION_SHOPS
+  // (from /api/cost/config/) when configured, otherwise all stores.
+  const [shopOptions, setShopOptions] = useState([]);
+  const [productionShops, setProductionShops] = useState([]);
+  const [selectedShops, setSelectedShops] = useState(null);
+  const [shopConfigLoaded, setShopConfigLoaded] = useState(false);
+  const selectedShopsRef = useRef(null);
+
+  const appendShopParams = useCallback((params) => {
+    const sel = selectedShopsRef.current;
+    if (sel && sel.length) sel.forEach((shop) => params.append("shop", shop));
+    return params;
+  }, []);
+
+  const loadShopConfig = useCallback(async () => {
+    try {
+      const [cfgRes, shopsRes] = await Promise.all([
+        fetch(`${API_URL}/api/cost/config/`, { credentials: "include" }),
+        fetch(`${API_URL}/api/cost/shops/`, { credentials: "include" }),
+      ]);
+      const cfg = cfgRes.ok ? await cfgRes.json() : { production_shops: [] };
+      const shopsData = shopsRes.ok ? await shopsRes.json() : { shops: [] };
+      const prod = cfg.production_shops || [];
+      setProductionShops(prod);
+      setShopOptions(shopsData.shops || []);
+      // Default selection: production shops when designated, else all stores.
+      const initial = prod.length ? [...prod] : null;
+      setSelectedShops(initial);
+      selectedShopsRef.current = initial;
+    } catch {
+      setSelectedShops(null);
+      selectedShopsRef.current = null;
+    } finally {
+      setShopConfigLoaded(true);
+    }
+  }, []);
+
   const loadStats = useCallback(
     async (month, refresh) => {
       try {
         const params = new URLSearchParams();
+        appendShopParams(params);
         if (month) params.set("month", month);
         if (refresh) params.set("refresh", "1");
         const qs = params.toString();
@@ -2104,6 +2145,7 @@ function HomeView() {
     async (month, refresh) => {
       try {
         const params = new URLSearchParams();
+        appendShopParams(params);
         if (month) params.set("month", month);
         if (refresh) params.set("refresh", "1");
         const qs = params.toString();
@@ -2125,6 +2167,7 @@ function HomeView() {
     async (month, refresh) => {
       try {
         const params = new URLSearchParams();
+        appendShopParams(params);
         if (month) params.set("month", month);
         if (refresh) params.set("refresh", "1");
         const qs = params.toString();
@@ -2146,6 +2189,7 @@ function HomeView() {
     async (month, refresh) => {
       try {
         const params = new URLSearchParams();
+        appendShopParams(params);
         if (month) params.set("month", month);
         if (refresh) params.set("refresh", "1");
         const qs = params.toString();
@@ -2167,6 +2211,7 @@ function HomeView() {
     async (month, refresh) => {
       try {
         const params = new URLSearchParams();
+        appendShopParams(params);
         if (month) params.set("month", month);
         if (refresh) params.set("refresh", "1");
         const qs = params.toString();
@@ -2188,6 +2233,7 @@ function HomeView() {
     async (refresh) => {
       try {
         const params = new URLSearchParams();
+        appendShopParams(params);
         params.set("filter", "needs_attention");
         params.set("limit", String(NEEDS_ATTENTION_LIMIT));
         if (refresh) params.set("refresh", "1");
@@ -2210,6 +2256,7 @@ function HomeView() {
     async (month, refresh) => {
       try {
         const params = new URLSearchParams();
+        appendShopParams(params);
         if (month) params.set("month", month);
         if (refresh) params.set("refresh", "1");
         const qs = params.toString();
@@ -2294,10 +2341,12 @@ function HomeView() {
 
     setLoadProgress(0);
     const initialArg = isInitialLifetime ? "lifetime" : searchParams.get("month") || undefined;
-    loadDashboardData(initialArg);
+    // Resolve the default store selection (production shops when configured)
+    // before the first data load so every loader carries the right ?shop=.
+    loadShopConfig().finally(() => loadDashboardData(initialArg));
 
     return () => clearTimeout(pollRef.current);
-  }, [navigate, isInitialLifetime, searchParams, loadDashboardData]);
+  }, [navigate, isInitialLifetime, searchParams, loadDashboardData, loadShopConfig]);
 
   const months = insights?.available_months ?? [];
   const curIdx = Math.max(
@@ -2380,6 +2429,28 @@ function HomeView() {
     loadDashboardData(arg, true);
   };
 
+  // Store filter dropdown value: "all" | "production" | a specific shop domain.
+  const shopSelectValue = (() => {
+    if (!selectedShops) return "all";
+    if (
+      productionShops.length &&
+      selectedShops.length === productionShops.length &&
+      selectedShops.every((shop) => productionShops.includes(shop))
+    )
+      return "production";
+    return selectedShops[0] ?? "all";
+  })();
+
+  const handleShopChange = (value) => {
+    let next = null; // "All stores" -- no filtering
+    if (value === "production") next = [...productionShops];
+    else if (value !== "all") next = [value]; // a shop domain, or "" for Unknown
+    setSelectedShops(next);
+    selectedShopsRef.current = next;
+    const arg = isLifetime ? "lifetime" : shown?.is_current ? undefined : shown?.value;
+    loadDashboardData(arg);
+  };
+
   if (firstLoad) {
     return (
       <div className="cr">
@@ -2438,6 +2509,33 @@ function HomeView() {
               >
                 <span>🌟</span> Lifetime (Since Jun 1, 2026)
               </button>
+            </div>
+            <div className="cr__store-filter" role="group" aria-label="Store filter">
+              <label htmlFor="shop-filter" title="Filter conversations and costs by store">
+                🏪
+              </label>
+              <select
+                id="shop-filter"
+                value={shopSelectValue}
+                onChange={(e) => handleShopChange(e.target.value)}
+                disabled={isMonthLoading || !shopConfigLoaded}
+                title="Filter conversations and costs by store"
+              >
+                {productionShops.length > 0 && (
+                  <option value="production">Production stores</option>
+                )}
+                <option value="all">All stores</option>
+                {shopOptions.map((o) => (
+                  <option key={o.shop || "__unknown"} value={o.shop}>
+                    {o.shop || "Unknown"} ({o.chat_count})
+                  </option>
+                ))}
+              </select>
+              {stats?.spend_source === "logged_estimate" && (
+                <span className="cr__store-filter-note">
+                  Spend estimated from logged tokens — billed figures are org-wide.
+                </span>
+              )}
             </div>
           </div>
 
