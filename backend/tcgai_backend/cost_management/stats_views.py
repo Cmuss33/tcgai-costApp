@@ -1,6 +1,7 @@
 """Month-scoped cost / token / engagement stats for the home dashboard."""
 import calendar
 import os
+import re
 from decimal import Decimal
 
 from .api_auth import api_login_required
@@ -13,6 +14,11 @@ from django.utils import timezone
 from . import views as base_views
 from .llm_provider_adapter_implementations import app_api_key_ids, chat_api_key_ids
 from .models import AttributedOrder, Chat, Message
+
+# Trailing dated snapshot suffix on model IDs, e.g. "-20251001" in
+# "claude-haiku-4-5-20251001". Stripped from both sides before rate matching
+# (mirrors the frontend's DATE_SUFFIX_RE in chatSummary/pricing.js).
+_DATE_SUFFIX_RE = re.compile(r"-\d{8}$")
 from .month_utils import (
     CONVERSATION_START_DATE,
     apply_shop_filter,
@@ -193,17 +199,28 @@ def _rates_for(month_start):
 
 
 def _rate_for(rates, model):
-    """Longest-prefix match against `rates` -- mirrors the frontend's
-    getModelRate (chatSummary/pricing.js). Chat/Message `model` values carry
-    a dated snapshot suffix (e.g. "claude-haiku-4-5-20251001") while
-    Anthropic's cost/usage reports key rates by a shorter model string; an
-    exact dict lookup would silently price a whole model at $0."""
+    """Bidirectional, date-suffix-tolerant match against `rates` -- mirrors
+    the frontend's getModelRate (chatSummary/pricing.js, fixed in PR #80).
+    Chat/Message `model` values and rate-map keys can each carry a dated
+    snapshot suffix (e.g. "claude-haiku-4-5-20251001") -- or not. The chat
+    used to log the long form while Anthropic's reports keyed the short
+    form; since the claude-haiku-5-5 switch the chat logs the short form
+    while the reports may key the long one. So: strip any trailing
+    -YYYYMMDD suffix from both sides, then match when either normalized
+    string is a prefix of the other, longest normalized key wins. An exact
+    dict lookup would silently price a whole model at $0."""
     if not model or not rates:
         return None
-    candidates = [k for k in rates if model.startswith(k)]
-    if not candidates:
-        return None
-    return rates[max(candidates, key=len)]
+    norm_model = _DATE_SUFFIX_RE.sub("", str(model))
+    best_key, best_len = None, -1
+    for k in rates:
+        nk = _DATE_SUFFIX_RE.sub("", str(k))
+        if not nk:
+            continue
+        if norm_model.startswith(nk) or nk.startswith(norm_model):
+            if len(nk) > best_len:
+                best_key, best_len = k, len(nk)
+    return rates[best_key] if best_key is not None else None
 
 
 def _logged_spend_split(month_start, rates, shops=None):

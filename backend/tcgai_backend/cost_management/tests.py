@@ -2067,6 +2067,32 @@ class RateForHelperTests(TestCase):
         self.assertIsNone(_rate_for({}, "claude-haiku-4-5"))
         self.assertIsNone(_rate_for(None, "claude-haiku-4-5"))
 
+    def test_short_model_matches_longer_rate_key(self):
+        # Since the claude-haiku-5-5 switch the chat logs the short form
+        # while Anthropic's reports may key the long versioned form --
+        # the inverted direction of test_matches_dated_suffix_via_prefix.
+        from .stats_views import _rate_for
+        rates = {"claude-haiku-5-5-20251008": {"input": 2e-6}}
+        self.assertEqual(_rate_for(rates, "claude-haiku-5-5"), {"input": 2e-6})
+
+    def test_date_suffix_stripped_from_both_sides(self):
+        from .stats_views import _rate_for
+        rates = {"claude-haiku-4-5-20251001": {"input": 1e-6}}
+        self.assertEqual(_rate_for(rates, "claude-haiku-4-5"), {"input": 1e-6})
+        self.assertEqual(
+            _rate_for({"claude-haiku-4-5": {"input": 1e-6}}, "claude-haiku-4-5-20251001"),
+            {"input": 1e-6},
+        )
+
+    def test_no_cross_model_match(self):
+        # "claude-haiku-5" is a prefix of "claude-haiku-5-5" but must never
+        # match "claude-haiku-4-5" -- matching requires one side to be a
+        # strict string prefix of the other after suffix stripping.
+        from .stats_views import _rate_for
+        rates = {"claude-haiku-5": {"input": 2e-6}}
+        self.assertIsNone(_rate_for(rates, "claude-haiku-4-5"))
+        self.assertIsNone(_rate_for(rates, "claude-sonnet-4-5"))
+
 
 class RatesForHelperTests(TestCase):
     """_rates_for must never raise -- a missing/unmocked/erroring adapter
