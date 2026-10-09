@@ -1454,6 +1454,64 @@ def commercial_impact(request):
     """
     month_param = request.GET.get("month")
     shops = _request_shops(request)
+
+    if month_param == "lifetime":
+        key = "commercial_impact:lifetime" + _shop_key_suffix(shops)
+        cached = cache.get(key)
+        if cached is not None:
+            return JsonResponse({**cached, "cached": True})
+
+        months = lifetime_months()
+        total_spend = 0.0
+        cost_err = None
+        for m in months:
+            rates_resp = _rates_resp_for(m)
+            rates = _rates_from_resp(rates_resp)
+            if shops:
+                m_spend = _shop_filtered_figures(m, rates, shops)["spend"]
+                m_err = None
+            else:
+                m_spend, _, m_err = _spend_for(m, rates_resp)
+            if m_err and not cost_err:
+                cost_err = m_err
+            if m_spend:
+                total_spend += m_spend
+
+        range_start = timezone.make_aware(datetime(2026, 6, 1))
+        orders = AttributedOrder.objects.filter(order_created_at__gte=range_start)
+        if shops:
+            orders = orders.filter(shop__in=list(shops))
+        revenue = sum((o.influenced_revenue for o in orders), Decimal("0"))
+        by_currency = {}
+        for o in orders:
+            by_currency[o.currency] = by_currency.get(o.currency, Decimal("0")) + o.influenced_revenue
+        currency = max(by_currency, key=by_currency.get) if by_currency else "USD"
+        convs = sum(_chat_qs(m, shops).count() for m in months)
+        converting = orders.values("chat_id_raw").distinct().count()
+        unlinked = orders.filter(chat__isnull=True).count()
+        payload = {
+            "month": "lifetime",
+            "is_lifetime": True,
+            "spend": round(total_spend, 2),
+            "influenced_revenue": float(revenue),
+            "revenue_per_dollar": round(float(revenue) / total_spend, 2) if total_spend else None,
+            "currency": currency,
+            "mixed_currencies": len(by_currency) > 1,
+            "orders_count": orders.count(),
+            "conversations": convs,
+            "converting_conversations": converting,
+            "conversion_rate": round(converting / convs, 4) if convs else None,
+            "unlinked_orders": unlinked,
+            "shop_filtered": bool(shops),
+            "spend_source": "logged_estimate" if shops else "billed",
+            "methodology": COMMERCIAL_IMPACT_METHODOLOGY,
+            "data_as_of": timezone.now().isoformat(),
+            "cost_source_error": cost_err,
+        }
+        if not cost_err:
+            cache.set(key, payload, CURRENT_TTL)
+        return JsonResponse(payload)
+
     current = current_month_start()
 
     month_start = current

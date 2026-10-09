@@ -25,6 +25,7 @@ from .models import AdvisorTelemetry
 from .month_utils import (
     conversation_count,
     current_month_start,
+    lifetime_months,
     month_range,
     parse_month_param,
 )
@@ -184,6 +185,54 @@ def budget_audit(request):
     refresh = request.GET.get("refresh", "").lower() in ("1", "true", "yes")
     month_param = request.GET.get("month")
     shops = request.GET.getlist("shop") or None
+
+    if month_param == "lifetime":
+        key = "budget_audit:lifetime"
+        if shops:
+            key += ":shop=" + ",".join(sorted(shops))
+        if not refresh:
+            cached = cache.get(key)
+            if cached is not None:
+                return JsonResponse(cached)
+        # Lifetime: aggregate monthly audits.
+        total_telemetry = 0
+        total_stated = 0
+        total_non_compliant = 0
+        total_convos = 0
+        total_unlinked = 0
+        all_violations = []
+        for m in lifetime_months():
+            ma = monthly_budget_audit(m, shops)
+            total_telemetry += ma["telemetry_chats"]
+            total_stated += ma["budget_stated_chats"]
+            total_non_compliant += ma["non_compliant_chats"]
+            total_convos += ma["total_conversations"] or 0
+            total_unlinked += ma["unlinked_telemetry"]
+            all_violations.extend(ma["violations"])
+        all_violations.sort(key=lambda v: v["over_by"], reverse=True)
+        payload = {
+            "month": "lifetime",
+            "is_lifetime": True,
+            "telemetry_chats": total_telemetry,
+            "budget_stated_chats": total_stated,
+            "non_compliant_chats": total_non_compliant,
+            "compliance_rate": (
+                round((total_stated - total_non_compliant) / total_stated * 100, 1)
+                if total_stated
+                else None
+            ),
+            "violations": all_violations[:10],
+            "violations_total": total_non_compliant,
+            "emit_coverage_pct": (
+                round(total_telemetry / total_convos * 100, 1) if total_convos else None
+            ),
+            "total_conversations": total_convos,
+            "unlinked_telemetry": total_unlinked,
+            "shop_filtered": bool(shops),
+        }
+        cache.set(key, payload, 300)
+        return JsonResponse(payload)
+
     current = current_month_start()
 
     month_start = current
