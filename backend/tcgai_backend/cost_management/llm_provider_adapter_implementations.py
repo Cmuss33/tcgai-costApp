@@ -243,7 +243,10 @@ class AnthropicAdapter(LLMAdapter):
             for result in day_data.get('results', []):
                 if app_key_ids and result.get('api_key_id') not in app_key_ids:
                     continue
-                model_rates = rates.get(result.get('model'), {})
+                # Rate-map keys are date-suffix-normalized (see get_model_rates);
+                # normalize the usage model the same way so suffixed models
+                # (e.g. claude-haiku-4-5-20251001) still match their rate.
+                model_rates = rates.get(_norm_model_key(result.get('model')), {})
                 day_cost += result.get('uncached_input_tokens', 0) * model_rates.get('input', 0)
                 day_cost += result.get('output_tokens', 0) * model_rates.get('output', 0)
                 day_cost += cache_creation_tokens(result) * model_rates.get('cache_creation', 0)

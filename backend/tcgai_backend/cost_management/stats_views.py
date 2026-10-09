@@ -964,7 +964,7 @@ def usage_by_key(request):
                 aggregated_keys[kid]["input_tokens"] += k.get("input_tokens", 0)
                 aggregated_keys[kid]["output_tokens"] += k.get("output_tokens", 0)
                 for model, tok in k.get("by_model", {}).items():
-                    rate = rates.get(model, {})
+                    rate = _rate_for(rates, model) or {}
                     cost = (
                         tok.get("uncached_input_tokens", 0) * rate.get("input", 0)
                         + tok.get("output_tokens", 0) * rate.get("output", 0)
@@ -1359,7 +1359,7 @@ def cache_economics(request):
                 uncached = tok.get("uncached_input_tokens", 0)
                 total_creation += creation
                 total_read += read
-                rate = rates.get(model, {})
+                rate = _rate_for(rates, model) or {}
                 input_rate = rate.get("input")
                 if not input_rate:
                     continue
