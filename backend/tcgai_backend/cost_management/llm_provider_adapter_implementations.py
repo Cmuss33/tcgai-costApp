@@ -120,7 +120,7 @@ def _anthropic_get(url, params=None, headers=None, max_retries=3, sleep_fn=time.
     last_response = None
     for attempt in range(max_retries + 1):
         try:
-            response = requests.get(url, params=params, headers=headers)
+            response = requests.get(url, params=params, headers=headers, timeout=30)
         except requests.exceptions.RequestException:
             if attempt == max_retries:
                 raise

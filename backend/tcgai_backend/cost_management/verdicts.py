@@ -27,7 +27,7 @@ from django.core.cache import cache
 from django.http import JsonResponse
 
 from .api_auth import api_login_required
-from .month_utils import current_month_start, parse_month_param, prev_month
+from .month_utils import current_month_start, lifetime_months, parse_month_param, prev_month
 from .stats_views import (
     CURRENT_TTL,
     PAST_TTL,
@@ -286,6 +286,31 @@ def verdict_cards(request):
     refresh = request.GET.get("refresh", "").lower() in ("1", "true", "yes")
     month_param = request.GET.get("month")
     shops = request.GET.getlist("shop") or None
+
+    if month_param == "lifetime":
+        key = "verdict_cards:lifetime"
+        if shops:
+            key += ":shop=" + ",".join(sorted(shops))
+        if not refresh:
+            cached = cache.get(key)
+            if cached is not None:
+                return JsonResponse({**cached, "cached": True})
+        # Lifetime: aggregate verdicts across all months, deduped by card id.
+        seen = {}
+        for m in lifetime_months():
+            for card in build_verdicts(m, shops).get("verdicts", []):
+                cid = card.get("id")
+                if cid and cid not in seen:
+                    seen[cid] = card
+        payload = {
+            "month": "lifetime",
+            "is_lifetime": True,
+            "verdicts": list(seen.values()),
+            "all_clear": not seen,
+        }
+        cache.set(key, payload, CURRENT_TTL)
+        return JsonResponse(payload)
+
     current = current_month_start()
 
     month_start = current
