@@ -2317,14 +2317,21 @@ function HomeView() {
   const loadDashboardData = useCallback(
     async (arg, refresh = false) => {
       setLoadProgress(0);
-      loadInsights({ month: arg, refresh });
-      await loadStats(arg, refresh);
-      loadCostReconciliation(arg, refresh);
-      loadCacheEconomics(arg, refresh);
-      loadCommercialImpact(arg, refresh);
-      loadVerdicts(arg, refresh);
-      loadNeedsAttention(refresh);
-      loadBudgetAudit(arg, refresh);
+      // Fire all loaders concurrently -- never let one slow/hung loader
+      // block the rest. Previously `await loadStats` gated every panel
+      // below the insights summary on a single fetch, so a stalled
+      // monthly_stats request left the whole page stale while the
+      // watchdog forced the progress bar to 100%.
+      await Promise.allSettled([
+        loadInsights({ month: arg, refresh }),
+        loadStats(arg, refresh),
+        loadCostReconciliation(arg, refresh),
+        loadCacheEconomics(arg, refresh),
+        loadCommercialImpact(arg, refresh),
+        loadVerdicts(arg, refresh),
+        loadNeedsAttention(refresh),
+        loadBudgetAudit(arg, refresh),
+      ]);
     },
     [loadStats, loadInsights, loadCostReconciliation, loadCacheEconomics, loadCommercialImpact, loadVerdicts, loadNeedsAttention, loadBudgetAudit]
   );
