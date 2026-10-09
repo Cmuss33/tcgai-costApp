@@ -2087,6 +2087,9 @@ function HomeView() {
   const [selectedShops, setSelectedShops] = useState(null);
   const [shopConfigLoaded, setShopConfigLoaded] = useState(false);
   const selectedShopsRef = useRef(null);
+  // Track whether the shop config has been resolved once -- month switches
+  // must not reset the user's store selection back to the default.
+  const shopConfigDoneRef = useRef(false);
 
   const appendShopParams = useCallback((params) => {
     const sel = selectedShopsRef.current;
@@ -2350,7 +2353,13 @@ function HomeView() {
     const initialArg = isInitialLifetime ? "lifetime" : searchParams.get("month") || undefined;
     // Resolve the default store selection (production shops when configured)
     // before the first data load so every loader carries the right ?shop=.
-    loadShopConfig().finally(() => loadDashboardData(initialArg));
+    // Only do this once -- month switches must preserve the user's selection.
+    if (!shopConfigDoneRef.current) {
+      shopConfigDoneRef.current = true;
+      loadShopConfig().finally(() => loadDashboardData(initialArg));
+    } else {
+      loadDashboardData(initialArg);
+    }
 
     return () => clearTimeout(pollRef.current);
   }, [navigate, isInitialLifetime, searchParams, loadDashboardData, loadShopConfig]);
