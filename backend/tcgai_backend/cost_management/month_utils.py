@@ -52,12 +52,14 @@ def month_iter(first, last):
 
 
 def real_chats(qs):
-    """Excludes automated/bot traffic (ENG-149/150) and test traffic (chat_ids
-    containing 'shadowtest') from a Chat queryset. Neither represents genuine
-    shopper demand -- letting them through corrupts conversation counts,
-    cost-per-conversation proration, average accuracy evaluation scores, and
-    AI monthly insights. See models.py's Chat.likely_automated."""
-    return qs.filter(likely_automated=False).exclude(chat_id__icontains="shadowtest")
+    """Excludes automated/bot traffic (ENG-149/150), test traffic (chat_ids
+    containing 'shadowtest'), and non-chat surfaces (advisor/curator/
+    narrative/report synthetic IDs like advisor_1699999999) from a Chat
+    queryset. None represents genuine shopper demand -- letting them through
+    corrupts conversation counts, cost-per-conversation proration, average
+    accuracy evaluation scores, and AI monthly insights. See models.py's
+    Chat.likely_automated and Chat.surface."""
+    return qs.filter(likely_automated=False, surface="chat").exclude(chat_id__icontains="shadowtest")
 
 
 def apply_shop_filter(qs, shops):

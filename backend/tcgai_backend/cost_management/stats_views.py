@@ -277,6 +277,51 @@ def _logged_spend_split(month_start, rates, shops=None):
     return {"real": real, "bot": bot}
 
 
+def _surface_spend(month_start, rates, shops=None):
+    """{surface: $} -- this month's LOGGED (Chat/Message) token counts priced
+    via `rates`, grouped by surface ('chat' | 'advisor' | 'curator' |
+    'narrative' | 'report'). Uses the same pricing as _logged_spend_split
+    (Chat.tokens priced at input/output, Message cache tokens at their own
+    rates). A model with no rate contributes $0."""
+    start_dt, end_dt = month_range(month_start)
+    by_surface = {}
+
+    chat_rows = Chat.objects.filter(timestamp__gte=start_dt, timestamp__lt=end_dt)
+    msg_rows = Message.objects.filter(
+        chat__timestamp__gte=start_dt, chat__timestamp__lt=end_dt
+    )
+    if shops:
+        shop_list = list(shops)
+        chat_rows = chat_rows.filter(shop__in=shop_list)
+        msg_rows = msg_rows.filter(chat__shop__in=shop_list)
+
+    for row in (
+        chat_rows.values("surface", "model").annotate(
+            tin=Sum("tokens_in"), tout=Sum("tokens_out")
+        )
+    ):
+        rate = _rate_for(rates, row["model"])
+        if not rate:
+            continue
+        cost = (row["tin"] or 0) * rate.get("input", 0) + (row["tout"] or 0) * rate.get("output", 0)
+        surf = row["surface"] or "chat"
+        by_surface[surf] = by_surface.get(surf, 0.0) + cost
+
+    for row in (
+        msg_rows.values("chat__surface", "model").annotate(
+            ccreate=Sum("cache_creation_tokens"), cread=Sum("cache_read_tokens")
+        )
+    ):
+        rate = _rate_for(rates, row["model"])
+        if not rate:
+            continue
+        cost = (row["ccreate"] or 0) * rate.get("cache_creation", 0) + (row["cread"] or 0) * rate.get("cache_read", 0)
+        surf = row["chat__surface"] or "chat"
+        by_surface[surf] = by_surface.get(surf, 0.0) + cost
+
+    return {k: round(v, 4) for k, v in by_surface.items()}
+
+
 def _bot_spend_share(month_start, rates):
     """Cost-weighted fraction of this month's LOGGED spend attributable to
     likely_automated chats (see _logged_spend_split) -- cost-weighted, not
@@ -503,6 +548,11 @@ def _build_stats(month_start, shops=None):
         real_spend, bot_share = _real_spend_for(spend, month_start, rates)
         prev_real_spend, _prev_bot_share = _real_spend_for(prev_spend, previous, prev_rates)
 
+    # Per-surface spend breakdown (chatbot PR #553): logged tokens priced
+    # by surface so the dashboard can show chat vs advisor vs curator vs
+    # narrative vs report spend.
+    surface_spend = _surface_spend(month_start, rates, shops)
+
     cost_pc = round(real_spend / convs, 4) if (real_spend is not None and convs) else None
     prev_cost_pc = round(prev_real_spend / prev_convs, 4) if (prev_real_spend is not None and prev_convs) else None
 
@@ -551,6 +601,7 @@ def _build_stats(month_start, shops=None):
             "delta_pct": _pct_delta(spend, prev_spend),
             "projected_month_end": projected,
             "daily": spend_daily,
+            "by_surface": surface_spend,
         },
         "tokens": {
             "input": tok_in,
@@ -655,6 +706,14 @@ def _build_lifetime_stats(shops=None):
     spend = round(total_spend, 2) if has_spend else None
     real_spend = round(total_real_spend, 2) if has_spend else None
     all_spend_daily.sort(key=lambda d: d.get("day", ""))
+
+    # Per-surface spend breakdown for lifetime (sum across months)
+    lifetime_surface_spend = {}
+    for m in months:
+        m_rates = _rates_from_resp(_rates_resp_for(m))
+        for surf, cost in _surface_spend(m, m_rates, shops).items():
+            lifetime_surface_spend[surf] = lifetime_surface_spend.get(surf, 0.0) + cost
+    lifetime_surface_spend = {k: round(v, 2) for k, v in lifetime_surface_spend.items()}
 
     total_in = 0
     total_out = 0
@@ -770,6 +829,7 @@ def _build_lifetime_stats(shops=None):
             "delta_pct": None,
             "projected_month_end": None,
             "daily": all_spend_daily,
+            "by_surface": lifetime_surface_spend,
         },
         "tokens": {
             "input": tok_in,

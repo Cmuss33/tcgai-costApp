@@ -23,6 +23,12 @@ class Chat(models.Model):
     # "" = unattributed (rows logged before the chatbot started sending it),
     # shown as "Unknown" in the dashboard. First write wins, like `model`.
     shop = models.CharField(max_length=255, db_index=True, default="")
+    # Surface attribution: which product surface generated this row.
+    # 'chat' = main chat widget (default for all pre-existing rows);
+    # 'advisor' | 'curator' | 'narrative' | 'report' = synthetic IDs like
+    # advisor_1699999999 logged by those surfaces via log_message.
+    # First write wins, like `model` and `shop`.
+    surface = models.CharField(max_length=32, db_index=True, default="chat")
     tokens_in = models.IntegerField(default=0)
     tokens_out = models.IntegerField(default=0)
     intent = models.TextField(default='NOT FOUND')
