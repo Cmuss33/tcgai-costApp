@@ -388,7 +388,7 @@ function StatsBand({ stats, isLifetime, onRetryStats }) {
         />
       </div>
 
-      {s.by_surface && Object.keys(s.by_surface).length > 1 && (
+      {s.by_surface && Object.keys(s.by_surface).length > 0 && (
         <CollapsiblePanel
           id="panel-surface-spend"
           title="Spend by surface"
