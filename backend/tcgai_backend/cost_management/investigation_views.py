@@ -174,6 +174,16 @@ def flag_chat(request):
         )
     logger.info("[investigation] chat=%s github issue #%s created", chat_id, gh_ref.number)
 
+    # Before the trigger label, so it's already there when the analysis starts:
+    # the AOP's auto-heal gate and 7-day fix check key on it (ENG-212).
+    flag_label = getattr(settings, "GITHUB_FLAG_LABEL", "")
+    if flag_label:
+        try:
+            github_tracker.add_label(gh_ref, flag_label)
+        except IssueTrackerError as exc:
+            logger.warning("[investigation] chat=%s github add_label %s failed: %s", chat_id, flag_label, exc)
+            soft_errors.append(f"{flag_label} label failed: {exc.detail}")
+
     try:
         github_tracker.add_label(gh_ref, settings.GITHUB_TRIGGER_LABEL)
     except IssueTrackerError as exc:
