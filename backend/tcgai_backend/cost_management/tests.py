@@ -789,10 +789,9 @@ class FlagChatHappyPathTests(TestCase):
         self.assertIn("i want to return my order", gh_body)
         self.assertIn("Sure, I can help with that.", gh_body)
 
-        # GitHub gets the trigger label; Linear description carries the GH url;
-        # GitHub gets a back-link comment.
-        mock_gh.add_label.assert_called_once()
-        self.assertEqual(mock_gh.add_label.call_args[0][1], "agent:queued")
+        # GitHub gets the store-flag and trigger labels; Linear description
+        # carries the GH url; GitHub gets a back-link comment.
+        self.assertIn("agent:queued", [c[0][1] for c in mock_gh.add_label.call_args_list])
         linear_body = mock_linear.create_issue.call_args[0][1]
         self.assertIn("GitHub issue: https://gh/7", linear_body)
         mock_gh.add_comment.assert_called_once()
@@ -941,6 +940,59 @@ class FlagChatPartialFailureTests(TestCase):
         chat = Chat.objects.get(pk="conv-p")
         self.assertEqual(chat.investigation_status, "flagged")
         self.assertIn("trigger label", chat.flag_error)
+
+    # ENG-212: flag issues carry a store-flag label so the AOP's auto-heal
+    # gate and 7-day fix check can tell them apart from evaluator issues.
+    @patch("cost_management.investigation_views.linear_tracker")
+    @patch("cost_management.investigation_views.github_tracker")
+    def test_flag_issue_is_labelled_store_flag_before_the_trigger(self, mock_gh, mock_linear):
+        from cost_management.issue_trackers import IssueRef
+        gh_ref = IssueRef(id="I", number=5, url="https://gh/5")
+        mock_gh.create_issue.return_value = gh_ref
+        mock_linear.create_issue.return_value = IssueRef(id="lin", number=None, url="https://lin/5")
+
+        self._post()
+
+        # store-flag first, so the label is already there when the trigger
+        # label starts the analysis.
+        self.assertEqual(
+            [c[0] for c in mock_gh.add_label.call_args_list],
+            [(gh_ref, "store-flag"), (gh_ref, "agent:queued")],
+        )
+
+    @patch("cost_management.investigation_views.linear_tracker")
+    @patch("cost_management.investigation_views.github_tracker")
+    def test_store_flag_label_failure_is_soft_and_still_triggers(self, mock_gh, mock_linear):
+        from cost_management.issue_trackers import IssueRef, IssueTrackerError
+        mock_gh.create_issue.return_value = IssueRef(id="I", number=5, url="https://gh/5")
+
+        def add_label(ref, label):
+            if label == "store-flag":
+                raise IssueTrackerError("github", "add_label", 403, "forbidden")
+
+        mock_gh.add_label.side_effect = add_label
+        mock_linear.create_issue.return_value = IssueRef(id="lin", number=None, url="https://lin/5")
+
+        resp = self._post()
+
+        self.assertEqual(resp.status_code, 200)
+        chat = Chat.objects.get(pk="conv-p")
+        self.assertEqual(chat.investigation_status, "flagged")
+        self.assertIn("store-flag label", chat.flag_error)
+        self.assertNotIn("trigger label", chat.flag_error)
+        self.assertIn("agent:queued", [c[0][1] for c in mock_gh.add_label.call_args_list])
+
+    @override_settings(GITHUB_FLAG_LABEL="")
+    @patch("cost_management.investigation_views.linear_tracker")
+    @patch("cost_management.investigation_views.github_tracker")
+    def test_store_flag_label_can_be_turned_off(self, mock_gh, mock_linear):
+        from cost_management.issue_trackers import IssueRef
+        mock_gh.create_issue.return_value = IssueRef(id="I", number=5, url="https://gh/5")
+        mock_linear.create_issue.return_value = IssueRef(id="lin", number=None, url="https://lin/5")
+
+        self._post()
+
+        self.assertEqual([c[0][1] for c in mock_gh.add_label.call_args_list], ["agent:queued"])
 
     @patch("cost_management.investigation_views.linear_tracker")
     @patch("cost_management.investigation_views.github_tracker")

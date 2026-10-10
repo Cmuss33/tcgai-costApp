@@ -146,6 +146,9 @@ SESSION_EXPIRE_AT_BROWSER_CLOSE = False
 GITHUB_TOKEN = os.environ.get('GITHUB_TOKEN', '')
 GITHUB_ISSUE_REPO = os.environ.get('GITHUB_ISSUE_REPO', 'professormeta/agentic-shopify-chatbot')
 GITHUB_TRIGGER_LABEL = os.environ.get('GITHUB_TRIGGER_LABEL', 'agent:queued')
+# Marks flag issues for the AOP's auto-heal gate and 7-day fix check (ENG-212).
+# Set to an empty string to stop adding it.
+GITHUB_FLAG_LABEL = os.environ.get('GITHUB_FLAG_LABEL', 'store-flag')
 LINEAR_API_KEY = os.environ.get('LINEAR_API_KEY', '')
 LINEAR_TEAM_ID = os.environ.get('LINEAR_TEAM_ID', '')
 LINEAR_PROJECT_ID = os.environ.get('LINEAR_PROJECT_ID', '')
