@@ -388,30 +388,6 @@ function StatsBand({ stats, isLifetime, onRetryStats }) {
         />
       </div>
 
-      {s.by_surface && Object.keys(s.by_surface).length > 0 && (
-        <CollapsiblePanel
-          id="panel-surface-spend"
-          title="Spend by surface"
-          accent="var(--a-spend)"
-          description="AI spend broken down by product surface, from logged token counts."
-        >
-          <table className="cr__want">
-            <tbody>
-              {Object.entries(s.by_surface)
-                .sort(([, a], [, b]) => b - a)
-                .map(([surface, cost]) => (
-                  <tr key={surface}>
-                    <td className="cr__p" style={{ textTransform: "capitalize" }}>
-                      {surface}
-                    </td>
-                    <td className="cr__st">{fmtUsd(cost)}</td>
-                  </tr>
-                ))}
-            </tbody>
-          </table>
-        </CollapsiblePanel>
-      )}
-
       {convDaily.length > 0 && (
         <CollapsiblePanel
           id="panel-conv-daily"
@@ -771,6 +747,78 @@ function CommandCenterHeroKpis({ stats, cacheEconomics, isLifetime }) {
         <div className="cr__hero-kpi-sub cr__hero-kpi-sub--cache">
           {cacheSub}
         </div>
+      </div>
+    </div>
+  );
+}
+
+// Chatbot surfaces that log their token usage here (chatbot PR #553). An
+// unrecognised surface still renders, just without a description.
+const SURFACES = {
+  chat: { label: "Chat", what: "Shopper conversations in the chat widget", color: "#6a9bff" },
+  advisor: { label: "Advisor", what: "Sales Advisor product picks", color: "#bb8bff" },
+  curator: { label: "Curator", what: "AI results on the search page", color: "#2fe0a6" },
+  narrative: { label: "Narrative", what: "Search-drawer summaries", color: "#ffb62e" },
+  report: { label: "Report", what: "Monthly customer-intent report", color: "#ff6ba0" },
+};
+
+const surfaceMeta = (surface) =>
+  SURFACES[surface] || {
+    label: surface.charAt(0).toUpperCase() + surface.slice(1),
+    what: null,
+    color: "#a2a9bd",
+  };
+
+function SurfaceSpendCard({ bySurface, isLifetime }) {
+  const rows = Object.entries(bySurface || {})
+    .filter(([, cost]) => cost > 0)
+    .sort(([, a], [, b]) => b - a);
+  if (!rows.length) return null;
+
+  const total = rows.reduce((sum, [, cost]) => sum + cost, 0);
+  const pct = (cost) => {
+    const p = (cost / total) * 100;
+    return p < 0.5 ? "<1%" : `${Math.round(p)}%`;
+  };
+
+  return (
+    <div className="cr__surface-card">
+      <div className="cr__surface-head">
+        <span className="cr__hero-kpi-title">Where the AI spend goes</span>
+        <span className="cr__surface-total">
+          {fmtUsd(total)} logged {isLifetime ? "since June 1, 2026" : "this month"}
+        </span>
+      </div>
+      <div
+        className="cr__surface-bar"
+        role="img"
+        aria-label={rows.map(([s, cost]) => `${surfaceMeta(s).label} ${pct(cost)}`).join(", ")}
+      >
+        {rows.map(([surface, cost]) => (
+          <span
+            key={surface}
+            style={{ flex: `${cost / total} 1 0`, background: surfaceMeta(surface).color }}
+          />
+        ))}
+      </div>
+      <div className="cr__surface-rows">
+        {rows.map(([surface, cost]) => {
+          const meta = surfaceMeta(surface);
+          return (
+            <div key={surface} className="cr__surface-row" style={{ "--s": meta.color }}>
+              <div className="cr__surface-name">{meta.label}</div>
+              {meta.what && <div className="cr__surface-what">{meta.what}</div>}
+              <div className="cr__surface-amt">
+                {fmtUsd(cost)}
+                <span className="cr__surface-pct">{pct(cost)}</span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <div className="cr__surface-foot">
+        Priced from logged token counts at {isLifetime ? "each month’s" : "this month’s"} rates, so
+        it can differ slightly from the billed total above.
       </div>
     </div>
   );
@@ -2691,6 +2739,7 @@ function HomeView() {
           <section aria-label="What does it cost?">
             <div className="cr__section-eyebrow"><span>💳</span> What does it cost?</div>
             <CommandCenterHeroKpis stats={stats} cacheEconomics={cacheEconomics} isLifetime={isLifetime} />
+            <SurfaceSpendCard bySurface={stats?.spend?.by_surface} isLifetime={isLifetime} />
             {!isLifetime && <CostCommentaryPanel data={insights?.cost_commentary} />}
           </section>
 
