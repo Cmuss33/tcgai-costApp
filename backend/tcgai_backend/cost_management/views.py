@@ -94,6 +94,11 @@ def should_auto_audit_chat(chat, products_shown=None):
     if chat.likely_automated or "shadowtest" in chat.chat_id.lower():
         return False
 
+    # 1b. Never audit non-chat surfaces (advisor/curator/narrative/report,
+    # chatbot PR #553): they log token usage only, no transcript to grade.
+    if chat.surface != "chat":
+        return False
+
     # 2. Skip if already scored
     if chat.evaluation_score is not None:
         return False
@@ -213,10 +218,15 @@ def log_message(request):
     try:
         data = json.loads(request.body)
         chat_id = data.get('chat_id')
-        content = data.get('content')
-        llm_formatted_message = data.get('llm_formatted_message')
-        returned_content = data.get('returned_content')
-        llm_formatted_returned_message = data.get('llm_formatted_returned_message')
+        # Surface payloads (chatbot PR #553: advisor/curator/narrative/report)
+        # carry token counts only, no message text, and Message's text columns
+        # are NOT NULL -- so store "" instead of failing the whole log with a
+        # 400. Keep it "", never a placeholder: flag_automated_chats skips an
+        # empty opening message but would flag a repeated one as a bot.
+        content = data.get('content') or ""
+        llm_formatted_message = data.get('llm_formatted_message') or ""
+        returned_content = data.get('returned_content') or ""
+        llm_formatted_returned_message = data.get('llm_formatted_returned_message') or ""
         tokens_in = data.get('tokens_in')
         tokens_out = data.get('tokens_out')
         # ENG-148: real, billed prompt-cache token counts. Default to 0 (not

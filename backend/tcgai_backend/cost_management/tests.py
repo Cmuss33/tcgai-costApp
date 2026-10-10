@@ -3,6 +3,7 @@ import hmac
 import json
 import os
 import time
+from io import StringIO
 from unittest.mock import patch, MagicMock
 
 import requests
@@ -132,6 +133,74 @@ class LogMessageAccumulationTests(TestCase):
         self.assertEqual(chat.tokens_in, 100 + 40)
         self.assertEqual(chat.tokens_out, 50 + 15)
         self.assertEqual(Message.objects.filter(chat=chat).count(), 2)
+
+
+def make_surface_payload(chat_id="advisor_1791660000000", surface="advisor", shop=None):
+    """Exactly what the chatbot's logSurfaceCost() sends (agentic-shopify-
+    chatbot app/services/cost-logging.server.js, chatbot PR #553): token
+    counts and attribution only -- no message text or LLM payloads."""
+    return {
+        "chat_id": chat_id,
+        "surface": surface,
+        "shop": shop,
+        "tokens_in": 1200,
+        "tokens_out": 300,
+        "cache_creation_tokens": 0,
+        "cache_read_tokens": 900,
+        "model": "claude-haiku-4-5",
+    }
+
+
+class LogMessageSurfaceTests(TestCase):
+    """Chatbot PR #553: the advisor, curator, narrative and report surfaces
+    log their token usage through log_message with a `surface` tag and no
+    message text. Message's text columns are NOT NULL, so these payloads
+    used to fail with a 400 and store nothing."""
+
+    def post(self, payload):
+        return self.client.post(
+            "/api/cost/log_message/",
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+    def test_surface_payload_without_message_text_is_stored(self):
+        response = self.post(make_surface_payload())
+
+        self.assertEqual(response.status_code, 200)
+        chat = Chat.objects.get(chat_id="advisor_1791660000000")
+        self.assertEqual(chat.surface, "advisor")
+        self.assertEqual(chat.shop, "")
+        self.assertEqual((chat.tokens_in, chat.tokens_out), (1200, 300))
+        message = Message.objects.get(chat=chat)
+        self.assertEqual(message.content, "")
+        self.assertEqual(message.returned_content, "")
+        self.assertEqual(message.cache_read_tokens, 900)
+
+    def test_repeated_surface_rows_are_not_flagged_as_bot_traffic(self):
+        """flag_automated_chats flags >5 chats sharing an opening message in
+        the same hour. Surface rows have no message text, so they must be
+        stored with an empty one (which it skips), not a shared placeholder
+        that would mark every busy hour of advisor runs as a bot."""
+        for i in range(8):
+            self.assertEqual(self.post(make_surface_payload(chat_id=f"advisor_{i}")).status_code, 200)
+
+        call_command("flag_automated_chats", stdout=StringIO())
+
+        self.assertEqual(Chat.objects.filter(surface="advisor").count(), 8)
+        self.assertFalse(Chat.objects.filter(likely_automated=True).exists())
+
+    def test_surface_rows_are_never_auto_audited(self):
+        """The 10% random sample in should_auto_audit_chat would otherwise
+        send surface rows -- which have no transcript to grade -- to Haiku."""
+        from .views import should_auto_audit_chat
+        surface_chat = Chat.objects.create(chat_id="curator_attr_1", model="claude-haiku-4-5", surface="curator")
+        shopper_chat = Chat.objects.create(chat_id="conv-1", model="claude-haiku-4-5")
+
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}), \
+                patch("cost_management.views.random.random", return_value=0.0):
+            self.assertTrue(should_auto_audit_chat(shopper_chat))  # sampled
+            self.assertFalse(should_auto_audit_chat(surface_chat))
 
 
 class LogMessageCacheTokensTests(TestCase):
@@ -1781,6 +1850,47 @@ class MonthlyStatsTests(TestCase):
         self.assertEqual(by_day[day5], {"day": day5, "count": 2, "bot_count": 0})
         self.assertEqual(by_day[day6], {"day": day6, "count": 0, "bot_count": 1})
 
+    def test_non_chat_surfaces_are_left_out_of_daily_conversation_counts(self):
+        """Advisor/curator/narrative/report rows (chatbot PR #553) are AI
+        calls, not conversations -- neither real nor bot. The daily series
+        feeds the 'Conversations per day' chart and the Command Center's
+        Real Customer Volume sparkline, so it must match the KPI's
+        population (real_chats)."""
+        self._patch_adapter()
+        self._seed(2, self.this_month.replace(day=5))
+        for chat_id, surface, day in (("advisor_1", "advisor", 5), ("narrative_attr_1", "narrative", 6)):
+            chat = Chat.objects.create(chat_id=chat_id, model="claude-haiku-4-5", surface=surface)
+            Chat.objects.filter(pk=chat.pk).update(timestamp=self.this_month.replace(day=day))
+        self.client.force_login(self.user)
+
+        daily = self.client.get("/api/cost/monthly_stats/").json()["conversations"]["daily"]
+        by_day = {row["day"]: row for row in daily}
+
+        day5 = self.this_month.replace(day=5).date().isoformat()
+        day6 = self.this_month.replace(day=6).date().isoformat()
+        self.assertEqual(by_day[day5], {"day": day5, "count": 2, "bot_count": 0})
+        self.assertNotIn(day6, by_day)
+
+    def test_surface_log_reaches_spend_by_surface(self):
+        """Chatbot PR #553 end to end: a surface's log_message call shows up
+        in spend.by_surface, priced at its model's rates, without counting
+        as a conversation."""
+        self._patch_adapter()
+        self._seed(1, self.this_month.replace(day=5))
+        response = self.client.post(
+            "/api/cost/log_message/",
+            data=json.dumps(make_surface_payload()),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.client.force_login(self.user)
+
+        d = self.client.get("/api/cost/monthly_stats/").json()
+
+        self.assertAlmostEqual(d["spend"]["by_surface"]["advisor"], round(1200 * 0.000001 + 300 * 0.000005, 4))
+        self.assertIn("chat", d["spend"]["by_surface"])
+        self.assertEqual(d["conversations"]["total"], 1)
+
     def test_eval_coverage(self):
         self._patch_adapter()
         self._seed(2, self.this_month.replace(day=5), score=80)
@@ -2010,6 +2120,20 @@ class MonthlyStatsLifetimeTests(TestCase):
         )
         p.start()
         self.addCleanup(p.stop)
+
+    def test_lifetime_daily_counts_leave_out_non_chat_surfaces(self):
+        """Same population rule as the monthly daily series: surface rows
+        (chatbot PR #553) are AI calls, not conversations."""
+        self._patch_adapter()
+        c_jun = Chat.objects.create(chat_id="chat-jun", model="claude-haiku-4-5")
+        Chat.objects.filter(pk=c_jun.pk).update(timestamp=self.jun_2026)
+        advisor = Chat.objects.create(chat_id="advisor_1", model="claude-haiku-4-5", surface="advisor")
+        Chat.objects.filter(pk=advisor.pk).update(timestamp=self.jul_2026)
+
+        daily = self.client.get("/api/cost/monthly_stats/?month=lifetime").json()["conversations"]["daily"]
+
+        self.assertEqual(sum(row["count"] for row in daily), 1)
+        self.assertEqual(sum(row["bot_count"] for row in daily), 0)
 
     def test_monthly_stats_lifetime_aggregates_and_excludes_pre_june(self):
         self._patch_adapter()

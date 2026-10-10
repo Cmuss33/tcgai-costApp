@@ -1407,6 +1407,95 @@ section[aria-label] > .cr__section-eyebrow:first-child {
   color: #34d399;
 }
 
+/* "Where the AI spend goes" — spend by chatbot surface, under the cost KPIs */
+.cr__surface-card {
+  background: linear-gradient(145deg, rgba(17, 24, 39, 0.95), rgba(15, 23, 42, 0.98));
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 16px;
+  padding: 18px 20px;
+  position: relative;
+  overflow: hidden;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.35);
+  margin-bottom: 24px;
+}
+
+.cr__surface-card::before {
+  content: "";
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 2px;
+  background: #818cf8;
+}
+
+.cr__surface-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.cr__surface-total {
+  font-family: var(--font-m);
+  font-size: 12px;
+  color: var(--dim);
+}
+
+.cr__surface-bar {
+  display: flex;
+  gap: 2px;
+  height: 12px;
+  border-radius: 999px;
+  overflow: hidden;
+  margin-bottom: 14px;
+}
+
+.cr__surface-bar > span {
+  min-width: 3px;
+}
+
+.cr__surface-rows {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+}
+
+.cr__surface-row {
+  border-left: 3px solid var(--s);
+  padding: 2px 0 2px 10px;
+}
+
+.cr__surface-name {
+  font-family: var(--font-d);
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.cr__surface-what {
+  font-size: 11.5px;
+  color: var(--faint);
+  line-height: 1.35;
+}
+
+.cr__surface-amt {
+  font-family: var(--font-m);
+  font-size: 13px;
+  margin-top: 4px;
+}
+
+.cr__surface-pct {
+  color: var(--dim);
+  font-size: 11px;
+  margin-left: 6px;
+}
+
+.cr__surface-foot {
+  font-size: 11.5px;
+  color: var(--faint);
+  margin-top: 12px;
+}
+
 /* Semi-circle Gauge */
 .cr__gauge-wrap {
   display: flex;
