@@ -388,6 +388,30 @@ function StatsBand({ stats, isLifetime, onRetryStats }) {
         />
       </div>
 
+      {s.by_surface && Object.keys(s.by_surface).length > 1 && (
+        <CollapsiblePanel
+          id="panel-surface-spend"
+          title="Spend by surface"
+          accent="var(--a-spend)"
+          description="AI spend broken down by product surface, from logged token counts."
+        >
+          <table className="cr__want">
+            <tbody>
+              {Object.entries(s.by_surface)
+                .sort(([, a], [, b]) => b - a)
+                .map(([surface, cost]) => (
+                  <tr key={surface}>
+                    <td className="cr__p" style={{ textTransform: "capitalize" }}>
+                      {surface}
+                    </td>
+                    <td className="cr__st">{fmtUsd(cost)}</td>
+                  </tr>
+                ))}
+            </tbody>
+          </table>
+        </CollapsiblePanel>
+      )}
+
       {convDaily.length > 0 && (
         <CollapsiblePanel
           id="panel-conv-daily"

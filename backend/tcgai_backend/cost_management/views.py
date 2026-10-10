@@ -229,6 +229,10 @@ def log_message(request):
         # chatbot change). Missing/empty => "" (unattributed, "Unknown" in
         # the dashboard). Never overwritten: first write wins, like `model`.
         shop = data.get('shop') or ""
+        # Surface attribution (chatbot PR #553): 'chat' | 'advisor' |
+        # 'curator' | 'narrative' | 'report'. Missing => 'chat' (default for
+        # all pre-existing rows). First write wins, like `model` and `shop`.
+        surface = data.get('surface') or "chat"
 
         if content == 'hi this is the probe':
             return JsonResponse({'status': 'error', 'message': 'this was a probe message'}, status=400)
@@ -248,7 +252,7 @@ def log_message(request):
         with transaction.atomic():
             chat, created = Chat.objects.select_for_update().get_or_create(
                 chat_id=chat_id,
-                defaults={"model": model, "likely_automated": is_shadowtest, "shop": shop},
+                defaults={"model": model, "likely_automated": is_shadowtest, "shop": shop, "surface": surface},
             )
             if not created and is_shadowtest and not chat.likely_automated:
                 chat.likely_automated = True
