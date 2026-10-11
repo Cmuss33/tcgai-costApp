@@ -23,6 +23,7 @@ urlpatterns = [
     path("logout/", views.logout_view, name="logout"),
     path("auth-check/", views.auth_check, name="auth_check"),
     path("debug-rates/", views.debug_rates, name="debug_rates"),
+    path("debug-messages/", views.debug_messages, name="debug_messages"),
     path('evaluate_chat/', views.evaluate_chat, name="evaluate_chat"),
     path('batch_evaluate/', views.batch_evaluate, name="batch_evaluate"),
     path('get_avg_eval_score/', views.get_avg_eval_score, name="get_avg_eval_score"),

@@ -557,6 +557,41 @@ def debug_rates(request):
         "sample": {k: rates[k] for k in sorted(rates.keys())[:5]},
     })
 
+# TEMPORARY DEBUG: dump Message table model/tokens for October to diagnose
+# the logging gap. Remove after diagnosis.
+@api_login_required
+def debug_messages(request):
+    from .models import Message, Chat
+    from django.db.models import Sum
+    from datetime import datetime
+    from django.utils import timezone
+    start = timezone.make_aware(datetime(2026, 10, 1))
+    # Distinct model values and token sums
+    by_model = (
+        Message.objects.filter(chat__timestamp__gte=start)
+        .values("chat__model")
+        .annotate(
+            n=Sum("tokens_in"),
+            out=Sum("tokens_out"),
+            cc=Sum("cache_creation_tokens"),
+            cr=Sum("cache_read_tokens"),
+            count=Sum("id"),
+        )
+        .order_by("chat__model")
+    )
+    # Null/empty model check
+    null_model = Message.objects.filter(
+        chat__timestamp__gte=start, chat__model__isnull=True
+    ).count()
+    empty_model = Message.objects.filter(
+        chat__timestamp__gte=start, chat__model=""
+    ).count()
+    return JsonResponse({
+        "by_model": list(by_model),
+        "null_model_count": null_model,
+        "empty_model_count": empty_model,
+    })
+
 @csrf_exempt
 def logout_view(request):
     """Logs out the user and clears the session."""
