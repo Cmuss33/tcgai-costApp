@@ -715,8 +715,6 @@ def _build_stats(month_start, shops=None):
 
 
 def _build_lifetime_stats(shops=None):
-    import logging
-    logger = logging.getLogger(__name__)
     months = lifetime_months()
 
     total_spend = 0.0
@@ -732,8 +730,6 @@ def _build_lifetime_stats(shops=None):
             if prev_rates_resp.get("rates"):
                 rates_resp = prev_rates_resp
         rates = _rates_from_resp(rates_resp)
-        # DEBUG: log per-month rates and spend inputs for lifetime diagnosis
-        logger.info(f"[lifetime-debug] month={m:%Y-%m} rates_keys={list(rates.keys())} rates_error={rates_resp.get('error')}")
         if shops:
             # Billed spend is org-wide; sum the shop-filtered population's
             # own logged spend instead (real-only, like real_spend).
@@ -744,7 +740,6 @@ def _build_lifetime_stats(shops=None):
             total_real_spend += m_spend
         else:
             m_spend, m_spend_daily, m_err = _spend_for(m, rates_resp)
-            logger.info(f"[lifetime-debug] month={m:%Y-%m} spend={m_spend} err={m_err}")
             if m_err and not cost_err:
                 cost_err = m_err
             if m_spend is not None:
