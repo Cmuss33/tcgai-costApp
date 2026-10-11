@@ -540,6 +540,23 @@ def auth_check(request):
         "authenticated": request.user.is_authenticated
     })
 
+# TEMPORARY DEBUG: dump raw Anthropic rate map keys to diagnose Haiku 5.5
+# pricing. Remove after diagnosis.
+@api_login_required
+def debug_rates(request):
+    from . import views as base_views
+    from .stats_views import _rates_resp_for, _rates_from_resp
+    from .month_utils import current_month_start
+    month = current_month_start()
+    rates_resp = _rates_resp_for(month)
+    rates = _rates_from_resp(rates_resp)
+    return JsonResponse({
+        "month": month.strftime("%Y-%m"),
+        "rate_keys": sorted(rates.keys()),
+        "error": rates_resp.get("error"),
+        "sample": {k: rates[k] for k in sorted(rates.keys())[:5]},
+    })
+
 @csrf_exempt
 def logout_view(request):
     """Logs out the user and clears the session."""
