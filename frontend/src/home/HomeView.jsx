@@ -817,8 +817,8 @@ function SurfaceSpendCard({ bySurface, isLifetime }) {
         })}
       </div>
       <div className="cr__surface-foot">
-        Priced from logged token counts at {isLifetime ? "each month’s" : "this month’s"} rates, so
-        it can differ slightly from the billed total above.
+        Real shoppers only, priced from logged token counts at {isLifetime ? "each month’s" : "this month’s"} rates.
+        Billed totals also include automated traffic and any AI calls the chatbot didn’t log, so they can be higher.
       </div>
     </div>
   );

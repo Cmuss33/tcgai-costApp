@@ -320,13 +320,19 @@ def _surface_spend(month_start, rates, shops=None):
     via `rates`, grouped by surface ('chat' | 'advisor' | 'curator' |
     'narrative' | 'report'). Uses the same pricing as _logged_spend_split
     (Chat.tokens priced at input/output, Message cache tokens at their own
-    rates). A model with no rate contributes $0."""
+    rates). A model with no rate contributes $0. Real traffic only --
+    likely_automated chats are left out, so the surfaces add up to
+    _logged_spend_split's "real" (the shop-filtered operating cost the
+    Command Center shows next to this breakdown)."""
     start_dt, end_dt = month_range(month_start)
     by_surface = {}
 
-    chat_rows = Chat.objects.filter(timestamp__gte=start_dt, timestamp__lt=end_dt)
+    chat_rows = Chat.objects.filter(
+        timestamp__gte=start_dt, timestamp__lt=end_dt, likely_automated=False
+    )
     msg_rows = Message.objects.filter(
-        chat__timestamp__gte=start_dt, chat__timestamp__lt=end_dt
+        chat__timestamp__gte=start_dt, chat__timestamp__lt=end_dt,
+        chat__likely_automated=False,
     )
     if shops:
         shop_list = list(shops)
@@ -473,11 +479,13 @@ def _daily_counts(month_start, shops=None):
     -- see month_utils.real_chats). `count` is real-only, same population as
     the "Conversations" KPI/busiest-day logic below -- `bot_count` is purely
     additive so the stacked-bar chart can show both without changing what
-    counts as a "real" conversation anywhere else."""
+    counts as a "real" conversation anywhere else. Non-chat surface rows
+    (chatbot PR #553) are AI calls, not conversations, so neither series
+    counts them."""
     start_dt, end_dt = month_range(month_start)
     rows = (
         apply_shop_filter(
-            Chat.objects.filter(timestamp__gte=start_dt, timestamp__lt=end_dt),
+            Chat.objects.filter(timestamp__gte=start_dt, timestamp__lt=end_dt, surface="chat"),
             shops,
         )
         .annotate(day=TruncDate("timestamp"))
@@ -798,9 +806,10 @@ def _build_lifetime_stats(shops=None):
     )
     convs = lifetime_qs.count()
 
+    # Non-chat surfaces (chatbot PR #553) are left out, as in _daily_counts.
     rows = (
         apply_shop_filter(
-            Chat.objects.filter(timestamp__gte=CONVERSATION_START_DATE),
+            Chat.objects.filter(timestamp__gte=CONVERSATION_START_DATE, surface="chat"),
             shops,
         )
         .annotate(day=TruncDate("timestamp"))

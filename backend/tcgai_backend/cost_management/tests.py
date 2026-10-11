@@ -2095,10 +2095,10 @@ class MonthlyStatsLifetimeTests(TestCase):
     def tearDown(self):
         cache.clear()
 
-    def _patch_adapter(self, spend=10.0, tokens=(1000, 300)):
+    def _patch_adapter(self, spend=10.0, tokens=(1000, 300), rates=None):
         get_cost = MagicMock(return_value=_cost_resp(spend))
         get_tokens = MagicMock(return_value=_tok_resp(tokens, cache={"creation_tokens": 100, "read_tokens": 400}))
-        get_model_rates = MagicMock(return_value={"rates": {"claude-haiku-4-5": {"input": 1e-6, "output": 5e-6}}})
+        get_model_rates = MagicMock(return_value={"rates": rates or {"claude-haiku-4-5": {"input": 1e-6, "output": 5e-6}}})
         get_usage_by_key = MagicMock(return_value={
             "keys": [
                 {
@@ -2120,6 +2120,31 @@ class MonthlyStatsLifetimeTests(TestCase):
         )
         p.start()
         self.addCleanup(p.stop)
+
+    def test_shop_filtered_surface_spend_matches_operating_cost(self):
+        """The 'Where the AI spend goes' card sits under 'Lifetime AI
+        Operating Cost'. With a store selected, that cost is the store's
+        logged real-shopper spend, so the card must add up to the same
+        figure: an automated chat's tokens and cache tokens stay out of
+        both."""
+        self._patch_adapter(rates={"claude-haiku-4-5": {"input": 1e-6, "output": 5e-6, "cache_read": 1e-7}})
+        for chat_id, automated in (("real-1", False), ("bot-1", True)):
+            chat = Chat.objects.create(
+                chat_id=chat_id, model="claude-haiku-4-5", shop="a.myshopify.com",
+                tokens_in=100_000, tokens_out=30_000, likely_automated=automated,
+            )
+            Chat.objects.filter(pk=chat.pk).update(timestamp=self.jul_2026)
+            Message.objects.create(
+                chat=chat, content="hi", returned_content="hello",
+                tokens_in=100_000, tokens_out=30_000, model="claude-haiku-4-5",
+                cache_read_tokens=200_000,
+            )
+
+        d = self.client.get("/api/cost/monthly_stats/?month=lifetime&shop=a.myshopify.com").json()
+
+        real = round(100_000 * 1e-6 + 30_000 * 5e-6 + 200_000 * 1e-7, 2)
+        self.assertEqual(d["spend"]["total"], real)
+        self.assertEqual(d["spend"]["by_surface"], {"chat": real})
 
     def test_lifetime_daily_counts_leave_out_non_chat_surfaces(self):
         """Same population rule as the monthly daily series: surface rows
@@ -4794,6 +4819,25 @@ class CommercialImpactTests(TestCase):
         self.client.force_login(self.user)
         response = self.client.get("/api/cost/commercial_impact/?month=nope")
         self.assertEqual(response.status_code, 400)
+
+    def test_lifetime_counts_orders_since_conversation_start(self):
+        """The lifetime branch raised NameError (datetime was never
+        imported), so the lifetime Command Center lost its whole "Is it
+        making you money?" row. Orders before June 1, 2026 stay out."""
+        self._patch_spend(10.0)
+        self._seed("c1", 100, order_id="o1")
+        self._seed("c-old", 40, order_id="o-old",
+                   when=self.this_month.replace(year=2026, month=5, day=20))
+        self.client.force_login(self.user)
+
+        with patch("cost_management.stats_views._rates_resp_for", return_value={"rates": {}}):
+            response = self.client.get("/api/cost/commercial_impact/?month=lifetime")
+
+        self.assertEqual(response.status_code, 200)
+        d = response.json()
+        self.assertTrue(d["is_lifetime"])
+        self.assertEqual(d["influenced_revenue"], 100.0)
+        self.assertEqual(d["orders_count"], 1)
 
 
 class ReportRecommendationsTests(TestCase):
