@@ -540,6 +540,37 @@ def auth_check(request):
         "authenticated": request.user.is_authenticated
     })
 
+# TEMPORARY DEBUG: find the old prod-shopify-chatbot key ID and pull its
+# lifetime spend. Remove after diagnosis.
+@api_login_required
+def debug_old_key(request):
+    import os
+    import requests
+    admin_key = os.environ.get('ANTHROPIC_ADMIN_KEY')
+    if not admin_key:
+        return JsonResponse({"error": "no admin key configured"})
+    headers = {
+        "anthropic-version": "2023-06-01",
+        "x-api-key": admin_key,
+    }
+    # List all API keys in the org
+    resp = requests.get(
+        "https://api.anthropic.com/v1/organizations/api_keys",
+        headers=headers,
+        params={"limit": 100},
+        timeout=30,
+    )
+    if resp.status_code != 200:
+        return JsonResponse({"error": f"list failed: {resp.status_code}"})
+    keys = resp.json().get("data", [])
+    # Find prod-shopify-chatbot (old and new)
+    matches = [
+        {"id": k.get("id"), "name": k.get("name"), "status": k.get("status")}
+        for k in keys
+        if "shopify-chatbot" in (k.get("name") or "").lower()
+    ]
+    return JsonResponse({"matches": matches})
+
 @csrf_exempt
 def logout_view(request):
     """Logs out the user and clears the session."""
