@@ -6289,3 +6289,46 @@ class ChatAdminShopAttributionFilterTests(TestCase):
         self.assertEqual(
             self._changelist_ids(), {"unknown-1", "tagged-1"}
         )
+
+
+class ProductionSettingsTests(TestCase):
+    """DEBUG was hard-coded True, so every unhandled error in production
+    served Django's debug page (source, local variables, settings) to
+    whoever triggered it."""
+
+    def _reload_settings(self, **env):
+        import importlib
+        from tcgai_backend import settings as settings_module
+        with patch.dict(os.environ, env):
+            importlib.reload(settings_module)
+        self.addCleanup(importlib.reload, settings_module)
+        return settings_module
+
+    def test_debug_is_off_unless_django_debug_is_set(self):
+        # An empty value still counts as "set" for python-dotenv, so a
+        # local .env can't flip this test.
+        self.assertFalse(self._reload_settings(DJANGO_DEBUG="").DEBUG)
+
+    def test_django_debug_turns_debug_on_for_local_development(self):
+        self.assertTrue(self._reload_settings(DJANGO_DEBUG="1").DEBUG)
+
+    def test_server_errors_still_reach_the_console_with_debug_off(self):
+        """Django's default console handler only logs while DEBUG is on, so
+        turning DEBUG off would drop 500 tracebacks from the Render logs."""
+        import logging
+        from django.conf import settings
+        self.assertFalse(settings.DEBUG)  # the test runner forces it off
+        record = logging.LogRecord(
+            "django.request", logging.ERROR, __file__, 0,
+            "Internal Server Error: %s", ("/api/cost/x/",), None,
+        )
+        logger, handlers = logging.getLogger("django.request"), []
+        while logger:
+            handlers.extend(logger.handlers)
+            logger = logger.parent if logger.propagate else None
+        printing = [
+            h for h in handlers
+            if isinstance(h, logging.StreamHandler)
+            and record.levelno >= h.level and h.filter(record)
+        ]
+        self.assertTrue(printing, "no console handler logs django.request errors")
