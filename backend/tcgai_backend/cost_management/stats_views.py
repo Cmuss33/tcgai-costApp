@@ -65,28 +65,47 @@ def _spend_for(month_start, rates_resp):
     doesn't derive its own -- get_cost needs a whole-org rate to estimate
     spend either way, and callers of _spend_for also need that same rate
     for their own proration math, so fetching it once and sharing it avoids
-    hitting cost_report+usage_report a second time for the same month."""
+    hitting cost_report+usage_report a second time for the same month.
+
+    Request coalescing: same lock pattern as _rates_resp_for -- concurrent
+    dashboard loaders share one Anthropic call instead of each firing their
+    own and tripping the 429 rate limiter."""
+    import time
     key = f"spend_for:{month_start:%Y-%m}"
+    lock_key = f"lock:{key}"
     cached = cache.get(key)
     if cached is not None and cached[0] is not None and not cached[2]:
         return cached
 
-    resp = base_views.llmprovider.get_cost(
-        year=month_start.year, month=month_start.month, key_ids=chat_api_key_ids(), rates_resp=rates_resp
-    )
-    if not isinstance(resp, dict) or resp.get("error"):
-        err = resp.get("error") if isinstance(resp, dict) else "cost source unavailable"
-        return None, [], err
-    costs = resp.get("costs") or []
-    total = round(sum(float(c.get("total_cost") or 0) for c in costs), 2)
-    daily = [
-        {"day": c.get("day"), "amount": round(float(c.get("total_cost") or 0), 2)}
-        for c in costs
-    ]
-    result = (total, daily, None)
-    current = current_month_start()
-    cache.set(key, result, CURRENT_TTL if month_start == current else PAST_TTL)
-    return result
+    if cache.add(lock_key, True, timeout=120):
+        try:
+            resp = base_views.llmprovider.get_cost(
+                year=month_start.year, month=month_start.month, key_ids=chat_api_key_ids(), rates_resp=rates_resp
+            )
+        except Exception:
+            resp = {"error": "cost source unavailable"}
+        finally:
+            cache.delete(lock_key)
+        if not isinstance(resp, dict) or resp.get("error"):
+            err = resp.get("error") if isinstance(resp, dict) else "cost source unavailable"
+            return None, [], err
+        costs = resp.get("costs") or []
+        total = round(sum(float(c.get("total_cost") or 0) for c in costs), 2)
+        daily = [
+            {"day": c.get("day"), "amount": round(float(c.get("total_cost") or 0), 2)}
+            for c in costs
+        ]
+        result = (total, daily, None)
+        current = current_month_start()
+        cache.set(key, result, CURRENT_TTL if month_start == current else PAST_TTL)
+        return result
+    else:
+        for _ in range(60):
+            time.sleep(1)
+            cached = cache.get(key)
+            if cached is not None and cached[0] is not None and not cached[2]:
+                return cached
+        return None, [], "spend derivation timed out waiting for coalesced request"
 
 
 def _tokens_for(month_start):
@@ -137,20 +156,38 @@ def _rates_resp_for(month_start):
     way. Callers that need to tell a real rate failure apart from "nothing
     priceable this month" (e.g. get_cost, via _spend_for's rates_resp) use
     this directly; _rates_for below is the error-swallowing convenience
-    wrapper for callers that already have a fallback."""
+    wrapper for callers that already have a fallback.
+
+    Request coalescing: when the cache misses, multiple concurrent requests
+    (e.g. the dashboard's 8 parallel loaders) would all hit Anthropic's
+    rate-limited API simultaneously, causing 429s. A cache-based lock ensures
+    only one request fetches while others wait for the cached result."""
+    import time
     key = f"model_rates:{month_start:%Y-%m}"
+    lock_key = f"lock:{key}"
     cached = cache.get(key)
     if cached is not None and not cached.get("error") and cached.get("rates"):
         return cached
-    try:
-        resp = base_views.llmprovider.get_model_rates(year=month_start.year, month=month_start.month)
-    except Exception:
-        return {"error": "rate derivation failed"}
-
-    if isinstance(resp, dict) and not resp.get("error") and resp.get("rates"):
-        current = current_month_start()
-        cache.set(key, resp, CURRENT_TTL if month_start == current else PAST_TTL)
-    return resp
+    # Try to acquire lock; if another request is already fetching, wait for it
+    if cache.add(lock_key, True, timeout=120):
+        try:
+            resp = base_views.llmprovider.get_model_rates(year=month_start.year, month=month_start.month)
+        except Exception:
+            resp = {"error": "rate derivation failed"}
+        finally:
+            cache.delete(lock_key)
+        if isinstance(resp, dict) and not resp.get("error") and resp.get("rates"):
+            current = current_month_start()
+            cache.set(key, resp, CURRENT_TTL if month_start == current else PAST_TTL)
+        return resp
+    else:
+        # Another request is fetching; wait up to 60s for the cached result
+        for _ in range(60):
+            time.sleep(1)
+            cached = cache.get(key)
+            if cached is not None and not cached.get("error") and cached.get("rates"):
+                return cached
+        return {"error": "rate derivation timed out waiting for coalesced request"}
 
 
 def _raw_usage_by_key(month_start):
