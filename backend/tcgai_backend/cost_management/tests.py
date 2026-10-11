@@ -4795,6 +4795,25 @@ class CommercialImpactTests(TestCase):
         response = self.client.get("/api/cost/commercial_impact/?month=nope")
         self.assertEqual(response.status_code, 400)
 
+    def test_lifetime_counts_orders_since_conversation_start(self):
+        """The lifetime branch raised NameError (datetime was never
+        imported), so the lifetime Command Center lost its whole "Is it
+        making you money?" row. Orders before June 1, 2026 stay out."""
+        self._patch_spend(10.0)
+        self._seed("c1", 100, order_id="o1")
+        self._seed("c-old", 40, order_id="o-old",
+                   when=self.this_month.replace(year=2026, month=5, day=20))
+        self.client.force_login(self.user)
+
+        with patch("cost_management.stats_views._rates_resp_for", return_value={"rates": {}}):
+            response = self.client.get("/api/cost/commercial_impact/?month=lifetime")
+
+        self.assertEqual(response.status_code, 200)
+        d = response.json()
+        self.assertTrue(d["is_lifetime"])
+        self.assertEqual(d["influenced_revenue"], 100.0)
+        self.assertEqual(d["orders_count"], 1)
+
 
 class ReportRecommendationsTests(TestCase):
     """ENG-205: secret-gated monthly recommendations feed for the chatbot's
