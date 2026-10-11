@@ -592,6 +592,35 @@ def debug_messages(request):
         "empty_model_count": empty_model,
     })
 
+# TEMPORARY DEBUG: show which key IDs the cost app queries for chat spend,
+# and the raw Anthropic cost_report total. Remove after diagnosis.
+@api_login_required
+def debug_cost_source(request):
+    from .llm_provider_adapter_implementations import chat_api_key_ids, app_api_key_ids
+    from . import views as base_views
+    from .month_utils import current_month_start
+    m = current_month_start()
+    chat_ids = chat_api_key_ids()
+    app_ids = app_api_key_ids()
+    # Masked for safety: show prefix only
+    def mask(ids):
+        return [f"{i[:12]}..." if len(i) > 12 else i for i in ids]
+    # Raw get_cost response (billed total)
+    resp = base_views.llmprovider.get_cost(
+        year=m.year, month=m.month, key_ids=chat_ids
+    )
+    return JsonResponse({
+        "month": m.strftime("%Y-%m"),
+        "chat_key_ids_masked": mask(chat_ids),
+        "app_key_ids_masked": mask(app_ids),
+        "chat_key_count": len(chat_ids),
+        "get_cost_error": resp.get("error") if isinstance(resp, dict) else None,
+        "get_cost_total": (
+            round(sum(float(c.get("total_cost") or 0) for c in resp.get("costs", [])), 2)
+            if isinstance(resp, dict) and not resp.get("error") else None
+        ),
+    })
+
 @csrf_exempt
 def logout_view(request):
     """Logs out the user and clears the session."""
