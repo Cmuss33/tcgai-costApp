@@ -320,13 +320,19 @@ def _surface_spend(month_start, rates, shops=None):
     via `rates`, grouped by surface ('chat' | 'advisor' | 'curator' |
     'narrative' | 'report'). Uses the same pricing as _logged_spend_split
     (Chat.tokens priced at input/output, Message cache tokens at their own
-    rates). A model with no rate contributes $0."""
+    rates). A model with no rate contributes $0. Real traffic only --
+    likely_automated chats are left out, so the surfaces add up to
+    _logged_spend_split's "real" (the shop-filtered operating cost the
+    Command Center shows next to this breakdown)."""
     start_dt, end_dt = month_range(month_start)
     by_surface = {}
 
-    chat_rows = Chat.objects.filter(timestamp__gte=start_dt, timestamp__lt=end_dt)
+    chat_rows = Chat.objects.filter(
+        timestamp__gte=start_dt, timestamp__lt=end_dt, likely_automated=False
+    )
     msg_rows = Message.objects.filter(
-        chat__timestamp__gte=start_dt, chat__timestamp__lt=end_dt
+        chat__timestamp__gte=start_dt, chat__timestamp__lt=end_dt,
+        chat__likely_automated=False,
     )
     if shops:
         shop_list = list(shops)
