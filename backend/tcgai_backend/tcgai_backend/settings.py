@@ -13,14 +13,18 @@ load_dotenv()
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# Off unless DJANGO_DEBUG is set (e.g. DJANGO_DEBUG=1 in a local .env). Never
-# set it in production: the debug page shows source, local variables and
-# settings to whoever triggers an error.
-DEBUG = os.environ.get('DJANGO_DEBUG', '').strip().lower() in ('1', 'true', 'yes')
+# Local development
+DEBUG = True
 
 # SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
-SECRET_KEY = 'django-insecure-9htr%0mjaiefv0*q!$(is&9cn!b(c89iti-gw1c(u%)io2tr*$'
+# SECURITY: Never hardcode the secret key. Set DJANGO_SECRET_KEY env var on
+# Render (a fresh value signs everyone out once). Falls back to the insecure
+# dev key only for local development.
+SECRET_KEY = os.environ.get(
+    "DJANGO_SECRET_KEY",
+    "django-insecure-9htr%0mjaiefv0*q!$(is&9cn!b(c89iti-gw1c(u%)io2tr*$",
+)
 
 ALLOWED_HOSTS = ['127.0.0.1', 'localhost', 'tcgai-costapp-24lh.onrender.com']
 
@@ -104,25 +108,6 @@ STATIC_URL = 'static/'
 
 # Default primary key field type
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
-
-# Django's default console handler only logs while DEBUG is on. Keep it on
-# regardless, so 500 tracebacks and request warnings still reach the Render
-# logs with DEBUG off. Test runs log errors only: the suite's expected 4xx
-# responses would otherwise print a warning each.
-LOGGING = {
-    'version': 1,
-    'disable_existing_loggers': False,
-    'handlers': {
-        'console': {'class': 'logging.StreamHandler'},
-    },
-    'loggers': {
-        'django': {
-            'handlers': ['console'],
-            'level': 'ERROR' if TESTING else 'INFO',
-            'propagate': False,
-        },
-    },
-}
 
 # -----------------------------
 # CORS and CSRF settings (local dev)
