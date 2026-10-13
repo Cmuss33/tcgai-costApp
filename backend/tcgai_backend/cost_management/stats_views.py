@@ -34,6 +34,29 @@ from .month_utils import (
 CURRENT_TTL = 900       # 15 min — the current month's cost figures still move
 PAST_TTL = 86400        # a day — past months are effectively fixed
 
+# Billed Anthropic spend the live API can no longer see, by month. Jun-Sep
+# 2026 ran on a pre-rotation API key that carried every surface (the
+# per-surface key split came later); that key was retired in the Oct 2026
+# rotation, its ID is not in ANTHROPIC_CHAT_API_KEY_IDS, and its archived
+# usage reports $0, so get_cost returns ~$0 for those months even though
+# the traffic -- and its logged conversations -- is real. These are the old
+# key's whole-key monthly totals from the Anthropic console, supplied by
+# Prof 2026-10-12, folded into _spend_for so the monthly views and the
+# lifetime sum (the months added up) both reflect what was actually
+# billed. Monthly totals only -- no daily series exists for them.
+LEGACY_MONTHLY_SPEND = {
+    "2026-06": 39.61,
+    "2026-07": 19.93,
+    "2026-08": 21.94,
+    "2026-09": 25.37,
+}
+
+
+def _legacy_spend_for(month_start):
+    """Console-reported billed spend for `month_start` from the retired
+    pre-rotation key (see LEGACY_MONTHLY_SPEND); 0.0 for any other month."""
+    return LEGACY_MONTHLY_SPEND.get(f"{month_start:%Y-%m}", 0.0)
+
 
 def _shop_key_suffix(shops):
     """Cache-key suffix isolating shop-filtered payloads from unfiltered ones."""
@@ -90,7 +113,11 @@ def _spend_for(month_start, rates_resp):
             err = resp.get("error") if isinstance(resp, dict) else "cost source unavailable"
             return None, [], err
         costs = resp.get("costs") or []
-        total = round(sum(float(c.get("total_cost") or 0) for c in costs), 2)
+        # Plus any legacy total for the month (LEGACY_MONTHLY_SPEND) --
+        # billed on the retired pre-rotation key, invisible to the API.
+        total = round(
+            sum(float(c.get("total_cost") or 0) for c in costs) + _legacy_spend_for(month_start), 2
+        )
         daily = [
             {"day": c.get("day"), "amount": round(float(c.get("total_cost") or 0), 2)}
             for c in costs

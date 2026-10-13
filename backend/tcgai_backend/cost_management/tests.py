@@ -1779,9 +1779,14 @@ class MonthlyStatsTests(TestCase):
 
         d = self.client.get("/api/cost/monthly_stats/").json()
 
+        # The previous month's billed total includes any LEGACY_MONTHLY_SPEND
+        # for it (Sep 2026, when this runs in Oct 2026, carries the retired
+        # key's $25.37); the mock's API-side figure is 10.0 either way.
+        from .stats_views import _legacy_spend_for
+        expected_prev = round(10.0 + _legacy_spend_for(self.prev_month), 2)
         self.assertEqual(d["spend"]["total"], 15.0)
-        self.assertEqual(d["spend"]["prev_total"], 10.0)
-        self.assertEqual(d["spend"]["delta_pct"], 50.0)
+        self.assertEqual(d["spend"]["prev_total"], expected_prev)
+        self.assertEqual(d["spend"]["delta_pct"], round((15.0 - expected_prev) / expected_prev * 100, 1))
         self.assertEqual(d["tokens"]["input"], 3000)
         self.assertEqual(d["tokens"]["output"], 700)
         self.assertEqual(d["conversations"]["total"], 4)
@@ -4648,6 +4653,51 @@ def make_attribution_payload(chat_id="conv-attr-1", order_id="1001", **overrides
     }
     payload.update(overrides)
     return payload
+
+
+class LegacyMonthlySpendTests(TestCase):
+    """_spend_for folds the retired pre-rotation key's console-reported
+    totals (LEGACY_MONTHLY_SPEND) into Jun-Sep 2026 -- months whose billed
+    spend the live API can no longer see -- and leaves other months exactly
+    as the API reports them."""
+
+    def setUp(self):
+        from django.core.cache import cache
+        cache.clear()
+        self.addCleanup(cache.clear)
+
+    def _mock_cost(self, total):
+        get_cost = MagicMock(return_value={"costs": [{"day": "15", "total_cost": total}]})
+        p = patch.multiple("cost_management.views.llmprovider", get_cost=get_cost)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_legacy_month_total_includes_legacy_spend(self):
+        from datetime import date
+        from .stats_views import _spend_for
+        self._mock_cost(0.10)
+        total, daily, err = _spend_for(date(2026, 8, 1), rates_resp={})
+        self.assertIsNone(err)
+        self.assertEqual(total, 22.04)  # 0.10 API + 21.94 legacy (Aug 2026)
+        # The legacy amount has no daily series -- the API's days pass through.
+        self.assertEqual(daily, [{"day": "15", "amount": 0.10}])
+
+    def test_non_legacy_month_is_api_total_only(self):
+        from datetime import date
+        from .stats_views import _spend_for
+        self._mock_cost(0.10)
+        total, _, err = _spend_for(date(2026, 10, 1), rates_resp={})
+        self.assertIsNone(err)
+        self.assertEqual(total, 0.10)
+
+    def test_legacy_lookup_by_month(self):
+        from datetime import date
+        from .stats_views import _legacy_spend_for
+        self.assertEqual(_legacy_spend_for(date(2026, 6, 1)), 39.61)
+        self.assertEqual(_legacy_spend_for(date(2026, 7, 1)), 19.93)
+        self.assertEqual(_legacy_spend_for(date(2026, 9, 1)), 25.37)
+        self.assertEqual(_legacy_spend_for(date(2026, 10, 1)), 0.0)
+        self.assertEqual(_legacy_spend_for(date(2025, 8, 1)), 0.0)
 
 
 class LogAttributionTests(TestCase):
