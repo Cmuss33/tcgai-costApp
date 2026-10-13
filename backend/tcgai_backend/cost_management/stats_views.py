@@ -325,7 +325,7 @@ def _logged_spend_split(month_start, rates, shops=None):
         msg_rows = msg_rows.filter(chat__shop__in=shop_list)
 
     for row in (
-        chat_rows.values("model", "likely_automated").annotate(
+        chat_rows.values("model", "likely_automated", "is_probe").annotate(
             tin=Sum("tokens_in"), tout=Sum("tokens_out")
         )
     ):
@@ -333,13 +333,17 @@ def _logged_spend_split(month_start, rates, shops=None):
         if not rate:
             continue
         cost = (row["tin"] or 0) * rate.get("input", 0) + (row["tout"] or 0) * rate.get("output", 0)
-        if row["likely_automated"]:
+        # Probe chats (Plan 10) bucket with bot spend, same as the ENG-164
+        # heuristic probes did via likely_automated: their tokens are real
+        # spend, but on AOP verification traffic, not on shopper demand --
+        # counting them as "real" would inflate cost per real conversation.
+        if row["likely_automated"] or row["is_probe"]:
             bot += cost
         else:
             real += cost
 
     for row in (
-        msg_rows.values("model", "chat__likely_automated").annotate(
+        msg_rows.values("model", "chat__likely_automated", "chat__is_probe").annotate(
             ccreate=Sum("cache_creation_tokens"), cread=Sum("cache_read_tokens")
         )
     ):
@@ -347,7 +351,7 @@ def _logged_spend_split(month_start, rates, shops=None):
         if not rate:
             continue
         cost = (row["ccreate"] or 0) * rate.get("cache_creation", 0) + (row["cread"] or 0) * rate.get("cache_read", 0)
-        if row["chat__likely_automated"]:
+        if row["chat__likely_automated"] or row["chat__is_probe"]:
             bot += cost
         else:
             real += cost
@@ -368,11 +372,12 @@ def _surface_spend(month_start, rates, shops=None):
     by_surface = {}
 
     chat_rows = Chat.objects.filter(
-        timestamp__gte=start_dt, timestamp__lt=end_dt, likely_automated=False
+        timestamp__gte=start_dt, timestamp__lt=end_dt, likely_automated=False,
+        is_probe=False,
     )
     msg_rows = Message.objects.filter(
         chat__timestamp__gte=start_dt, chat__timestamp__lt=end_dt,
-        chat__likely_automated=False,
+        chat__likely_automated=False, chat__is_probe=False,
     )
     if shops:
         shop_list = list(shops)
@@ -452,6 +457,7 @@ def _shop_filtered_figures(month_start, rates, shops):
         chat__timestamp__gte=start_dt,
         chat__timestamp__lt=end_dt,
         chat__likely_automated=False,
+        chat__is_probe=False,
         chat__shop__in=list(shops),
     ).aggregate(cc=Sum("cache_creation_tokens"), cr=Sum("cache_read_tokens"))
     split = _logged_spend_split(month_start, rates, shops=shops)
@@ -521,11 +527,13 @@ def _daily_counts(month_start, shops=None):
     additive so the stacked-bar chart can show both without changing what
     counts as a "real" conversation anywhere else. Non-chat surface rows
     (chatbot PR #553) are AI calls, not conversations, so neither series
-    counts them."""
+    counts them. Probe chats (Plan 10, Chat.is_probe) are excluded from
+    the query outright: they are AOP verification traffic, neither real
+    conversations nor organic bot traffic."""
     start_dt, end_dt = month_range(month_start)
     rows = (
         apply_shop_filter(
-            Chat.objects.filter(timestamp__gte=start_dt, timestamp__lt=end_dt, surface="chat"),
+            Chat.objects.filter(timestamp__gte=start_dt, timestamp__lt=end_dt, surface="chat", is_probe=False),
             shops,
         )
         .annotate(day=TruncDate("timestamp"))
@@ -852,10 +860,11 @@ def _build_lifetime_stats(shops=None):
     )
     convs = lifetime_qs.count()
 
-    # Non-chat surfaces (chatbot PR #553) are left out, as in _daily_counts.
+    # Non-chat surfaces (chatbot PR #553) are left out, as in _daily_counts,
+    # and so are probe chats (Plan 10) -- see _daily_counts.
     rows = (
         apply_shop_filter(
-            Chat.objects.filter(timestamp__gte=CONVERSATION_START_DATE, surface="chat"),
+            Chat.objects.filter(timestamp__gte=CONVERSATION_START_DATE, surface="chat", is_probe=False),
             shops,
         )
         .annotate(day=TruncDate("timestamp"))
@@ -1359,6 +1368,7 @@ def _shop_cache_buckets(month_start, shops):
             chat__timestamp__gte=start_dt,
             chat__timestamp__lt=end_dt,
             chat__likely_automated=False,
+            chat__is_probe=False,
             chat__shop__in=list(shops),
         )
         .values("model")

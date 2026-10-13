@@ -46,6 +46,18 @@ class Chat(models.Model):
     # the admin for the rare misclassification.
     likely_automated = models.BooleanField(default=False, db_index=True)
 
+    # Plan 10 (AOP probe verification): a conversation the AOP itself
+    # created by replaying a fixed issue's original shopper prompt against
+    # the live store to verify the fix. Not shopper demand -- excluded from
+    # conversation counts, insights, and conversion denominators via
+    # month_utils.real_chats(), same as likely_automated. Set at runtime by
+    # the mark_probe ingestion endpoint the moment a probe completes (the
+    # heuristic identification in probe_chats.py remains for probes nobody
+    # announced). Manually editable in the admin for the rare
+    # misclassification.
+    is_probe = models.BooleanField(default=False, db_index=True)
+    probe_marked_at = models.DateTimeField(null=True, blank=True)
+
     investigation_status = models.CharField(
         max_length=20,
         choices=INVESTIGATION_STATUS_CHOICES,

@@ -14,6 +14,7 @@ urlpatterns = [
     path('get_tokens/', views.get_tokens, name='get_cost'),
     path('log_message/', views.log_message, name='log_message'),
     path('log_attribution/', views.log_attribution, name='log_attribution'),
+    path('mark_probe/', views.mark_probe, name='mark_probe'),
     path('log_advisor_telemetry/', views.log_advisor_telemetry, name='log_advisor_telemetry'),
     path('budget_audit/', budget_audit.budget_audit, name='budget_audit'),
     path('get_messages/', views.get_messages, name='get_messages'),
