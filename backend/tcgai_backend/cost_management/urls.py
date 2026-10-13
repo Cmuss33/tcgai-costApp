@@ -43,6 +43,7 @@ urlpatterns = [
     path('get_usage_by_key/', stats_views.usage_by_key, name='get_usage_by_key'),
     path('cost_reconciliation/', stats_views.cost_reconciliation, name='cost_reconciliation'),
     path('commercial_impact/', stats_views.commercial_impact, name='commercial_impact'),
+    path('cart_funnel/', stats_views.cart_funnel, name='cart_funnel'),
     path('cache_economics/', stats_views.cache_economics, name='cache_economics'),
     path('verdicts/', verdicts.verdict_cards, name='verdicts'),
     path('alert_rules/', alerts_views.alert_rules, name='alert_rules'),

@@ -1425,6 +1425,80 @@ function CommercialImpactHero({ data, isLifetime }) {
   );
 }
 
+/* ---------- C5b: cart funnel (shopping chats -> cart -> purchase) ---------- */
+function CartFunnelPanel({ data }) {
+  if (!data) return null;
+  const pct = (r) => (r != null ? `${(r * 100).toFixed(1)}%` : "\u2014");
+  const prov = data.methodology ? (
+    <p className="cr__prov" style={{ marginTop: "10px" }}>
+      {data.methodology}
+      {data.data_as_of
+        ? ` Data as of ${new Date(data.data_as_of).toLocaleString()}.`
+        : ""}
+    </p>
+  ) : null;
+
+  // Capture is flag-gated upstream: until cart events flow, any funnel
+  // drawn from them would be a misleading all-zero chart. Say so instead.
+  if (!data.has_cart_events) {
+    return (
+      <div className="cr__labor-section">
+        <div className="cr__funnel-empty">
+          <span className="cr__labor-label">{"\u{1F6D2}"} Shopping Cart Funnel</span>
+          No cart events recorded yet for this period &mdash; add-to-cart
+          capture isn&rsquo;t flowing, so there&rsquo;s no honest funnel to
+          show. The steps appear here once cart events land.
+        </div>
+        {prov}
+      </div>
+    );
+  }
+
+  return (
+    <div className="cr__labor-section">
+      <div className="cr__funnel-strip">
+        <div className="cr__funnel-step">
+          <div className="cr__funnel-step-label">{"\u{1F6CD}\uFE0F"} Shopping Chats</div>
+          <div className="cr__funnel-val">{data.shopping_chats}</div>
+          <div className="cr__funnel-sub">
+            Shopping intent only &mdash; policy-only chats excluded
+          </div>
+        </div>
+        <div className="cr__funnel-arrow" aria-hidden="true">
+          <span className="cr__funnel-rate">{pct(data.cart_add_rate)}</span>
+          <span className="cr__funnel-rate-label">add to cart</span>
+          <span>&rarr;</span>
+        </div>
+        <div className="cr__funnel-step">
+          <div className="cr__funnel-step-label">{"\u{1F6D2}"} Added to Cart</div>
+          <div className="cr__funnel-val">{data.cart_sessions}</div>
+          <div className="cr__funnel-sub">
+            {data.abandoned_carts} abandoned &middot;{" "}
+            {fmtUsd(data.abandoned_value, true)} left in carts
+            {data.mixed_currencies ? ` (${data.currency}, mixed currencies)` : ""}
+          </div>
+        </div>
+        <div className="cr__funnel-arrow" aria-hidden="true">
+          <span className="cr__funnel-rate">{pct(data.cart_to_purchase_rate)}</span>
+          <span className="cr__funnel-rate-label">of carts buy</span>
+          <span>&rarr;</span>
+        </div>
+        <div className="cr__funnel-step">
+          <div className="cr__funnel-step-label">{"\u2705"} Purchased</div>
+          <div className="cr__funnel-val">{data.purchased}</div>
+          <div className="cr__funnel-sub">
+            {pct(data.purchase_rate)} of shopping chats &middot;{" "}
+            {data.revenue_per_shopping_chat != null
+              ? `${fmtUsd(data.revenue_per_shopping_chat, true)} revenue per shopping chat`
+              : "no revenue per chat yet"}
+          </div>
+        </div>
+      </div>
+      {prov}
+    </div>
+  );
+}
+
 /* ---------- C3: attention section -- deterministic verdict cards ---------- */
 const VERDICT_ICONS = { cache: "💾", reconciliation: "🧾", eval: "📉", "bot-share": "🤖" };
 
@@ -2130,6 +2204,7 @@ function HomeView() {
   const [statsError, setStatsError] = useState(false);
   const [costReconciliation, setCostReconciliation] = useState(null);
   const [commercialImpact, setCommercialImpact] = useState(null);
+  const [cartFunnel, setCartFunnel] = useState(null);
   const [cacheEconomics, setCacheEconomics] = useState(null);
   const [verdicts, setVerdicts] = useState(null);
   const [needsAttention, setNeedsAttention] = useState(null);
@@ -2254,6 +2329,28 @@ function HomeView() {
         });
         if (res.status === 401 || res.status === 403) return navigate("/");
         setCommercialImpact(await res.json());
+      } catch {
+        // Non-critical panel -- the rest of the dashboard still works without it.
+      } finally {
+        setLoadProgress((p) => p + 1);
+      }
+    },
+    [navigate]
+  );
+
+  const loadCartFunnel = useCallback(
+    async (month, refresh) => {
+      try {
+        const params = new URLSearchParams();
+        appendShopParams(params);
+        if (month) params.set("month", month);
+        if (refresh) params.set("refresh", "1");
+        const qs = params.toString();
+        const res = await fetch(`${API_URL}/api/cost/cart_funnel/${qs ? `?${qs}` : ""}`, {
+          credentials: "include",
+        });
+        if (res.status === 401 || res.status === 403) return navigate("/");
+        setCartFunnel(await res.json());
       } catch {
         // Non-critical panel -- the rest of the dashboard still works without it.
       } finally {
@@ -2407,12 +2504,13 @@ function HomeView() {
         loadCostReconciliation(arg, refresh),
         loadCacheEconomics(arg, refresh),
         loadCommercialImpact(arg, refresh),
+        loadCartFunnel(arg, refresh),
         loadVerdicts(arg, refresh),
         loadNeedsAttention(refresh),
         loadBudgetAudit(arg, refresh),
       ]);
     },
-    [loadStats, loadInsights, loadCostReconciliation, loadCacheEconomics, loadCommercialImpact, loadVerdicts, loadNeedsAttention, loadBudgetAudit]
+    [loadStats, loadInsights, loadCostReconciliation, loadCacheEconomics, loadCommercialImpact, loadCartFunnel, loadVerdicts, loadNeedsAttention, loadBudgetAudit]
   );
 
   useEffect(() => {
@@ -2715,6 +2813,7 @@ function HomeView() {
           {/* C0: 1. MONEY -- commercial impact leads, labor savings alongside */}
           <section aria-label="Is it making you money?">
             <div className="cr__section-eyebrow"><span>💵</span> Is it making you money?</div>
+            <CartFunnelPanel data={cartFunnel} />
             <CommercialImpactHero data={commercialImpact} isLifetime={isLifetime} />
             <LaborSavingsHero stats={stats} isLifetime={isLifetime} />
           </section>

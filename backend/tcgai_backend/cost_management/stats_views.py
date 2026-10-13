@@ -15,7 +15,7 @@ from django.utils import timezone
 
 from . import views as base_views
 from .llm_provider_adapter_implementations import app_api_key_ids, chat_api_key_ids
-from .models import AttributedOrder, Chat, Message
+from .models import AttributedOrder, CartEvent, Chat, Message
 
 # Trailing dated snapshot suffix on model IDs, e.g. "-20251001" in
 # "claude-haiku-4-5-20251001". Stripped from both sides before rate matching
@@ -1749,4 +1749,201 @@ def commercial_impact(request):
     }
     if not cost_err:
         cache.set(key, payload, CURRENT_TTL if month_start == current else PAST_TTL)
+    return JsonResponse(payload)
+
+
+CART_FUNNEL_METHODOLOGY = (
+    "Shopping chats = conversations with shopping intent, plus cart/order "
+    "sessions with no logged chat. A chat whose only intent is a policy, "
+    "store-info, events or order-tracking question is excluded unless it "
+    "added to cart or bought -- shopping behaviour wins. A cart is "
+    "abandoned when no attributed order lands for the same chat/session; "
+    "its value is the most recent cart total seen."
+)
+
+# Chatbot intents that are service/policy Q&A rather than shopping. A chat
+# carrying one of these is only in the funnel when its behaviour (a cart
+# event or an attributed order) says otherwise. 'NOT FOUND' is unknown,
+# not policy, so it stays in.
+NON_SHOPPING_INTENTS = {"policy", "store_info", "store_events", "order_tracking"}
+
+
+def _cart_funnel_payload(start, end, shops):
+    """Cart funnel over the union of chats, cart-event sessions, and
+    attributed orders in [start, end) -- so every step's numerator is a
+    subset of the shopping denominator by construction:
+
+    - chat units, keyed by chat_id (real chats only, via real_chats --
+      the same population every other conversion denominator here uses);
+    - session units, keyed by session_id, from CartEvents whose
+      conversation_id is null or matches no in-range chat, and from
+      AttributedOrders matching neither a chat nor a cart session
+      (search-only orders carry chat_id = session id, the chatbot's
+      fallback, so they join session units on that key).
+    """
+    chat_qs = Chat.objects.filter(timestamp__gte=start)
+    if end is not None:
+        chat_qs = chat_qs.filter(timestamp__lt=end)
+    chats = apply_shop_filter(real_chats(chat_qs), shops)
+    chat_intents = dict(chats.values_list("chat_id", "intent"))
+    chat_ids = set(chat_intents)
+
+    events = CartEvent.objects.filter(occurred_at__gte=start)
+    if end is not None:
+        events = events.filter(occurred_at__lt=end)
+    if shops:
+        events = events.filter(shop__in=list(shops))
+    event_rows = list(events.values(
+        "session_id", "conversation_id", "cart_value", "currency", "occurred_at"
+    ))
+
+    orders = AttributedOrder.objects.filter(order_created_at__gte=start)
+    if end is not None:
+        orders = orders.filter(order_created_at__lt=end)
+    if shops:
+        orders = orders.filter(shop__in=list(shops))
+    order_rows = list(orders.values("chat_id_raw", "influenced_revenue", "currency"))
+
+    units = {}
+
+    def _unit(key):
+        return units.setdefault(key, {
+            "cart": False, "order": False,
+            "latest_at": None, "latest_value": Decimal("0"),
+        })
+
+    for chat_id in chat_ids:
+        _unit(("chat", chat_id))
+
+    for ev in event_rows:
+        conv = ev["conversation_id"]
+        if conv and conv in chat_ids:
+            u = _unit(("chat", conv))
+        else:
+            u = _unit(("session", ev["session_id"]))
+        u["cart"] = True
+        if u["latest_at"] is None or ev["occurred_at"] >= u["latest_at"]:
+            u["latest_at"] = ev["occurred_at"]
+            u["latest_value"] = ev["cart_value"] or Decimal("0")
+
+    revenue = Decimal("0")
+    by_currency = {}
+    for o in order_rows:
+        amount = o["influenced_revenue"] or Decimal("0")
+        revenue += amount
+        by_currency[o["currency"]] = by_currency.get(o["currency"], Decimal("0")) + amount
+        raw = o["chat_id_raw"]
+        if raw in chat_ids:
+            _unit(("chat", raw))["order"] = True
+        else:
+            _unit(("session", raw))["order"] = True
+
+    # Intent filter, chat units only: a non-shopping chat with no cart
+    # event and no order never enters the funnel. Behaviour wins.
+    for chat_id, intent in chat_intents.items():
+        if (intent or "").strip() in NON_SHOPPING_INTENTS:
+            u = units.get(("chat", chat_id))
+            if u is not None and not u["cart"] and not u["order"]:
+                del units[("chat", chat_id)]
+
+    shopping = len(units)
+    cart_units = [u for u in units.values() if u["cart"]]
+    purchased = sum(1 for u in units.values() if u["order"])
+    purchased_with_cart = sum(1 for u in cart_units if u["order"])
+    abandoned = [u for u in cart_units if not u["order"]]
+    abandoned_value = sum((u["latest_value"] for u in abandoned), Decimal("0"))
+
+    if by_currency:
+        currency = max(by_currency, key=by_currency.get)
+    elif event_rows:
+        event_currency = {}
+        for ev in event_rows:
+            event_currency[ev["currency"]] = event_currency.get(ev["currency"], 0) + 1
+        currency = max(event_currency, key=event_currency.get)
+    else:
+        currency = "USD"
+
+    return {
+        "shopping_chats": shopping,
+        "cart_sessions": len(cart_units),
+        "purchased": purchased,
+        "cart_add_rate": round(len(cart_units) / shopping, 4) if shopping else None,
+        "purchase_rate": round(purchased / shopping, 4) if shopping else None,
+        "cart_to_purchase_rate": (
+            round(purchased_with_cart / len(cart_units), 4) if cart_units else None
+        ),
+        "abandoned_carts": len(abandoned),
+        "abandoned_value": float(abandoned_value),
+        "influenced_revenue": float(revenue),
+        "revenue_per_shopping_chat": (
+            round(float(revenue) / shopping, 2) if shopping else None
+        ),
+        "currency": currency,
+        "mixed_currencies": len(by_currency) > 1,
+        # The capture emit is flag-gated upstream; until it is on, a range
+        # legitimately has chats and orders but zero cart events. The
+        # panel renders an honest empty state off this flag instead of a
+        # misleading all-zero funnel.
+        "has_cart_events": bool(event_rows),
+    }
+
+
+@api_login_required
+def cart_funnel(request):
+    """Owner-facing cart funnel next to commercial_impact: shopping chats
+    -> added to cart -> purchased, with the rates between steps, abandoned
+    carts and their value, and revenue per shopping chat. Data comes from
+    CartEvent rows (log_cart_event/, cart funnel Step 2), Chat rows, and
+    AttributedOrder rows, aggregated by _cart_funnel_payload. Cached like
+    commercial_impact: 15 min for the current month / lifetime, a day for
+    past months."""
+    month_param = request.GET.get("month")
+    shops = _request_shops(request)
+    refresh = request.GET.get("refresh")
+
+    if month_param == "lifetime":
+        key = "cart_funnel:lifetime" + _shop_key_suffix(shops)
+        if refresh:
+            cache.delete(key)
+        else:
+            cached = cache.get(key)
+            if cached is not None:
+                return JsonResponse({**cached, "cached": True})
+        payload = _cart_funnel_payload(CONVERSATION_START_DATE, None, shops)
+        payload.update({
+            "month": "lifetime",
+            "is_lifetime": True,
+            "shop_filtered": bool(shops),
+            "methodology": CART_FUNNEL_METHODOLOGY,
+            "data_as_of": timezone.now().isoformat(),
+        })
+        cache.set(key, payload, CURRENT_TTL)
+        return JsonResponse(payload)
+
+    current = current_month_start()
+    month_start = current
+    if month_param:
+        parsed = parse_month_param(month_param)
+        if parsed is None:
+            return JsonResponse({"error": "invalid month; expected YYYY-MM"}, status=400)
+        month_start = parsed
+    start, end = month_range(month_start)
+
+    key = f"cart_funnel:{month_start:%Y-%m}" + _shop_key_suffix(shops)
+    if refresh:
+        cache.delete(key)
+    else:
+        cached = cache.get(key)
+        if cached is not None:
+            return JsonResponse({**cached, "cached": True})
+
+    payload = _cart_funnel_payload(start, end, shops)
+    payload.update({
+        "month": month_start.strftime("%Y-%m"),
+        "is_lifetime": False,
+        "shop_filtered": bool(shops),
+        "methodology": CART_FUNNEL_METHODOLOGY,
+        "data_as_of": timezone.now().isoformat(),
+    })
+    cache.set(key, payload, CURRENT_TTL if month_start == current else PAST_TTL)
     return JsonResponse(payload)
