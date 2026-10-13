@@ -4762,6 +4762,32 @@ class LegacyProductionFilterTests(TestCase):
         d = self.client.get("/api/cost/monthly_stats/?month=2026-08&shop=test.myshopify.com").json()
         self.assertEqual(d["spend"]["total"], 1.00)
 
+    @override_settings(PRODUCTION_SHOPS=[PROD])
+    def test_commercial_impact_monthly_production_includes_legacy(self):
+        """The 'Is it making you money?' panel is a separate endpoint from
+        monthly_stats; its production-filter spend must carry the same
+        legacy total or the two panels disagree (AI Spend $5.34 vs Total
+        Bot Investment $112 on the live Lifetime view)."""
+        self._patch_adapter()
+        self._seed_chat("prod-aug", self.PROD)
+        d = self.client.get(f"/api/cost/commercial_impact/?month=2026-08&shop={self.PROD}").json()
+        self.assertEqual(d["spend"], 22.94)  # $1.00 logged + $21.94 Aug legacy
+
+    @override_settings(PRODUCTION_SHOPS=[PROD])
+    def test_commercial_impact_lifetime_production_includes_legacy(self):
+        self._patch_adapter()
+        self._seed_chat("prod-aug", self.PROD)
+        d = self.client.get(f"/api/cost/commercial_impact/?month=lifetime&shop={self.PROD}").json()
+        # $1.00 logged (Aug) + 39.61 + 19.93 + 21.94 + 25.37 legacy
+        self.assertEqual(d["spend"], 107.85)
+
+    @override_settings(PRODUCTION_SHOPS=[PROD])
+    def test_commercial_impact_non_production_excludes_legacy(self):
+        self._patch_adapter()
+        self._seed_chat("test-aug", "test.myshopify.com")
+        d = self.client.get("/api/cost/commercial_impact/?month=2026-08&shop=test.myshopify.com").json()
+        self.assertEqual(d["spend"], 1.00)
+
 
 class LogAttributionTests(TestCase):
     def test_happy_path_creates_row_and_links_chat(self):
