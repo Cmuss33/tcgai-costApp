@@ -836,6 +836,49 @@ def log_attribution(request):
 
 @csrf_exempt
 @require_http_methods(["POST"])
+def mark_probe(request):
+    """Runtime probe marking from the AOP's Plan 10 verification probes.
+
+    Same unauthenticated shape as log_message / log_attribution: the AOP
+    posts server-side with no session, so this route is csrf_exempt and
+    login-free by design -- it only ever sets is_probe / probe_marked_at
+    on an existing Chat row.
+
+    A probe conversation (the AOP replaying a fixed issue's original
+    shopper prompt against the live store) is not shopper demand, so
+    month_utils.real_chats() excludes is_probe chats from conversation
+    counts, insights, and conversion denominators. The AOP knows the
+    probe's conversation id the moment the probe completes; marking it
+    here, at runtime, is exact -- unlike the heuristic sweep
+    (probe_chats.py / flag_probe_chats) kept for probes nobody announced.
+
+    Idempotent: re-marking an already-probe chat succeeds again and
+    refreshes probe_marked_at. A chat_id with no Chat row yet returns
+    found:false with HTTP 200 -- the probe's own log_message ingest can
+    lag the mark, and a missing row must not fail the caller; the AOP
+    logs it and a backfill over its marked ids covers stragglers.
+    """
+    try:
+        data = json.loads(request.body)
+        chat_id = data.get("chat_id")
+        if not chat_id:
+            return JsonResponse(
+                {"status": "error", "message": "chat_id is required"},
+                status=400,
+            )
+        chat = Chat.objects.filter(chat_id=str(chat_id)).first()
+        if chat is None:
+            return JsonResponse({"status": "success", "found": False})
+        chat.is_probe = True
+        chat.probe_marked_at = now()
+        chat.save(update_fields=["is_probe", "probe_marked_at"])
+        return JsonResponse({"status": "success", "found": True})
+    except Exception as e:
+        return JsonResponse({"status": "error", "message": str(e)}, status=400)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
 def log_advisor_telemetry(request):
     """Fire-and-forget advisor budget telemetry ingestion from the chatbot's
     Sales Advisor (emitted next to its `advisor_shown` events, both surfaces).

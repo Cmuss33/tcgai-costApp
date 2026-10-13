@@ -6564,3 +6564,149 @@ class ProductionSettingsTests(TestCase):
             and record.levelno >= h.level and h.filter(record)
         ]
         self.assertTrue(printing, "no console handler logs django.request errors")
+
+
+class MarkProbeEndpointTests(TestCase):
+    """POST /api/cost/mark_probe/ -- runtime probe marking from the AOP's
+    Plan 10 verification probes. Same ingestion family as log_attribution:
+    csrf_exempt, login-free, idempotent, and a chat_id with no Chat row is
+    found:false with HTTP 200 (never a 500 -- the probe's own log_message
+    ingest can lag the mark)."""
+
+    URL = "/api/cost/mark_probe/"
+
+    def _post(self, payload):
+        return self.client.post(
+            self.URL, data=json.dumps(payload), content_type="application/json"
+        )
+
+    def test_happy_path_marks_chat(self):
+        Chat.objects.create(chat_id="conv-probe-1", model="claude-haiku-4-5")
+        response = self._post({"chat_id": "conv-probe-1", "source": "plan10-probe"})
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["status"], "success")
+        self.assertTrue(body["found"])
+
+        chat = Chat.objects.get(chat_id="conv-probe-1")
+        self.assertTrue(chat.is_probe)
+        self.assertIsNotNone(chat.probe_marked_at)
+
+    def test_source_is_optional(self):
+        Chat.objects.create(chat_id="conv-probe-2", model="claude-haiku-4-5")
+        response = self._post({"chat_id": "conv-probe-2"})
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["found"])
+        self.assertTrue(Chat.objects.get(chat_id="conv-probe-2").is_probe)
+
+    def test_unknown_chat_id_is_200_found_false_and_creates_nothing(self):
+        response = self._post({"chat_id": "not-logged-yet", "source": "plan10-probe"})
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["status"], "success")
+        self.assertFalse(body["found"])
+        self.assertFalse(Chat.objects.filter(chat_id="not-logged-yet").exists())
+
+    def test_missing_or_empty_chat_id_is_400(self):
+        for payload in ({}, {"chat_id": ""}, {"source": "plan10-probe"}):
+            response = self._post(payload)
+            self.assertEqual(response.status_code, 400)
+
+    def test_requires_post(self):
+        self.assertEqual(self.client.get(self.URL).status_code, 405)
+
+    def test_idempotent_remark(self):
+        Chat.objects.create(chat_id="conv-probe-3", model="claude-haiku-4-5")
+        for _ in range(2):
+            response = self._post({"chat_id": "conv-probe-3", "source": "plan10-probe"})
+            self.assertEqual(response.status_code, 200)
+            self.assertTrue(response.json()["found"])
+        self.assertEqual(Chat.objects.filter(chat_id="conv-probe-3").count(), 1)
+        self.assertTrue(Chat.objects.get(chat_id="conv-probe-3").is_probe)
+
+    def test_no_login_required_like_log_attribution(self):
+        # Ingestion is server-to-server, fire-and-forget -- the test client
+        # is never logged in anywhere in this class, same as the sibling
+        # endpoint tests.
+        Chat.objects.create(chat_id="conv-probe-4", model="claude-haiku-4-5")
+        response = self._post({"chat_id": "conv-probe-4", "source": "plan10-probe"})
+        self.assertEqual(response.status_code, 200)
+
+
+class ProbeChatModelDefaultsTests(TestCase):
+    def test_new_chat_defaults_to_not_probe(self):
+        chat = Chat.objects.create(chat_id="conv-plain", model="claude-haiku-4-5")
+        self.assertFalse(chat.is_probe)
+        self.assertIsNone(chat.probe_marked_at)
+
+
+class ProbeChatsExcludedFromMetricsTests(TestCase):
+    """A marked probe chat must not move merchant-facing conversation
+    counts or conversion denominators (real_chats is the shared filter);
+    a normal chat must."""
+
+    def setUp(self):
+        cache.clear()
+        self.user = User.objects.create_user(username="owner", password="pw")
+        self.this_month = _now().replace(day=1, hour=12, minute=0, second=0, microsecond=0)
+
+    def tearDown(self):
+        cache.clear()
+
+    def _seed(self, chat_id, when, is_probe=False):
+        chat = Chat.objects.create(
+            chat_id=chat_id, model="claude-haiku-4-5",
+            tokens_in=1000, tokens_out=300, is_probe=is_probe,
+        )
+        Chat.objects.filter(pk=chat.pk).update(timestamp=when)
+        return chat
+
+    def test_real_chats_excludes_probes(self):
+        self._seed("real-1", self.this_month)
+        self._seed("probe-1", self.this_month, is_probe=True)
+        ids = set(real_chats(Chat.objects.all()).values_list("chat_id", flat=True))
+        self.assertEqual(ids, {"real-1"})
+
+    def test_commercial_impact_conversation_count_excludes_probes(self):
+        p = patch(
+            "cost_management.stats_views._spend_for",
+            return_value=(10.0, [], None),
+        )
+        p.start()
+        self.addCleanup(p.stop)
+        self._seed("real-1", self.this_month.replace(day=10))
+        self._seed("probe-1", self.this_month.replace(day=10), is_probe=True)
+        self.client.force_login(self.user)
+
+        d = self.client.get("/api/cost/commercial_impact/").json()
+        self.assertEqual(d["conversations"], 1)
+        self.assertEqual(d["converting_conversations"], 0)
+
+    def test_monthly_stats_conversations_exclude_probes(self):
+        get_cost = MagicMock(return_value=_cost_resp(5.0, 7.0, 3.0))
+        get_tokens = MagicMock(return_value=_tok_resp((1000, 300), (2000, 400)))
+        get_model_rates = MagicMock(return_value={"rates": {
+            "claude-haiku-4-5": {"input": 0.000001, "output": 0.000005},
+        }})
+        p = patch.multiple(
+            "cost_management.views.llmprovider",
+            get_cost=get_cost, get_tokens=get_tokens, get_model_rates=get_model_rates,
+        )
+        p.start()
+        self.addCleanup(p.stop)
+
+        day10 = self.this_month.replace(day=10)
+        self._seed("real-1", day10)
+        self._seed("real-2", day10)
+        self._seed("probe-1", day10, is_probe=True)
+        # A probe alone on its own day must not create a daily entry either.
+        self._seed("probe-2", self.this_month.replace(day=11), is_probe=True)
+        self.client.force_login(self.user)
+
+        d = self.client.get("/api/cost/monthly_stats/").json()
+        self.assertEqual(d["conversations"]["total"], 2)
+        daily_days = {row["day"] for row in d["conversations"]["daily"]}
+        self.assertNotIn(self.this_month.replace(day=11).date().isoformat(), daily_days)
+        day10_rows = [r for r in d["conversations"]["daily"] if r["day"] == day10.date().isoformat()]
+        self.assertEqual(day10_rows[0]["count"], 2)
+        self.assertEqual(day10_rows[0]["bot_count"], 0)

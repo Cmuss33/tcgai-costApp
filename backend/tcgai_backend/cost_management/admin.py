@@ -35,6 +35,7 @@ class ChatAdmin(admin.ModelAdmin):
         "chat_id",
         "shop",
         "likely_automated",
+        "is_probe",
         "investigation_status",
         "flagged_by",
         "flagged_at",
@@ -46,6 +47,7 @@ class ChatAdmin(admin.ModelAdmin):
     list_filter = (
         ShopAttributionFilter,
         "likely_automated",
+        "is_probe",
         "investigation_status",
         "model",
         "shop",
