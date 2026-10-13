@@ -13,7 +13,7 @@ from django.core.management import call_command
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
-from .models import AttributedOrder, Chat, Message, AlertRule, AlertFiring, OperatorPreference, AdvisorTelemetry
+from .models import AttributedOrder, CartEvent, Chat, Message, AlertRule, AlertFiring, OperatorPreference, AdvisorTelemetry
 from .issue_trackers import GitHubIssueTracker, IssueRef, IssueTrackerError, LinearIssueTracker
 from .month_utils import apply_shop_filter, real_chats
 
@@ -4655,6 +4655,21 @@ def make_attribution_payload(chat_id="conv-attr-1", order_id="1001", **overrides
     return payload
 
 
+def make_cart_event_payload(**overrides):
+    payload = {
+        "shop": "test-shop.myshopify.com",
+        "session_id": "sess-cart-1",
+        "conversation_id": "conv-cart-1",
+        "source": "storefront",
+        "items": [{"variant_id": "111", "quantity": 1, "price": 12.34}],
+        "cart_value": "12.34",
+        "currency": "CAD",
+        "occurred_at": "2026-10-13T15:00:00Z",
+    }
+    payload.update(overrides)
+    return payload
+
+
 class LegacyMonthlySpendTests(TestCase):
     """_spend_for folds the retired pre-rotation key's console-reported
     totals (LEGACY_MONTHLY_SPEND) into Jun-Sep 2026 -- months whose billed
@@ -4908,6 +4923,115 @@ class LogAttributionTests(TestCase):
             )
         self.assertEqual(response.status_code, 200)
         self.assertTrue(AttributedOrder.objects.filter(order_id="3003").exists())
+
+
+class LogCartEventTests(TestCase):
+    """POST /api/cost/log_cart_event/ -- cart-funnel Step 2 ingest.
+
+    Same ingestion family as log_attribution: csrf_exempt, login-free,
+    writes CartEvent rows only. The chatbot retries emits up to 3x, so
+    redelivery of the same event must not double-store.
+    """
+
+    def _post(self, payload):
+        return self.client.post(
+            "/api/cost/log_cart_event/",
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+    def test_happy_path_persists_row(self):
+        response = self._post(make_cart_event_payload())
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "success")
+        self.assertTrue(response.json()["created"])
+
+        event = CartEvent.objects.get(shop="test-shop.myshopify.com", session_id="sess-cart-1")
+        self.assertEqual(event.conversation_id, "conv-cart-1")
+        self.assertEqual(event.source, "storefront")
+        self.assertEqual(event.items, [{"variant_id": "111", "quantity": 1, "price": 12.34}])
+        self.assertEqual(float(event.cart_value), 12.34)
+        self.assertEqual(event.currency, "CAD")
+        self.assertIsNotNone(event.occurred_at)
+        self.assertEqual(event.occurred_at.year, 2026)
+        self.assertIsNotNone(event.created_at)
+
+    def test_p4_chat_source_accepted(self):
+        response = self._post(make_cart_event_payload(source="p4_chat"))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(CartEvent.objects.get().source, "p4_chat")
+
+    def test_null_conversation_id_ok(self):
+        # Search-only sessions have no conversation; the event still counts
+        # toward the session's funnel step.
+        response = self._post(make_cart_event_payload(conversation_id=None))
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(CartEvent.objects.get().conversation_id)
+
+    def test_unknown_source_rejected(self):
+        response = self._post(make_cart_event_payload(source="carrier_pigeon"))
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(CartEvent.objects.count(), 0)
+
+    def test_missing_required_fields_are_400(self):
+        for overrides in (
+            {"shop": ""},
+            {"session_id": ""},
+            {"source": ""},
+            {"items": []},
+            {"items": "not-a-list"},
+        ):
+            response = self._post(make_cart_event_payload(**overrides))
+            self.assertEqual(response.status_code, 400, overrides)
+        self.assertEqual(CartEvent.objects.count(), 0)
+
+    def test_missing_or_unparseable_occurred_at_is_400(self):
+        # occurred_at is part of the natural dedupe key; a retry that lost
+        # it could never dedupe, so the endpoint refuses it outright.
+        for bad in (None, "", "not-a-date"):
+            response = self._post(make_cart_event_payload(occurred_at=bad))
+            self.assertEqual(response.status_code, 400, repr(bad))
+        self.assertEqual(CartEvent.objects.count(), 0)
+
+    def test_duplicate_delivery_does_not_double_store(self):
+        first = self._post(make_cart_event_payload())
+        replay = self._post(make_cart_event_payload())
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(replay.status_code, 200)
+        self.assertTrue(first.json()["created"])
+        self.assertFalse(replay.json()["created"])
+        self.assertEqual(CartEvent.objects.count(), 1)
+
+    def test_same_session_new_occurred_at_is_a_new_event(self):
+        # A second, genuinely distinct add in the same session (shopper
+        # adds another item minutes later) must NOT dedupe away.
+        self._post(make_cart_event_payload())
+        response = self._post(
+            make_cart_event_payload(
+                occurred_at="2026-10-13T15:05:00Z",
+                items=[{"variant_id": "222", "quantity": 2, "price": 5.0}],
+                cart_value="22.34",
+            )
+        )
+        self.assertTrue(response.json()["created"])
+        self.assertEqual(CartEvent.objects.count(), 2)
+
+    def test_malformed_json_body_is_400(self):
+        response = self.client.post(
+            "/api/cost/log_cart_event/",
+            data="{not json",
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["status"], "error")
+
+    def test_requires_post(self):
+        self.assertEqual(self.client.get("/api/cost/log_cart_event/").status_code, 405)
+
+    def test_no_login_required_like_log_attribution(self):
+        # Ingestion is server-to-server, fire-and-forget -- same shape as log_message.
+        response = self._post(make_cart_event_payload(session_id="sess-cart-2"))
+        self.assertEqual(response.status_code, 200)
 
 
 class CommercialImpactTests(TestCase):
