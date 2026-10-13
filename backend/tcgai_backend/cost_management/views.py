@@ -1,6 +1,6 @@
 from django.http import JsonResponse
 from .llm_provider_adapter_implementations import AnthropicAdapter
-from .models import AdvisorTelemetry, AttributedOrder, Chat, Message
+from .models import AdvisorTelemetry, AttributedOrder, CartEvent, Chat, Message
 from django.views.decorators.http import require_http_methods
 from django.views.decorators.csrf import csrf_exempt
 import json
@@ -829,6 +829,86 @@ def log_attribution(request):
             )
         if created and obj.influenced_revenue > 0:
             _notify_attributed_revenue(obj)
+        return JsonResponse({"status": "success", "created": created})
+    except Exception as e:
+        return JsonResponse({"status": "error", "message": str(e)}, status=400)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def log_cart_event(request):
+    """Fire-and-forget cart-event ingestion from the chatbot (cart funnel,
+    Step 2). Same unauthenticated shape as log_attribution: the chatbot
+    posts server-side with no session, so this route is csrf_exempt and
+    login-free by design -- it only ever writes CartEvent rows.
+
+    Idempotent on the natural key (shop, session_id, source, occurred_at):
+    the chatbot retries emits up to 3x, and a redelivery updates the row
+    instead of double-counting the funnel. occurred_at is therefore
+    required and must parse -- a retry that lost it could never dedupe.
+    conversation_id is nullable by design: search-only sessions have no
+    conversation, and their cart events still count.
+    """
+    try:
+        data = json.loads(request.body)
+        shop = str(data.get("shop") or "")
+        session_id = data.get("session_id")
+        source = data.get("source")
+        items = data.get("items")
+        if (
+            not shop
+            or not session_id
+            or not source
+            or not isinstance(items, list)
+            or not items
+        ):
+            return JsonResponse(
+                {
+                    "status": "error",
+                    "message": "shop, session_id, source and a non-empty items list are required",
+                },
+                status=400,
+            )
+        if source not in {key for key, _label in CartEvent.SOURCE_CHOICES}:
+            return JsonResponse(
+                {"status": "error", "message": f"unknown source: {source}"},
+                status=400,
+            )
+
+        def _dec(value):
+            try:
+                return Decimal(str(value)) if value is not None else Decimal("0")
+            except (InvalidOperation, ValueError, TypeError):
+                return Decimal("0")
+
+        occurred_at = data.get("occurred_at")
+        if isinstance(occurred_at, str):
+            try:
+                occurred_at = parse_datetime(occurred_at)
+            except (ValueError, TypeError):
+                occurred_at = None
+        if occurred_at is None:
+            return JsonResponse(
+                {"status": "error", "message": "occurred_at is required (ISO 8601)"},
+                status=400,
+            )
+
+        conversation_id = data.get("conversation_id")
+        conversation_id = str(conversation_id) if conversation_id else None
+
+        with transaction.atomic():
+            obj, created = CartEvent.objects.update_or_create(
+                shop=shop,
+                session_id=str(session_id),
+                source=source,
+                occurred_at=occurred_at,
+                defaults={
+                    "conversation_id": conversation_id,
+                    "items": items,
+                    "cart_value": _dec(data.get("cart_value")),
+                    "currency": str(data.get("currency") or "USD")[:3].upper(),
+                },
+            )
         return JsonResponse({"status": "success", "created": created})
     except Exception as e:
         return JsonResponse({"status": "error", "message": str(e)}, status=400)

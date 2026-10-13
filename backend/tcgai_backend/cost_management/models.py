@@ -256,6 +256,62 @@ class AdvisorTelemetry(models.Model):
         return f"{self.shop} {self.surface} telemetry -> chat {self.chat_id_raw}"
 
 
+class CartEvent(models.Model):
+    """One add-to-cart event against an AI storefront session.
+
+    Ingested via POST /api/cost/log_cart_event/ (fire-and-forget, same
+    unauthenticated shape as log_attribution/), emitted by the chatbot
+    whenever a shopper with an active PendingAttribution session adds to
+    cart -- either the P4 draft-cart confirm in chat (`p4_chat`) or a theme
+    Add button the widget's cart interceptor observes (`storefront`).
+    Powers the cart funnel (Step 3): shopping sessions -> sessions with a
+    cart event -> sessions with an attributed order.
+
+    The session join key is the chatbot's PendingAttribution session id,
+    posted as `session_id`; `conversation_id` is the conversation UUID
+    (== Chat.chat_id) when the session has one, null for search-only
+    sessions -- the row still counts toward that session's funnel step.
+    `occurred_at` is the chatbot-side event time and part of the dedupe
+    key: the chatbot retries emits up to 3x, and a redelivery carries the
+    identical occurred_at, so update_or_create on the natural key absorbs
+    it instead of double-counting the funnel.
+    """
+
+    SOURCE_CHOICES = [("p4_chat", "P4 Chat"), ("storefront", "Storefront")]
+
+    shop = models.CharField(max_length=255, db_index=True, default="")
+    session_id = models.CharField(max_length=255, db_index=True)
+    conversation_id = models.CharField(max_length=255, null=True, blank=True, db_index=True)
+    source = models.CharField(max_length=20, choices=SOURCE_CHOICES)
+    # [{variant_id, quantity, price}] as sent by the chatbot; price in shop
+    # currency units. Kept verbatim -- the funnel only needs the event and
+    # its cart_value, item detail is for later drill-down.
+    items = models.JSONField(default=list)
+    cart_value = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    currency = models.CharField(max_length=3, default="USD")
+    occurred_at = models.DateTimeField(db_index=True)
+    # Received timestamp (row creation), distinct from occurred_at.
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            # Chatbot emit retries are idempotent: a redelivery of the same
+            # event (same shop/session/source/occurred_at) updates the row
+            # instead of double-counting the funnel.
+            models.UniqueConstraint(
+                fields=["shop", "session_id", "source", "occurred_at"],
+                name="unique_cart_event_delivery",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["shop", "occurred_at"]),
+        ]
+        ordering = ["-occurred_at"]
+
+    def __str__(self):
+        return f"{self.shop} cart {self.source} session {self.session_id} @ {self.occurred_at}"
+
+
 class AlertRule(models.Model):
     """C4a: an operator-configured alert rule. Thresholds live in the DB so
     they are editable from the dashboard settings surface without a deploy.
