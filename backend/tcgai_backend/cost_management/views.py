@@ -739,6 +739,28 @@ def get_avg_conversations_per_day(request):
     except Exception as e:
         return JsonResponse({'status': 'error', 'message': str(e)}, status=400)
 
+def _notify_attributed_revenue(order):
+    """Post a Slack note for a newly attributed order: the amount, the
+    order, and the surfaces that drove it, via the C4 alerts webhook
+    (#p-agent-operations-platform). Best-effort by design -- a Slack
+    hiccup must never fail or block attribution ingestion, and webhook
+    replays / rescoring (created=False) don't re-post."""
+    try:
+        from .alerts import _post_slack
+
+        lines = [f"Order {order.order_id} · {order.shop or 'unknown shop'}"]
+        if order.surfaces:
+            lines.append(f"Journey: {' + '.join(order.surfaces)}")
+        lines.append(f"Order total: {order.currency} {order.order_total:.2f}")
+        _post_slack(
+            f"💰 Attributed revenue: {order.currency} {order.influenced_revenue:.2f}",
+            lines,
+            "",
+        )
+    except Exception:  # noqa: BLE001 -- notification is best-effort
+        pass
+
+
 @csrf_exempt
 @require_http_methods(["POST"])
 def log_attribution(request):
@@ -805,6 +827,8 @@ def log_attribution(request):
                     "influence_score": influence_score,
                 },
             )
+        if created and obj.influenced_revenue > 0:
+            _notify_attributed_revenue(obj)
         return JsonResponse({"status": "success", "created": created})
     except Exception as e:
         return JsonResponse({"status": "error", "message": str(e)}, status=400)
