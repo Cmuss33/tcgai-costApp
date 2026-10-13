@@ -5152,6 +5152,242 @@ class CommercialImpactTests(TestCase):
         self.assertEqual(d["orders_count"], 1)
 
 
+class CartFunnelTests(TestCase):
+    """Cart funnel panel (Step 3): shopping chats -> added to cart ->
+    purchased, intent-filtered, over the union of chats, cart-event
+    sessions, and attributed orders. Every numerator is a subset of the
+    shopping denominator by construction."""
+
+    SHOP = "funnel.myshopify.com"
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="owner", password="pw")
+        self.client.force_login(self.user)
+        self.now = _now().replace(day=15, hour=12, minute=0, second=0, microsecond=0)
+        self._order_seq = 0
+
+    def tearDown(self):
+        cache.clear()
+
+    def _chat(self, chat_id, intent="product_search", shop=None):
+        return Chat.objects.create(
+            chat_id=chat_id, model="claude-haiku-4-5",
+            intent=intent, shop=shop or self.SHOP,
+        )
+
+    def _cart(self, session_id, value, conversation_id=None, when=None,
+              source="storefront", shop=None):
+        return CartEvent.objects.create(
+            shop=shop or self.SHOP,
+            session_id=session_id,
+            conversation_id=conversation_id,
+            source=source,
+            items=[{"variant_id": "1", "quantity": 1, "price": float(value)}],
+            cart_value=value,
+            currency="USD",
+            occurred_at=when or self.now,
+        )
+
+    def _order(self, chat_id_raw, revenue, shop=None):
+        self._order_seq += 1
+        return AttributedOrder.objects.create(
+            chat_id_raw=chat_id_raw,
+            chat=None,
+            shop=shop or self.SHOP,
+            order_id=f"ord-{self._order_seq}",
+            influenced_revenue=revenue,
+            order_total=revenue,
+            currency="USD",
+            order_created_at=self.now,
+        )
+
+    def _get(self, qs=""):
+        return self.client.get(f"/api/cost/cart_funnel/{qs}").json()
+
+    def test_requires_login(self):
+        self.client.logout()
+        self.assertEqual(self.client.get("/api/cost/cart_funnel/").status_code, 401)
+
+    def test_invalid_month_param(self):
+        response = self.client.get("/api/cost/cart_funnel/?month=nope")
+        self.assertEqual(response.status_code, 400)
+
+    def test_basic_funnel_counts_and_rates(self):
+        # s1: chat -> cart -> purchase. s2: chat -> cart, no order
+        # (abandoned). s3: chat only. s4: chat -> purchase, no cart.
+        self._chat("s1")
+        self._cart("sess-1", 40, conversation_id="s1")
+        self._order("s1", 50)
+        self._chat("s2")
+        self._cart("sess-2", 25, conversation_id="s2")
+        self._chat("s3")
+        self._chat("s4")
+        self._order("s4", 30)
+
+        d = self._get()
+
+        self.assertEqual(d["shopping_chats"], 4)
+        self.assertEqual(d["cart_sessions"], 2)
+        self.assertEqual(d["purchased"], 2)
+        self.assertAlmostEqual(d["cart_add_rate"], 0.5, places=4)
+        self.assertAlmostEqual(d["purchase_rate"], 0.5, places=4)
+        self.assertAlmostEqual(d["cart_to_purchase_rate"], 0.5, places=4)
+        self.assertEqual(d["abandoned_carts"], 1)
+        self.assertEqual(d["abandoned_value"], 25.0)
+        self.assertEqual(d["influenced_revenue"], 80.0)
+        self.assertAlmostEqual(d["revenue_per_shopping_chat"], 20.0, places=2)
+        self.assertTrue(d["has_cart_events"])
+
+    def test_policy_only_chats_excluded(self):
+        for i, intent in enumerate(
+            ["policy", "store_info", "store_events", "order_tracking"]
+        ):
+            self._chat(f"policy-{i}", intent=intent)
+        self._chat("shopper-1")
+
+        d = self._get()
+
+        self.assertEqual(d["shopping_chats"], 1)
+        self.assertEqual(d["cart_sessions"], 0)
+        self.assertEqual(d["purchased"], 0)
+
+    def test_policy_chat_with_cart_event_is_included(self):
+        # Behaviour wins: a policy chat that added to cart is shopping.
+        self._chat("policy-cart", intent="policy")
+        self._cart("sess-pc", 60, conversation_id="policy-cart")
+
+        d = self._get()
+
+        self.assertEqual(d["shopping_chats"], 1)
+        self.assertEqual(d["cart_sessions"], 1)
+        self.assertEqual(d["abandoned_carts"], 1)
+        self.assertEqual(d["abandoned_value"], 60.0)
+
+    def test_policy_chat_with_order_is_included(self):
+        self._chat("policy-order", intent="store_info")
+        self._order("policy-order", 45)
+
+        d = self._get()
+
+        self.assertEqual(d["shopping_chats"], 1)
+        self.assertEqual(d["purchased"], 1)
+        self.assertAlmostEqual(d["purchase_rate"], 1.0, places=4)
+
+    def test_not_found_intent_stays_in(self):
+        # Unknown intent is not policy -- it stays in the denominator.
+        self._chat("mystery", intent="NOT FOUND")
+
+        d = self._get()
+
+        self.assertEqual(d["shopping_chats"], 1)
+
+    def test_search_only_session_joins_via_fallback_chat_id(self):
+        # Search-only session: cart event has no conversation, and the
+        # attributed order's chat_id is the session id (chatbot fallback).
+        # They must land in ONE unit, not two.
+        self._cart("sess-search", 35, conversation_id=None)
+        self._order("sess-search", 35)
+
+        d = self._get()
+
+        self.assertEqual(d["shopping_chats"], 1)
+        self.assertEqual(d["cart_sessions"], 1)
+        self.assertEqual(d["purchased"], 1)
+        self.assertAlmostEqual(d["cart_to_purchase_rate"], 1.0, places=4)
+        self.assertEqual(d["abandoned_carts"], 0)
+
+    def test_order_only_session_counts_as_shopping(self):
+        # An attributed order with no logged chat and no cart event is
+        # still a shopping unit (event/order-only units are unambiguous).
+        self._order("sess-ghost", 22)
+
+        d = self._get()
+
+        self.assertEqual(d["shopping_chats"], 1)
+        self.assertEqual(d["purchased"], 1)
+        self.assertEqual(d["cart_sessions"], 0)
+        self.assertIsNone(d["cart_to_purchase_rate"])
+
+    def test_cart_event_for_unknown_conversation_is_session_unit(self):
+        self._cart("sess-g", 18, conversation_id="ghost-conv")
+
+        d = self._get()
+
+        self.assertEqual(d["shopping_chats"], 1)
+        self.assertEqual(d["cart_sessions"], 1)
+        self.assertEqual(d["abandoned_carts"], 1)
+        self.assertEqual(d["abandoned_value"], 18.0)
+
+    def test_abandoned_value_uses_latest_cart_event(self):
+        earlier = self.now.replace(day=14)
+        self._cart("sess-late", 30, conversation_id=None, when=earlier)
+        self._cart("sess-late", 55, conversation_id=None, when=self.now,
+                   source="p4_chat")
+
+        d = self._get()
+
+        self.assertEqual(d["shopping_chats"], 1)
+        self.assertEqual(d["abandoned_carts"], 1)
+        self.assertEqual(d["abandoned_value"], 55.0)
+
+    def test_empty_state_when_no_cart_events(self):
+        # Chats exist (denominator is real) but capture has recorded no
+        # cart events yet -- the panel must say so, not show a 0% funnel.
+        self._chat("only-chat")
+        self._order("only-chat", 20)
+
+        d = self._get()
+
+        self.assertFalse(d["has_cart_events"])
+        self.assertEqual(d["shopping_chats"], 1)
+        self.assertEqual(d["cart_sessions"], 0)
+
+    def test_zero_denominator_guards(self):
+        d = self._get()
+
+        self.assertEqual(d["shopping_chats"], 0)
+        self.assertIsNone(d["cart_add_rate"])
+        self.assertIsNone(d["purchase_rate"])
+        self.assertIsNone(d["revenue_per_shopping_chat"])
+        self.assertFalse(d["has_cart_events"])
+
+    def test_lifetime_starts_at_conversation_start_date(self):
+        self._chat("life-1")
+        self._cart("sess-life", 12, conversation_id="life-1")
+        # An order dated before June 1, 2026 stays out of lifetime.
+        AttributedOrder.objects.create(
+            chat_id_raw="life-1", chat=None, shop=self.SHOP,
+            order_id="ord-pre-start", influenced_revenue=999,
+            order_total=999, currency="USD",
+            order_created_at=self.now.replace(year=2026, month=5, day=20),
+        )
+
+        d = self._get("?month=lifetime")
+
+        self.assertTrue(d["is_lifetime"])
+        self.assertEqual(d["shopping_chats"], 1)
+        self.assertEqual(d["cart_sessions"], 1)
+        self.assertEqual(d["purchased"], 0)
+        self.assertEqual(d["influenced_revenue"], 0.0)
+
+    def test_shop_filter_scopes_all_three_sources(self):
+        self._chat("mine")
+        self._cart("sess-mine", 10, conversation_id="mine")
+        self._order("mine", 10)
+        other = "other.myshopify.com"
+        self._chat("theirs", shop=other)
+        self._cart("sess-theirs", 99, conversation_id="theirs", shop=other)
+        self._order("theirs", 99, shop=other)
+
+        d = self._get(f"?shop={self.SHOP}")
+
+        self.assertEqual(d["shopping_chats"], 1)
+        self.assertEqual(d["cart_sessions"], 1)
+        self.assertEqual(d["purchased"], 1)
+        self.assertEqual(d["influenced_revenue"], 10.0)
+        self.assertTrue(d["shop_filtered"])
+
+
 class ReportRecommendationsTests(TestCase):
     """ENG-205: secret-gated monthly recommendations feed for the chatbot's
     monthly Slack report. Serves the frozen InsightsSnapshot recommendations
