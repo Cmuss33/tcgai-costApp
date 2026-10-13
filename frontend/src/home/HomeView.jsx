@@ -2145,6 +2145,9 @@ function HomeView() {
     !isInitialLifetime ? searchParams.get("month") || null : null
   );
   const [loadProgress, setLoadProgress] = useState(0);
+  // Set by the watchdog when a load runs long: unlocks the page controls
+  // without pretending the load finished (see the watchdog effect below).
+  const [watchdogUnlocked, setWatchdogUnlocked] = useState(false);
   const pollRef = useRef(null);
 
   const isLifetime = selectedMonth === "lifetime";
@@ -2392,6 +2395,7 @@ function HomeView() {
   const loadDashboardData = useCallback(
     async (arg, refresh = false) => {
       setLoadProgress(0);
+      setWatchdogUnlocked(false);
       // Fire all loaders concurrently -- never let one slow/hung loader
       // block the rest. Previously `await loadStats` gated every panel
       // below the insights summary on a single fetch, so a stalled
@@ -2445,13 +2449,19 @@ function HomeView() {
 
   const loadPercent = Math.min(100, Math.round((loadProgress / TOTAL_LOADERS) * 100));
   const showLoadingBar = loadProgress < TOTAL_LOADERS;
-  const isMonthLoading = !firstLoad && loadProgress < TOTAL_LOADERS;
+  const isMonthLoading = !firstLoad && loadProgress < TOTAL_LOADERS && !watchdogUnlocked;
 
-  // Safety watchdog: ensure UI never remains locked if a network call hangs indefinitely
+  // Safety watchdog: if a load runs long, unlock the page controls so the
+  // UI is never trapped -- but do NOT fake completion. Loaders can
+  // legitimately take ~60s (the backend coalesces concurrent Anthropic
+  // calls, so a cold monthly_stats can wait on another request's fetch),
+  // and force-setting progress to 100% made the bar "finish" while panels
+  // were still showing stale content. The bar now tracks real loader
+  // completions and stays visible until every loader has settled.
   useEffect(() => {
     if (isMonthLoading) {
       const timer = setTimeout(() => {
-        setLoadProgress(TOTAL_LOADERS);
+        setWatchdogUnlocked(true);
       }, 8000);
       return () => clearTimeout(timer);
     }
