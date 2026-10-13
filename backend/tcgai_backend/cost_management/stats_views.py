@@ -6,6 +6,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from .api_auth import api_login_required
+from django.conf import settings
 from django.core.cache import cache
 from django.db.models import Avg, Count, Q, Sum
 from django.db.models.functions import TruncDate
@@ -56,6 +57,18 @@ def _legacy_spend_for(month_start):
     """Console-reported billed spend for `month_start` from the retired
     pre-rotation key (see LEGACY_MONTHLY_SPEND); 0.0 for any other month."""
     return LEGACY_MONTHLY_SPEND.get(f"{month_start:%Y-%m}", 0.0)
+
+
+def _is_production_filter(shops):
+    """True when the request's shop filter is exactly the production shop
+    set (settings.PRODUCTION_SHOPS) -- the dashboard's default view. The
+    retired pre-rotation key was the production key, so its legacy spend
+    belongs to this view even though shop-filtered figures are priced from
+    logged tokens rather than billed totals."""
+    if not shops:
+        return False
+    production = list(getattr(settings, "PRODUCTION_SHOPS", []) or [])
+    return bool(production) and sorted(shops) == sorted(production)
 
 
 def _shop_key_suffix(shops):
@@ -573,6 +586,12 @@ def _build_stats(month_start, shops=None):
         figs = _shop_filtered_figures(month_start, rates, shops)
         prev_figs = _shop_filtered_figures(previous, prev_rates, shops)
         spend, prev_spend = figs["spend"], prev_figs["spend"]
+        if _is_production_filter(shops):
+            # Production view: include the retired production key's legacy
+            # totals (see LEGACY_MONTHLY_SPEND) -- real billed production
+            # spend that predates per-shop token attribution.
+            spend = round(spend + _legacy_spend_for(month_start), 2)
+            prev_spend = round(prev_spend + _legacy_spend_for(previous), 2)
         spend_daily, cost_err = [], None
         real_spend, bot_share = spend, None
         prev_real_spend = prev_spend
@@ -749,6 +768,7 @@ def _build_lifetime_stats(shops=None):
     cost_err = None
     has_spend = False
     total_real_spend = 0.0
+    production_filter = _is_production_filter(shops)
 
     for m in months:
         rates_resp = _rates_resp_for(m)
@@ -762,6 +782,10 @@ def _build_lifetime_stats(shops=None):
             # own logged spend instead (real-only, like real_spend).
             figs = _shop_filtered_figures(m, rates, shops)
             m_spend, m_err = figs["spend"], None
+            if production_filter:
+                # Retired production key's legacy total for the month --
+                # see _build_stats' production branch.
+                m_spend = round(m_spend + _legacy_spend_for(m), 2)
             has_spend = True
             total_spend += m_spend
             total_real_spend += m_spend

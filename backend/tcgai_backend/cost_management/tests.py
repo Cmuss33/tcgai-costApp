@@ -4700,6 +4700,69 @@ class LegacyMonthlySpendTests(TestCase):
         self.assertEqual(_legacy_spend_for(date(2025, 8, 1)), 0.0)
 
 
+class LegacyProductionFilterTests(TestCase):
+    """The dashboard's default view filters to the production shops, which
+    prices spend from logged tokens and so bypasses _spend_for's legacy
+    fold-in. When the filter is exactly the production set, the retired
+    production key's legacy totals are added on top -- monthly and
+    lifetime. Any other shop filter is untouched."""
+
+    PROD = "pvpshoppe.myshopify.com"
+
+    def setUp(self):
+        from datetime import datetime
+        cache.clear()
+        self.user = User.objects.create_user(username="legacy-owner", password="pw")
+        self.client.force_login(self.user)
+        self.aug_2026 = timezone.make_aware(datetime(2026, 8, 15, 12, 0, 0))
+
+    def tearDown(self):
+        cache.clear()
+
+    def _patch_adapter(self):
+        p = patch.multiple(
+            "cost_management.views.llmprovider",
+            get_cost=MagicMock(return_value=_cost_resp(0.0)),
+            get_tokens=MagicMock(return_value=_tok_resp((0, 0))),
+            get_model_rates=MagicMock(return_value={
+                "rates": {"claude-haiku-4-5": {"input": 1e-6, "output": 5e-6}}
+            }),
+            get_usage_by_key=MagicMock(return_value={"keys": [], "workspace_id": None}),
+        )
+        p.start()
+        self.addCleanup(p.stop)
+
+    def _seed_chat(self, chat_id, shop):
+        # 1,000,000 input tokens at $1e-6 = $1.00 of logged spend.
+        chat = Chat.objects.create(
+            chat_id=chat_id, model="claude-haiku-4-5", shop=shop,
+            tokens_in=1_000_000, tokens_out=0,
+        )
+        Chat.objects.filter(pk=chat.pk).update(timestamp=self.aug_2026)
+
+    @override_settings(PRODUCTION_SHOPS=[PROD])
+    def test_monthly_production_filter_includes_legacy(self):
+        self._patch_adapter()
+        self._seed_chat("prod-aug", self.PROD)
+        d = self.client.get(f"/api/cost/monthly_stats/?month=2026-08&shop={self.PROD}").json()
+        self.assertEqual(d["spend"]["total"], 22.94)  # $1.00 logged + $21.94 Aug legacy
+
+    @override_settings(PRODUCTION_SHOPS=[PROD])
+    def test_lifetime_production_filter_includes_all_legacy_months(self):
+        self._patch_adapter()
+        self._seed_chat("prod-aug", self.PROD)
+        d = self.client.get(f"/api/cost/monthly_stats/?month=lifetime&shop={self.PROD}").json()
+        # $1.00 logged (Aug) + 39.61 + 19.93 + 21.94 + 25.37 legacy
+        self.assertEqual(d["spend"]["total"], 107.85)
+
+    @override_settings(PRODUCTION_SHOPS=[PROD])
+    def test_non_production_shop_filter_excludes_legacy(self):
+        self._patch_adapter()
+        self._seed_chat("test-aug", "test.myshopify.com")
+        d = self.client.get("/api/cost/monthly_stats/?month=2026-08&shop=test.myshopify.com").json()
+        self.assertEqual(d["spend"]["total"], 1.00)
+
+
 class LogAttributionTests(TestCase):
     def test_happy_path_creates_row_and_links_chat(self):
         Chat.objects.create(chat_id="conv-attr-1", model="claude-haiku-4-5")
