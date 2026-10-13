@@ -4860,6 +4860,55 @@ class LogAttributionTests(TestCase):
         )
         self.assertEqual(response.status_code, 200)
 
+    @patch("cost_management.alerts._post_slack")
+    def test_new_attributed_order_posts_slack_alert(self, mock_post):
+        response = self.client.post(
+            "/api/cost/log_attribution/",
+            data=json.dumps(make_attribution_payload()),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        mock_post.assert_called_once()
+        headline, lines = mock_post.call_args[0][0], mock_post.call_args[0][1]
+        self.assertIn("89.99", headline)
+        self.assertTrue(any("1001" in line for line in lines))
+
+    @patch("cost_management.alerts._post_slack")
+    def test_replay_does_not_re_alert(self, mock_post):
+        # Shopify webhook replays / rescoring update the row (created=False)
+        # and must not spam the channel with repeat alerts.
+        for _ in range(2):
+            response = self.client.post(
+                "/api/cost/log_attribution/",
+                data=json.dumps(make_attribution_payload()),
+                content_type="application/json",
+            )
+            self.assertEqual(response.status_code, 200)
+        mock_post.assert_called_once()
+
+    @patch("cost_management.alerts._post_slack")
+    def test_zero_revenue_does_not_alert(self, mock_post):
+        response = self.client.post(
+            "/api/cost/log_attribution/",
+            data=json.dumps(make_attribution_payload(influenced_revenue="0")),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        mock_post.assert_not_called()
+
+    def test_slack_failure_never_breaks_ingestion(self):
+        with patch(
+            "cost_management.alerts._post_slack",
+            side_effect=RuntimeError("slack down"),
+        ):
+            response = self.client.post(
+                "/api/cost/log_attribution/",
+                data=json.dumps(make_attribution_payload(order_id="3003")),
+                content_type="application/json",
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(AttributedOrder.objects.filter(order_id="3003").exists())
+
 
 class CommercialImpactTests(TestCase):
     def setUp(self):
