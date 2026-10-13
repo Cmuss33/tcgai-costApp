@@ -1622,11 +1622,17 @@ def commercial_impact(request):
         months = lifetime_months()
         total_spend = 0.0
         cost_err = None
+        production_filter = _is_production_filter(shops)
         for m in months:
             rates_resp = _rates_resp_for(m)
             rates = _rates_from_resp(rates_resp)
             if shops:
                 m_spend = _shop_filtered_figures(m, rates, shops)["spend"]
+                if production_filter:
+                    # Retired production key's legacy total for the month --
+                    # keeps this panel's spend in step with the dashboard's
+                    # (see _build_stats' production branch).
+                    m_spend = round(m_spend + _legacy_spend_for(m), 2)
                 m_err = None
             else:
                 m_spend, _, m_err = _spend_for(m, rates_resp)
@@ -1691,6 +1697,10 @@ def commercial_impact(request):
         # Billed spend is org-wide; price the filtered population from its
         # own logged tokens instead.
         spend = _shop_filtered_figures(month_start, rates, shops)["spend"]
+        if _is_production_filter(shops):
+            # Retired production key's legacy total for the month -- see
+            # the lifetime branch above.
+            spend = round(spend + _legacy_spend_for(month_start), 2)
         cost_err = None
     else:
         spend, _, cost_err = _spend_for(month_start, rates_resp)
