@@ -33,7 +33,10 @@ function Header() {
               <span>⚡</span> Command Center
             </NavLink>
             <NavLink to="/chats" className="header-btn">
-              <span>🔬</span> Quality & Trust Inspector
+              <span>💬</span> Chat Logs
+            </NavLink>
+            <NavLink to="/alerts" className="header-btn">
+              <span>🔔</span> Alerts &amp; Preferences
             </NavLink>
           </nav>
         </div>
