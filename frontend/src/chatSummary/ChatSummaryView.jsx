@@ -652,7 +652,7 @@ function ChatSummaryView() {
       <div className="inspector-header">
         <div className="inspector-header-top">
           <div className="inspector-titles">
-            <h1><span>🔬</span> Quality &amp; Trust Inspector</h1>
+            <h1><span>💬</span> Chat Logs</h1>
             <p>
               Audit individual shopper conversations, review AI accuracy scores,
               and flag inventory, pricing, or tournament legality discrepancies directly to engineering.
