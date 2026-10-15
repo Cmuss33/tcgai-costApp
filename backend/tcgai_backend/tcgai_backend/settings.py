@@ -13,8 +13,10 @@ load_dotenv()
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# Local development
-DEBUG = True
+# Off unless DJANGO_DEBUG is set (e.g. DJANGO_DEBUG=1 in a local .env). Never
+# set it in production: the debug page shows source, local variables and
+# settings to whoever triggers an error.
+DEBUG = os.environ.get('DJANGO_DEBUG', '').strip().lower() in ('1', 'true', 'yes')
 
 # SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
@@ -108,6 +110,25 @@ STATIC_URL = 'static/'
 
 # Default primary key field type
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+# Django's default console handler only logs while DEBUG is on. Keep it on
+# regardless, so 500 tracebacks and request warnings still reach the Render
+# logs with DEBUG off. Test runs log errors only: the suite's expected 4xx
+# responses would otherwise print a warning each.
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'handlers': {
+        'console': {'class': 'logging.StreamHandler'},
+    },
+    'loggers': {
+        'django': {
+            'handlers': ['console'],
+            'level': 'ERROR' if TESTING else 'INFO',
+            'propagate': False,
+        },
+    },
+}
 
 # -----------------------------
 # CORS and CSRF settings (local dev)
