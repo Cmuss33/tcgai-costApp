@@ -1087,6 +1087,31 @@ function ChatSummaryView() {
               </div>
             </div>
 
+            {/* Judge's receipt: why the score is what it is (evaluator
+                receipts, 2026-10-15). Present only on chats graded by the
+                current evaluator; older scores have none. */}
+            {(() => {
+              const chat = chats.find((c) => c.chat_id === selectedChatId);
+              if (!chat || !chat.evaluation_justification) return null;
+              const samples = Array.isArray(chat.evaluation_samples) ? chat.evaluation_samples : [];
+              return (
+                <div style={{ padding: "0 20px 10px", fontSize: "13px", color: "#d1d5db" }}>
+                  <span style={{ color: "#9ca3af", fontWeight: 600 }}>Judge: </span>
+                  {chat.evaluation_justification}
+                  {samples.length > 1 && (
+                    <span style={{ color: "#9ca3af" }}>
+                      {" "}(median of {samples.length}: {samples.join(", ")})
+                    </span>
+                  )}
+                  {chat.evaluation_history && chat.evaluation_history.length > 0 && (
+                    <span style={{ color: "#9ca3af" }}>
+                      {" "}· previously {chat.evaluation_history[chat.evaluation_history.length - 1].score}%
+                    </span>
+                  )}
+                </div>
+              );
+            })()}
+
             {loadingMessages ? (
               <div className="spinner"></div>
             ) : groupedMessages.length === 0 ? (

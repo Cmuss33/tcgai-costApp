@@ -196,6 +196,11 @@ class LogMessageSurfaceTests(TestCase):
         from .views import should_auto_audit_chat
         surface_chat = Chat.objects.create(chat_id="curator_attr_1", model="claude-haiku-4-5", surface="curator")
         shopper_chat = Chat.objects.create(chat_id="conv-1", model="claude-haiku-4-5")
+        # Age the shopper chat past the completion quiet period -- a fresh
+        # chat is (correctly) not audited yet.
+        Chat.objects.filter(pk=shopper_chat.pk).update(
+            timestamp=timezone.now() - timedelta(hours=2))
+        shopper_chat.refresh_from_db()
 
         with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}), \
                 patch("cost_management.views.random.random", return_value=0.0):
@@ -4478,6 +4483,166 @@ class AutoAuditAndBatchEvaluationTests(TestCase):
             chat.refresh_from_db()
             self.assertEqual(chat.evaluation_score, 92)
 
+    @patch("anthropic.Anthropic")
+    def test_score_single_chat_deterministic_and_parses_score_line(self, mock_anthropic_class):
+        """The hardened judge: temperature 0, and the score comes from the
+        SCORE: line after the one-sentence justification -- numbers cited
+        inside the justification must not be mistaken for the score."""
+        from .views import score_single_chat
+        mock_client = MagicMock()
+        mock_anthropic_class.return_value = mock_client
+        mock_resp = MagicMock()
+        mock_resp.content = [MagicMock(
+            text="The assistant answered both of the shopper's 2 questions helpfully.\nSCORE: 92")]
+        mock_client.messages.create.return_value = mock_resp
+
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}):
+            chat = Chat.objects.create(chat_id="test-score-2", model="claude-haiku-4-5")
+            Message.objects.create(
+                chat=chat, content="pre order op-18",
+                returned_content="I don't see an OP-18 pre-order in stock right now.",
+                tokens_in=50, tokens_out=20, model="claude-haiku-4-5",
+            )
+            score = score_single_chat(chat)
+
+        self.assertEqual(score, 92)
+        self.assertEqual(mock_client.messages.create.call_args.kwargs["temperature"], 0)
+        prompt = mock_client.messages.create.call_args.kwargs["messages"][0]["content"]
+        self.assertIn("90-100", prompt)
+        self.assertIn("SCORE:", prompt)
+
+    @patch("anthropic.Anthropic")
+    def test_score_single_chat_fallback_takes_last_number(self, mock_anthropic_class):
+        """A judge that ignores the SCORE: format still parses -- to its
+        LAST number, not the first (the old parser's first-number grab is
+        part of how a justification-free reply could land anywhere)."""
+        from .views import score_single_chat
+        mock_client = MagicMock()
+        mock_anthropic_class.return_value = mock_client
+        mock_resp = MagicMock()
+        mock_resp.content = [MagicMock(text="2 exchanges, both handled. Final grade: 88")]
+        mock_client.messages.create.return_value = mock_resp
+
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}):
+            chat = Chat.objects.create(chat_id="test-score-3", model="claude-haiku-4-5")
+            Message.objects.create(
+                chat=chat, content="q", returned_content="a",
+                tokens_in=10, tokens_out=10, model="claude-haiku-4-5",
+            )
+            self.assertEqual(score_single_chat(chat), 88)
+
+    @staticmethod
+    def _judge_resp(text):
+        resp = MagicMock()
+        resp.content = [MagicMock(text=text)]
+        return resp
+
+    @patch("anthropic.Anthropic")
+    def test_score_single_chat_median_of_five_with_receipts(self, mock_anthropic_class):
+        """Five samples, one wild (25 -- the fd6ef56b roll): the median
+        wins, and the stored receipts carry the median sample's own
+        justification, the full sample list, and the rubric version."""
+        from .views import score_single_chat
+        mock_client = MagicMock()
+        mock_anthropic_class.return_value = mock_client
+        mock_client.messages.create.side_effect = [
+            self._judge_resp("It refused everything.\nSCORE: 25"),
+            self._judge_resp("Mostly helpful.\nSCORE: 88"),
+            self._judge_resp("Both answers were correct and offered next steps.\nSCORE: 90"),
+            self._judge_resp("Very good.\nSCORE: 92"),
+            self._judge_resp("Strong throughout.\nSCORE: 91"),
+        ]
+
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}):
+            chat = Chat.objects.create(chat_id="test-score-median", model="claude-haiku-4-5")
+            Message.objects.create(
+                chat=chat, content="pre order op-18",
+                returned_content="Not in stock; here are alternatives.",
+                tokens_in=10, tokens_out=10, model="claude-haiku-4-5",
+            )
+            self.assertEqual(score_single_chat(chat), 90)
+
+        chat.refresh_from_db()
+        self.assertEqual(chat.evaluation_samples, [25, 88, 90, 91, 92])
+        self.assertEqual(chat.evaluation_justification,
+                         "Both answers were correct and offered next steps.")
+        self.assertEqual(chat.evaluation_rubric_version, "v2")
+        self.assertIsNotNone(chat.evaluation_at)
+        self.assertEqual(mock_client.messages.create.call_count, 5)
+
+    @patch("anthropic.Anthropic")
+    def test_score_single_chat_survives_failed_samples(self, mock_anthropic_class):
+        """Two of five judge calls raise; the median of the three
+        survivors is still stored."""
+        from .views import score_single_chat
+        mock_client = MagicMock()
+        mock_anthropic_class.return_value = mock_client
+        mock_client.messages.create.side_effect = [
+            Exception("boom"), self._judge_resp("Fine.\nSCORE: 80"),
+            Exception("boom"), self._judge_resp("Good.\nSCORE: 90"),
+            self._judge_resp("Solid.\nSCORE: 85"),
+        ]
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}):
+            chat = Chat.objects.create(chat_id="test-score-flaky", model="claude-haiku-4-5")
+            Message.objects.create(
+                chat=chat, content="q", returned_content="a",
+                tokens_in=10, tokens_out=10, model="claude-haiku-4-5",
+            )
+            self.assertEqual(score_single_chat(chat), 85)
+
+    @patch("anthropic.Anthropic")
+    def test_score_single_chat_preserves_superseded_score_in_history(self, mock_anthropic_class):
+        """A re-grade never destroys the score it replaces: the old score
+        (25, graded by the pre-receipts v1 rubric) lands in
+        evaluation_history when the new one is stored."""
+        from .views import score_single_chat
+        mock_client = MagicMock()
+        mock_anthropic_class.return_value = mock_client
+        mock_client.messages.create.return_value = self._judge_resp("Fine now.\nSCORE: 92")
+
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}):
+            chat = Chat.objects.create(
+                chat_id="fd6ef56b-like", model="claude-haiku-4-5", evaluation_score=25)
+            Message.objects.create(
+                chat=chat, content="pre order op-18",
+                returned_content="Not in stock right now.",
+                tokens_in=10, tokens_out=10, model="claude-haiku-4-5",
+            )
+            self.assertEqual(score_single_chat(chat), 92)
+
+        chat.refresh_from_db()
+        self.assertEqual(chat.evaluation_history,
+                         [{"score": 25, "rubric_version": None, "graded_at": None}])
+
+    @patch("cost_management.management.commands.auto_audit_chats.score_single_chat")
+    def test_auto_audit_command_rescore_mode(self, mock_score):
+        """Default run grades only unscored chats. --rescore retro-grades
+        scored ones too; --since bounds the pass. The completion gate
+        applies in both modes, so all fixtures are aged."""
+        mock_score.return_value = 88
+        old = timezone.now() - timedelta(days=3)
+        scored = Chat.objects.create(chat_id="cmd-scored", model="claude-haiku-4-5", evaluation_score=40)
+        unscored = Chat.objects.create(chat_id="cmd-unscored", model="claude-haiku-4-5")
+        for c in (scored, unscored):
+            Message.objects.create(chat=c, content="q", returned_content="a",
+                                   tokens_in=10, tokens_out=10, model="claude-haiku-4-5")
+        Chat.objects.filter(pk__in=[scored.pk, unscored.pk]).update(timestamp=old)
+        Message.objects.filter(chat__in=[scored, unscored]).update(timestamp=old)
+
+        out = StringIO()
+        call_command("auto_audit_chats", limit=10, stdout=out)
+        self.assertEqual(mock_score.call_count, 1)
+        self.assertEqual(mock_score.call_args[0][0].chat_id, "cmd-unscored")
+
+        mock_score.reset_mock()
+        call_command("auto_audit_chats", rescore=True, limit=10, stdout=out)
+        self.assertEqual(mock_score.call_count, 2)
+
+        mock_score.reset_mock()
+        recent = (timezone.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        call_command("auto_audit_chats", rescore=True, since=recent, limit=10, stdout=out)
+        self.assertEqual(mock_score.call_count, 0)
+
     def test_should_auto_audit_chat_filtering(self):
         from .views import should_auto_audit_chat
         with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}):
@@ -4493,9 +4658,20 @@ class AutoAuditAndBatchEvaluationTests(TestCase):
             c_scored = Chat.objects.create(chat_id="real-scored", model="claude-haiku-4-5", evaluation_score=90)
             self.assertFalse(should_auto_audit_chat(c_scored))
 
-            # Real chat with products shown qualifies
+            # Real chat with products shown qualifies (once completed)
             c_prod = Chat.objects.create(chat_id="real-prod", model="claude-haiku-4-5")
+            Chat.objects.filter(pk=c_prod.pk).update(
+                timestamp=timezone.now() - timedelta(hours=2))
+            c_prod.refresh_from_db()
             self.assertTrue(should_auto_audit_chat(c_prod, products_shown={"primary": [{"name": "Charizard"}]}))
+
+            # A still-live conversation is never auto-audited, even with
+            # products shown -- grading a fragment is how fd6ef56b got a 25.
+            c_live = Chat.objects.create(chat_id="real-live", model="claude-haiku-4-5")
+            Message.objects.create(chat=c_live, content="pre order op-18",
+                                   returned_content="Not in stock right now.",
+                                   tokens_in=10, tokens_out=10, model="claude-haiku-4-5")
+            self.assertFalse(should_auto_audit_chat(c_live, products_shown={"primary": [{"name": "Charizard"}]}))
 
     @patch("cost_management.views.score_single_chat")
     def test_batch_evaluate_endpoint(self, mock_score):
@@ -4504,6 +4680,11 @@ class AutoAuditAndBatchEvaluationTests(TestCase):
         c2 = Chat.objects.create(chat_id="batch-c2", model="claude-haiku-4-5")
         Message.objects.create(chat=c1, content="q1", returned_content="a1", tokens_in=10, tokens_out=10, model="claude-haiku-4-5")
         Message.objects.create(chat=c2, content="q2", returned_content="a2", tokens_in=10, tokens_out=10, model="claude-haiku-4-5")
+        # Batch only grades completed conversations -- age both chats and
+        # their messages past the quiet period.
+        old = timezone.now() - timedelta(hours=2)
+        Chat.objects.filter(pk__in=[c1.pk, c2.pk]).update(timestamp=old)
+        Message.objects.filter(chat__in=[c1, c2]).update(timestamp=old)
 
         resp = self.client.post(
             "/api/cost/batch_evaluate/",
