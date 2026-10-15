@@ -5566,6 +5566,38 @@ class CartFunnelTests(TestCase):
         self.assertAlmostEqual(d["cart_to_purchase_rate"], 1.0, places=4)
         self.assertEqual(d["abandoned_carts"], 0)
 
+    def test_probe_chat_cart_event_is_excluded(self):
+        # A probe (test/replay) chat's cart event must not re-enter the
+        # funnel as a session unit: no cart session, no abandoned value,
+        # and the probe chat adds nothing to the denominator.
+        probe = self._chat("probe-1")
+        probe.is_probe = True
+        probe.save(update_fields=["is_probe"])
+        self._cart("sess-probe", 392.28, conversation_id="probe-1")
+        self._chat("shopper-1")
+
+        d = self._get()
+
+        self.assertEqual(d["shopping_chats"], 1)
+        self.assertEqual(d["cart_sessions"], 0)
+        self.assertEqual(d["abandoned_carts"], 0)
+        self.assertEqual(d["abandoned_value"], 0.0)
+        self.assertFalse(d["has_cart_events"])
+
+    def test_probe_chat_order_is_excluded(self):
+        # Same leak via AttributedOrder: a probe chat that purchased
+        # must not contribute a unit or influenced revenue.
+        probe = self._chat("probe-buyer")
+        probe.is_probe = True
+        probe.save(update_fields=["is_probe"])
+        self._order("probe-buyer", 75)
+
+        d = self._get()
+
+        self.assertEqual(d["shopping_chats"], 0)
+        self.assertEqual(d["purchased"], 0)
+        self.assertEqual(d["influenced_revenue"], 0.0)
+
     def test_order_only_session_counts_as_shopping(self):
         # An attributed order with no logged chat and no cart event is
         # still a shopping unit (event/order-only units are unambiguous).
