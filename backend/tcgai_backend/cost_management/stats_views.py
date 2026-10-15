@@ -1810,6 +1810,16 @@ def _cart_funnel_payload(start, end, shops):
     chat_intents = dict(chats.values_list("chat_id", "intent"))
     chat_ids = set(chat_intents)
 
+    # Probe chats (test/replay traffic) are excluded from chat units by
+    # real_chats, but their cart events and attributed orders would
+    # otherwise re-enter the funnel as session units and count as real
+    # demand. Collect their ids in the same window/shop scope so those
+    # rows can be dropped before units are built.
+    probe_chat_ids = set(
+        apply_shop_filter(chat_qs.filter(is_probe=True), shops)
+        .values_list("chat_id", flat=True)
+    )
+
     events = CartEvent.objects.filter(occurred_at__gte=start)
     if end is not None:
         events = events.filter(occurred_at__lt=end)
@@ -1825,6 +1835,16 @@ def _cart_funnel_payload(start, end, shops):
     if shops:
         orders = orders.filter(shop__in=list(shops))
     order_rows = list(orders.values("chat_id_raw", "influenced_revenue", "currency"))
+
+    if probe_chat_ids:
+        event_rows = [
+            ev for ev in event_rows
+            if ev["conversation_id"] not in probe_chat_ids
+        ]
+        order_rows = [
+            o for o in order_rows
+            if o["chat_id_raw"] not in probe_chat_ids
+        ]
 
     units = {}
 
