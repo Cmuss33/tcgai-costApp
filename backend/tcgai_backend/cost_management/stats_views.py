@@ -993,6 +993,21 @@ def _build_lifetime_stats(shops=None):
     }
 
 
+_COMPONENT_CACHE_PREFIXES = ("model_rates", "spend_for", "tokens_for", "raw_usage_by_key")
+
+
+def _bust_component_caches(month_starts):
+    """Delete the per-month component caches the spend payloads are
+    assembled from. A refresh that deletes only the assembled payload's
+    own key quietly recomputes from these component caches instead --
+    past months live in them for 24h, so the "refreshed" figures were
+    the stale ones. That was the Lifetime Refresh bug: the lifetime
+    branch deleted its shell key and nothing else."""
+    for m in month_starts:
+        for prefix in _COMPONENT_CACHE_PREFIXES:
+            cache.delete(f"{prefix}:{m:%Y-%m}")
+
+
 @api_login_required
 def monthly_stats(request):
     refresh = request.GET.get("refresh", "").lower() in ("1", "true", "yes")
@@ -1003,6 +1018,7 @@ def monthly_stats(request):
         key = "monthly_stats:lifetime" + _shop_key_suffix(shops)
         if refresh:
             cache.delete(key)
+            _bust_component_caches(lifetime_months())
         else:
             cached = cache.get(key)
             if cached is not None:
@@ -1024,10 +1040,7 @@ def monthly_stats(request):
     key = f"monthly_stats:{month_start:%Y-%m}" + _shop_key_suffix(shops)
     if refresh:
         cache.delete(key)
-        cache.delete(f"model_rates:{month_start:%Y-%m}")
-        cache.delete(f"spend_for:{month_start:%Y-%m}")
-        cache.delete(f"tokens_for:{month_start:%Y-%m}")
-        cache.delete(f"raw_usage_by_key:{month_start:%Y-%m}")
+        _bust_component_caches([month_start])
     else:
         cached = cache.get(key)
         if cached is not None:
@@ -1622,12 +1635,17 @@ def commercial_impact(request):
     """
     month_param = request.GET.get("month")
     shops = _request_shops(request)
+    refresh = request.GET.get("refresh", "").lower() in ("1", "true", "yes")
 
     if month_param == "lifetime":
         key = "commercial_impact:lifetime" + _shop_key_suffix(shops)
-        cached = cache.get(key)
-        if cached is not None:
-            return JsonResponse({**cached, "cached": True})
+        if refresh:
+            cache.delete(key)
+            _bust_component_caches(lifetime_months())
+        else:
+            cached = cache.get(key)
+            if cached is not None:
+                return JsonResponse({**cached, "cached": True})
 
         months = lifetime_months()
         total_spend = 0.0
@@ -1697,9 +1715,13 @@ def commercial_impact(request):
     start, end = month_range(month_start)
 
     key = f"commercial_impact:{month_start:%Y-%m}" + _shop_key_suffix(shops)
-    cached = cache.get(key)
-    if cached is not None:
-        return JsonResponse({**cached, "cached": True})
+    if refresh:
+        cache.delete(key)
+        _bust_component_caches([month_start])
+    else:
+        cached = cache.get(key)
+        if cached is not None:
+            return JsonResponse({**cached, "cached": True})
 
     rates_resp = _rates_resp_for(month_start)
     rates = _rates_from_resp(rates_resp)

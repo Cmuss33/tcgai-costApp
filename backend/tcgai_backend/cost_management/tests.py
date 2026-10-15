@@ -2206,6 +2206,22 @@ class MonthlyStatsLifetimeTests(TestCase):
         self.assertTrue(len(d.get("keys", [])) >= 1)
         self.assertEqual(d["keys"][0]["api_key_id"], "key_1")
 
+    def test_lifetime_refresh_busts_component_caches(self):
+        """Regression (Lifetime Refresh): the lifetime branch used to
+        delete only its own payload key on refresh=1, so the rebuild
+        quietly reused every month's cached spend component (past months
+        cache for 24h) and the figures never actually refreshed. Poison
+        June's spend_for cache: a plain load reports the poison; a
+        refresh must recompute from the source instead."""
+        self._patch_adapter()
+        cache.set("spend_for:2026-06", (999.0, [], None), 3600)
+
+        poisoned = self.client.get("/api/cost/monthly_stats/?month=lifetime").json()
+        self.assertGreaterEqual(poisoned["spend"]["total"], 999.0)
+
+        refreshed = self.client.get("/api/cost/monthly_stats/?month=lifetime&refresh=1").json()
+        self.assertLess(refreshed["spend"]["total"], 999.0)
+
     def test_cost_reconciliation_lifetime(self):
         self._patch_adapter()
         resp = self.client.get("/api/cost/cost_reconciliation/?month=lifetime")
@@ -5248,6 +5264,26 @@ class CommercialImpactTests(TestCase):
 
     def test_requires_login(self):
         self.assertEqual(self.client.get("/api/cost/commercial_impact/").status_code, 401)
+
+    def test_lifetime_refresh_recomputes_instead_of_serving_cache(self):
+        """Regression (Lifetime Refresh): commercial_impact never read
+        the refresh flag at all -- the dashboard's Refresh button could
+        not move this panel until its 15-minute cache expired, and even
+        then its per-month spend came from the component caches. Seed
+        the shell cache with a marker payload: a plain load serves it,
+        a refresh must recompute."""
+        self._patch_spend(10.0)
+        self._seed("c1", 100, order_id="o1")
+        self.client.force_login(self.user)
+        cache.set("commercial_impact:lifetime",
+                  {"month": "lifetime", "spend": 424242.0, "cached_marker": True}, 900)
+
+        plain = self.client.get("/api/cost/commercial_impact/?month=lifetime").json()
+        self.assertEqual(plain["spend"], 424242.0)
+
+        refreshed = self.client.get("/api/cost/commercial_impact/?month=lifetime&refresh=1").json()
+        self.assertNotEqual(refreshed["spend"], 424242.0)
+        self.assertNotIn("cached_marker", refreshed)
 
     def test_four_numbers_and_methodology(self):
         self._patch_spend(10.0)
