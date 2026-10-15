@@ -6187,6 +6187,97 @@ class AlertRulesTests(TestCase):
         params.update(kw)
         return AlertRule.objects.create(**params)
 
+    # -- attribution tripwire ------------------------------------------
+
+    def _mk_chats(self, n, days_ago=2, **kw):
+        from django.utils import timezone as _tz
+        when = _tz.now() - timedelta(days=days_ago)
+        made = []
+        for i in range(n):
+            c = Chat.objects.create(chat_id=f"trip-{days_ago}d-{i}-{kw.get('is_probe', False)}",
+                                    model="claude-haiku-4-5", **kw)
+            Chat.objects.filter(pk=c.pk).update(timestamp=when)
+            made.append(c)
+        return made
+
+    def _mk_order(self, days_ago=0):
+        order = AttributedOrder.objects.create(
+            chat_id_raw="trip-order", shop="s.myshopify.com", order_id=f"ord-{days_ago}",
+            influenced_revenue=25, order_total=25, currency="USD",
+        )
+        if days_ago:
+            AttributedOrder.objects.filter(pk=order.pk).update(
+                created_at=timezone.now() - timedelta(days=days_ago))
+        return order
+
+    def test_attribution_gap_seed_migration(self):
+        import importlib
+
+        migration = importlib.import_module(
+            "cost_management.migrations.0028_seed_attribution_gap_rule"
+        )
+        from django.apps import apps as django_apps
+
+        migration.seed_rule(django_apps, None)
+        rule = AlertRule.objects.get(rule_type="attribution_gap")
+        self.assertTrue(rule.enabled)
+        self.assertEqual(rule.threshold, 10.0)
+
+    def test_attribution_gap_breaches_with_chats_and_no_orders(self):
+        from cost_management.alerts import _metric_attribution_gap
+        self._mk_chats(12)
+        breached, value, headline, evidence = _metric_attribution_gap(10)
+        self.assertTrue(breached)
+        self.assertEqual(value, 12)
+        self.assertIn("14 days", headline)
+        self.assertEqual({e["metric"]: e["value"] for e in evidence},
+                         {"attribution.chats_14d": 12, "attribution.orders_14d": 0})
+
+    def test_attribution_gap_quiet_when_orders_flow(self):
+        from cost_management.alerts import _metric_attribution_gap
+        self._mk_chats(12)
+        self._mk_order(days_ago=1)
+        breached, _, _, _ = _metric_attribution_gap(10)
+        self.assertFalse(breached)
+
+    def test_attribution_gap_quiet_store_does_not_trip(self):
+        """Below the chat floor, zero orders is a quiet store, not a
+        broken pipeline."""
+        from cost_management.alerts import _metric_attribution_gap
+        self._mk_chats(4)
+        breached, _, _, _ = _metric_attribution_gap(10)
+        self.assertFalse(breached)
+
+    def test_attribution_gap_ignores_probes_and_old_activity(self):
+        """Probe chats are not shopper demand (they must not arm the
+        tripwire), and chats outside the 14-day window don't count."""
+        from cost_management.alerts import _metric_attribution_gap
+        self._mk_chats(12, is_probe=True)
+        self._mk_chats(12, days_ago=20)
+        breached, value, _, _ = _metric_attribution_gap(10)
+        self.assertFalse(breached)
+        self.assertEqual(value, 0)
+
+    def test_attribution_gap_fires_once_and_recovers(self):
+        from cost_management.alerts import evaluate_all_rules
+        self._mkrule(rule_type="attribution_gap", name="Attribution gap",
+                     threshold=3.0)
+        self._mk_chats(3)
+        with patch("cost_management.alerts._post_slack", return_value=True) as mock_post:
+            summary = evaluate_all_rules()
+            self.assertEqual(summary["fired"], 1)
+            self.assertEqual(mock_post.call_count, 1)
+            headline = mock_post.call_args[0][0]
+            self.assertIn("attributed", headline)
+            # Rising edge consumed: a second run must not re-fire.
+            summary2 = evaluate_all_rules()
+            self.assertEqual(summary2["fired"], 0)
+        self.assertEqual(AlertFiring.objects.count(), 1)
+        # Pipeline recovers (an order lands) -> the rule un-breaches.
+        self._mk_order()
+        evaluate_all_rules()
+        self.assertFalse(AlertRule.objects.get(rule_type="attribution_gap").breached)
+
     def _breached_metrics(self, value=0.25):
         """Patch every metric function to report a breach at `value`."""
         ev = [{"kind": "stat", "metric": "cost.per_conversation",

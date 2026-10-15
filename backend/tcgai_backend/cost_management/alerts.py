@@ -25,8 +25,8 @@ from datetime import timedelta
 
 from django.utils import timezone
 
-from .models import AlertRule, AlertFiring, OperatorPreference
-from .month_utils import current_month_start, prev_month
+from .models import AlertRule, AlertFiring, AttributedOrder, Chat, OperatorPreference
+from .month_utils import current_month_start, prev_month, real_chats
 from .stats_views import _build_stats, _cache_economics_for, _cost_reconciliation_for
 from .verdicts import _build_context, _eval_verdict
 
@@ -61,6 +61,11 @@ RULE_META = {
         "unit": "score points",
         "hint": "Fires when the average evaluation score falls this far vs last month (needs 10+ scored chats).",
     },
+    "attribution_gap": {
+        "label": "Attribution gap (chats, but no attributed orders)",
+        "unit": "real chats in 14 days",
+        "hint": "Fires when at least this many real chats happened in the last 14 days but zero orders were attributed -- the attribution pipeline itself is probably broken silently (checkout extension disabled, session stamp lost).",
+    },
 }
 
 # Conservative seed defaults (data migration): alert fatigue is the called-out
@@ -88,6 +93,12 @@ DEFAULT_RULES = [
         "rule_type": "eval_score_drop",
         "name": "Eval score drop (8 pts)",
         "threshold": 8.0,
+        "cooldown_hours": 24,
+    },
+    {
+        "rule_type": "attribution_gap",
+        "name": "Attribution gap (no attributed orders in 14 days)",
+        "threshold": 10.0,
         "cooldown_hours": 24,
     },
 ]
@@ -177,6 +188,43 @@ def _metric_eval_drop(month_start, threshold):
     return True, drop, card["headline"], card["evidence"]
 
 
+# The tripwire's window: long enough that a healthy store's natural gap
+# between chat-attributed orders doesn't trip it, short enough that a
+# silently broken pipeline is caught while the trail is warm.
+ATTRIBUTION_GAP_WINDOW_DAYS = 14
+
+
+def _metric_attribution_gap(min_chats):
+    """Tripwire for the attribution pipeline itself -- the ENG-218 / PR
+    #556 lesson: when the checkout stamp silently stopped working, chats
+    kept happening and revenue attribution was simply zero for weeks,
+    and nothing in the app noticed because nothing was watching the
+    *absence* of data.
+
+    Breached when at least `min_chats` real chats happened in the
+    trailing window but ZERO orders were attributed in it. The chat
+    floor keeps a merely quiet store (holiday closure, low season) from
+    tripping it. Orders are counted by ingestion time (created_at): the
+    signal is "the pipeline produced a new attribution lately", so an
+    older order finally flowing through correctly proves it alive.
+    Returns (breached, chats_in_window, headline, evidence)."""
+    since = timezone.now() - timedelta(days=ATTRIBUTION_GAP_WINDOW_DAYS)
+    chats = real_chats(Chat.objects.filter(timestamp__gte=since)).count()
+    orders = AttributedOrder.objects.filter(created_at__gte=since).count()
+    evidence = [
+        _ev("attribution.chats_14d", chats, "chats"),
+        _ev("attribution.orders_14d", orders, "attributed_orders"),
+    ]
+    if chats < min_chats or orders > 0:
+        return False, chats, None, evidence
+    headline = (
+        f"No order has been attributed to a chat in {ATTRIBUTION_GAP_WINDOW_DAYS} days, "
+        f"despite {chats} real chats in that window — the attribution pipeline may be "
+        f"broken (checkout extension disabled or the session stamp lost)."
+    )
+    return True, chats, headline, evidence
+
+
 def evaluate_rule(rule, month_start):
     """Evaluate one rule against the current month.
 
@@ -208,6 +256,10 @@ def evaluate_rule(rule, month_start):
         )
     elif rtype == "eval_score_drop":
         breached, value, headline, evidence = _metric_eval_drop(month_start, rule.threshold)
+    elif rtype == "attribution_gap":
+        # Trailing-window metric (not month-scoped): the rule's threshold
+        # is the minimum real chats in the window before the gap counts.
+        breached, value, headline, evidence = _metric_attribution_gap(rule.threshold)
     else:
         logger.warning("[alerts] unknown rule_type=%s rule=%s; skipping", rtype, rule.id)
         return False, None, None, []
