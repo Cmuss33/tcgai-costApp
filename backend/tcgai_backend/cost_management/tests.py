@@ -7564,6 +7564,38 @@ class ChatOutcomeTests(TestCase):
 
     # -- ingest hooks ------------------------------------------------------
 
+    # -- stored signals (multi-icon Intent column) ---------------------
+
+    def test_signals_record_cart_purchase_and_intent_together(self):
+        from .chat_outcomes import label_chat
+        c = self._chat("sig-all", text="i want to buy the Gengar ex")
+        self._cart("sig-all")
+        self._order("sig-all")
+        self.assertEqual(label_chat(c), "purchased")
+        c.refresh_from_db()
+        self.assertEqual(
+            set(c.outcome_signals), {"purchased", "cart", "purchase_intent"}
+        )
+        self.assertEqual(c.outcome_signals["cart"]["value"], "42.50")
+        self.assertIn("order #1001", c.outcome_signals["purchased"]["reason"])
+
+    def test_signals_record_cart_and_intent_without_order(self):
+        from .chat_outcomes import label_chat
+        c = self._chat("sig-cart-intent", text="what is your shipping policy?")
+        self._cart("sig-cart-intent")
+        self.assertEqual(label_chat(c), "cart_no_purchase")
+        c.refresh_from_db()
+        self.assertEqual(set(c.outcome_signals), {"cart", "purchase_intent"})
+
+    def test_signals_empty_for_service_only_chat(self):
+        from .chat_outcomes import label_chat
+        c = self._chat(
+            "sig-service", text="where is my order? tracking says label created"
+        )
+        self.assertEqual(label_chat(c), "no_buying_intent")
+        c.refresh_from_db()
+        self.assertIsNone(c.outcome_signals)
+
     def test_cart_event_ingest_labels_the_chat(self):
         self._chat("c-hook-cart")
         resp = self.client.post(

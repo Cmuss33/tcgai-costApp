@@ -1276,6 +1276,66 @@ function CommercialImpactHero({ data, isLifetime }) {
 }
 
 /* ---------- C5b: cart funnel (shopping chats -> cart -> purchase) ---------- */
+// Chat outcomes by month: every real conversation in exactly one
+// bucket (see chat_outcomes.py). Follows the dashboard's period: a
+// selected month shows just that month; Lifetime shows every month
+// plus totals. Cells deep-link into Chat Logs scoped to month+bucket.
+function ChatOutcomesPanel({ data, isLifetime, selectedMonth, onSelect }) {
+  if (!data || !Array.isArray(data.months) || data.months.length === 0) return null;
+  const rows = isLifetime
+    ? [...data.months].reverse()
+    : data.months.filter((m) => m.month === selectedMonth);
+  if (!rows.length) return null;
+  const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const label = (key) => {
+    const [y, m] = (key || "").split("-");
+    return `${MONTHS[parseInt(m, 10) - 1] || m} ${y}`;
+  };
+  const cell = (month, bucket, value) => (
+    <td key={bucket}>
+      <button type="button" className="co-cell" onClick={() => onSelect(month, bucket)}>
+        {value}
+      </button>
+    </td>
+  );
+  const row = (r, monthArg, cls) => (
+    <tr key={monthArg || "totals"} className={cls}>
+      <td style={{ whiteSpace: "nowrap" }}>{monthArg ? label(r.month) : "All months"}</td>
+      {cell(monthArg, "purchased", r.purchased)}
+      {cell(monthArg, "cart_no_purchase", r.cart_no_purchase)}
+      {cell(monthArg, "purchase_intent", r.purchase_intent)}
+      {cell(monthArg, "no_buying_intent", r.no_buying_intent)}
+      <td className="co-total">{r.total}</td>
+    </tr>
+  );
+  return (
+    <div className="cr__labor-section">
+      <div className="cr__labor-label">{"\u{1F9ED}"} Chat outcomes</div>
+      <table className="co-table">
+        <thead>
+          <tr>
+            <th>Month</th>
+            <th>{"\u{1F4B0}"} Purchased</th>
+            <th>{"\u{1F6D2}"} Cart, no purchase</th>
+            <th>{"\u{1F3AF}"} Purchase intent</th>
+            <th>No buying intent</th>
+            <th>Total</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => row(r, r.month, ""))}
+          {isLifetime && data.totals ? row(data.totals, null, "co-row--totals") : null}
+        </tbody>
+      </table>
+      <p className="cr__prov" style={{ marginTop: "10px" }}>
+        Every real conversation in exactly one bucket: an attributed order beats a cart
+        add, which beats purchase-intent signals in the shopper&rsquo;s own words.
+        Click a number to see those chats in Chat Logs.
+      </p>
+    </div>
+  );
+}
+
 function CartFunnelPanel({ data }) {
   if (!data) return null;
   const pct = (r) => (r != null ? `${(r * 100).toFixed(1)}%` : "\u2014");
@@ -1782,6 +1842,7 @@ function HomeView() {
   const [costReconciliation, setCostReconciliation] = useState(null);
   const [commercialImpact, setCommercialImpact] = useState(null);
   const [cartFunnel, setCartFunnel] = useState(null);
+  const [chatOutcomes, setChatOutcomes] = useState(null);
   const [cacheEconomics, setCacheEconomics] = useState(null);
   const [verdicts, setVerdicts] = useState(null);
   const [needsAttention, setNeedsAttention] = useState(null);
@@ -1937,6 +1998,26 @@ function HomeView() {
     [navigate]
   );
 
+  const loadChatOutcomes = useCallback(
+    async () => {
+      try {
+        const params = new URLSearchParams();
+        appendShopParams(params);
+        const qs = params.toString();
+        const res = await fetch(`${API_URL}/api/cost/chat_outcomes_by_month/${qs ? `?${qs}` : ""}`, {
+          credentials: "include",
+        });
+        if (res.status === 401 || res.status === 403) return navigate("/");
+        setChatOutcomes(await res.json());
+      } catch {
+        // Non-critical panel -- the rest of the dashboard still works without it.
+      } finally {
+        setLoadProgress((p) => p + 1);
+      }
+    },
+    [navigate]
+  );
+
   const loadCacheEconomics = useCallback(
     async (month, refresh) => {
       try {
@@ -2082,12 +2163,13 @@ function HomeView() {
         loadCacheEconomics(arg, refresh),
         loadCommercialImpact(arg, refresh),
         loadCartFunnel(arg, refresh),
+        loadChatOutcomes(),
         loadVerdicts(arg, refresh),
         loadNeedsAttention(refresh),
         loadBudgetAudit(arg, refresh),
       ]);
     },
-    [loadStats, loadInsights, loadCostReconciliation, loadCacheEconomics, loadCommercialImpact, loadCartFunnel, loadVerdicts, loadNeedsAttention, loadBudgetAudit]
+    [loadStats, loadInsights, loadCostReconciliation, loadCacheEconomics, loadCommercialImpact, loadCartFunnel, loadChatOutcomes, loadVerdicts, loadNeedsAttention, loadBudgetAudit]
   );
 
   useEffect(() => {
@@ -2391,6 +2473,14 @@ function HomeView() {
           <section aria-label="Is it making you money?">
             <div className="cr__section-eyebrow"><span>💵</span> Is it making you money?</div>
             <CartFunnelPanel data={cartFunnel} />
+            <ChatOutcomesPanel
+              data={chatOutcomes}
+              isLifetime={isLifetime}
+              selectedMonth={selectedMonth}
+              onSelect={(month, bucket) =>
+                navigate(month ? `/chats?month=${month}&filter=${bucket}` : `/chats?filter=${bucket}`)
+              }
+            />
             <CommercialImpactHero data={commercialImpact} isLifetime={isLifetime} />
             <LaborSavingsHero stats={stats} isLifetime={isLifetime} />
           </section>
