@@ -20,6 +20,7 @@ urlpatterns = [
     path('budget_audit/', budget_audit.budget_audit, name='budget_audit'),
     path('get_messages/', views.get_messages, name='get_messages'),
     path('get_chat_ids/', views.get_chat_ids, name='get_chat_ids'),
+    path('low_score_export/', views.low_score_export, name='low_score_export'),
     path('get_messages_by_chat_id/<str:chat_id>/', views.get_messages_by_chat_id, name='get_messages_by_chat_id'),
     path("login/", views.login_view, name="login"),
     path("logout/", views.logout_view, name="logout"),
