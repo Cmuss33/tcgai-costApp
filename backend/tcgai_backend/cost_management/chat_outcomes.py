@@ -139,7 +139,18 @@ def derive_intent(shopper_texts):
 
 
 def compute_outcome(chat):
-    """Return (outcome, reason, value, currency) for one chat."""
+    """Return (outcome, reason, value, currency, signals) for one chat.
+
+    Every signal is evaluated independently: `signals` maps each one
+    that fired to its own receipt ({"reason": ...} plus value/currency
+    where meaningful), so the Chat Logs Intent column can render one
+    icon per fired signal -- a chat that added to cart AND purchased
+    shows both. `outcome` stays the single precedence bucket the
+    monthly breakdown counts (purchased > cart > intent > none).
+    """
+    signals = {}
+    winner = None
+
     orders = AttributedOrder.objects.filter(chat_id_raw=chat.chat_id)
     if orders.exists():
         total = orders.aggregate(t=Sum("influenced_revenue"))["t"] or Decimal("0")
@@ -147,26 +158,42 @@ def compute_outcome(chat):
         count = orders.count()
         if count > 1:
             reason = (
-                f"Purchased — {count} attributed orders "
+                f"Purchased \u2014 {count} attributed orders "
                 f"(latest #{latest.order_id}), {latest.currency} {total:.2f} influenced revenue"
             )
         else:
             reason = (
-                f"Purchased — attributed order #{latest.order_id}, "
+                f"Purchased \u2014 attributed order #{latest.order_id}, "
                 f"{latest.currency} {total:.2f} influenced revenue"
             )
-        return PURCHASED, reason, total, latest.currency
+        signals["purchased"] = {
+            "reason": reason,
+            "value": str(total),
+            "currency": latest.currency,
+        }
+        winner = (PURCHASED, reason, total, latest.currency)
 
     events = CartEvent.objects.filter(conversation_id=chat.chat_id).order_by(
         "-occurred_at", "-id"
     )
     if events.exists():
         ev = events.first()
-        reason = (
-            f"Added to cart — {ev.currency} {ev.cart_value:.2f} "
-            f"on {ev.occurred_at:%Y-%m-%d}, no order followed"
-        )
-        return CART_NO_PURCHASE, reason, ev.cart_value, ev.currency
+        signals["cart"] = {
+            "reason": (
+                f"Added to cart \u2014 {ev.currency} {ev.cart_value:.2f} "
+                f"on {ev.occurred_at:%Y-%m-%d}"
+            ),
+            "value": str(ev.cart_value),
+            "currency": ev.currency,
+        }
+        if winner is None:
+            winner = (
+                CART_NO_PURCHASE,
+                f"Added to cart \u2014 {ev.currency} {ev.cart_value:.2f} "
+                f"on {ev.occurred_at:%Y-%m-%d}, no order followed",
+                ev.cart_value,
+                ev.currency,
+            )
 
     texts = list(
         Message.objects.filter(chat_id=chat.chat_id)
@@ -175,26 +202,46 @@ def compute_outcome(chat):
     )
     family, quote = derive_intent(texts)
     if family == "intent":
-        return PURCHASE_INTENT, f"Purchase-intent signal: “{quote}”", None, ""
+        reason = f"Purchase-intent signal: \u201c{quote}\u201d"
+        signals["purchase_intent"] = {"reason": reason}
+        if winner is None:
+            winner = (PURCHASE_INTENT, reason, None, "")
+    if winner is not None:
+        return (*winner, signals)
     if family == "service":
-        return NO_BUYING_INTENT, f"Post-purchase service question: “{quote}”", None, ""
+        return (
+            NO_BUYING_INTENT,
+            f"Post-purchase service question: \u201c{quote}\u201d",
+            None,
+            "",
+            signals,
+        )
     return (
         NO_BUYING_INTENT,
         "No cart, order, or purchase-intent signal in this conversation",
         None,
         "",
+        signals,
     )
 
 
 def label_chat(chat):
     """(Re)compute and store a chat's outcome label. Returns the outcome."""
-    outcome, reason, value, currency = compute_outcome(chat)
-    current = (chat.outcome, chat.outcome_reason, chat.outcome_value, chat.outcome_currency)
-    if current != (outcome, reason, value, currency):
+    outcome, reason, value, currency, signals = compute_outcome(chat)
+    stored_signals = signals or None
+    current = (
+        chat.outcome,
+        chat.outcome_reason,
+        chat.outcome_value,
+        chat.outcome_currency,
+        chat.outcome_signals,
+    )
+    if current != (outcome, reason, value, currency, stored_signals):
         chat.outcome = outcome
         chat.outcome_reason = reason
         chat.outcome_value = value
         chat.outcome_currency = currency
+        chat.outcome_signals = stored_signals
         chat.outcome_at = timezone.now()
         chat.save(
             update_fields=[
@@ -202,6 +249,7 @@ def label_chat(chat):
                 "outcome_reason",
                 "outcome_value",
                 "outcome_currency",
+                "outcome_signals",
                 "outcome_at",
             ]
         )

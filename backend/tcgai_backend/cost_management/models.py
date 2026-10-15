@@ -73,6 +73,11 @@ class Chat(models.Model):
     outcome_value = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
     outcome_currency = models.CharField(max_length=3, default="")
     outcome_at = models.DateTimeField(null=True, blank=True)
+    outcome_signals = models.JSONField(
+        null=True,
+        blank=True,
+        help_text="Every outcome signal that fired (purchased / cart / purchase_intent), each with its own receipt; the Chat Logs Intent column renders one icon per signal. outcome remains the single precedence bucket.",
+    )
 
     # ENG-149/150: a scripted caller pinging the live chat endpoint with the
     # same message on a schedule (a fresh chat_id each time) is not a real

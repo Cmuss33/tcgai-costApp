@@ -1256,34 +1256,39 @@
   background: rgba(99, 102, 241, 0.3);
   color: #fff;
 }
-/* Outcome labels (2026-10-15) */
-.chat-outcome-badge {
+/* Outcome signals (2026-10-15): one icon per fired signal */
+.outcome-icons {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  font-size: 11.5px;
-  font-weight: 700;
-  padding: 3px 9px;
-  border-radius: 6px;
+  gap: 6px;
   white-space: nowrap;
 }
 
-.chat-outcome-badge--purchased {
-  background: rgba(16, 185, 129, 0.15);
-  color: #34d399;
-  border: 1px solid rgba(16, 185, 129, 0.3);
+.outcome-icon {
+  display: inline-flex;
+  align-items: center;
+  font-size: 13px;
+  padding: 2px 6px;
+  border-radius: 6px;
+  border: 1px solid transparent;
 }
 
-.chat-outcome-badge--cart {
+.outcome-icon--purchased {
+  background: rgba(16, 185, 129, 0.15);
+  border-color: rgba(16, 185, 129, 0.3);
+}
+
+.outcome-icon--cart {
   background: rgba(245, 158, 11, 0.15);
   color: #fbbf24;
-  border: 1px solid rgba(245, 158, 11, 0.3);
+  border-color: rgba(245, 158, 11, 0.3);
+  font-size: 11.5px;
+  font-weight: 700;
 }
 
-.chat-outcome-badge--intent {
+.outcome-icon--intent {
   background: rgba(59, 130, 246, 0.15);
-  color: #60a5fa;
-  border: 1px solid rgba(59, 130, 246, 0.3);
+  border-color: rgba(59, 130, 246, 0.3);
 }
 
 .chat-outcome-none {
@@ -1291,93 +1296,3 @@
   color: #6b7280;
 }
 
-/* Outcome breakdown by month */
-.outcome-breakdown {
-  margin: 0 0 16px;
-  padding: 14px 16px;
-  background: #111827;
-  border: 1px solid #1f293d;
-  border-radius: 10px;
-}
-
-.outcome-breakdown-header {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  margin-bottom: 10px;
-}
-
-.outcome-breakdown-title {
-  font-size: 13px;
-  font-weight: 700;
-  color: #e5e7eb;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-.outcome-breakdown-scope {
-  font-size: 12.5px;
-  color: #9ca3af;
-}
-
-.outcome-clear-btn {
-  margin-left: 8px;
-  font-size: 12px;
-  font-weight: 600;
-  color: #f87171;
-  background: rgba(239, 68, 68, 0.12);
-  border: 1px solid rgba(239, 68, 68, 0.3);
-  border-radius: 6px;
-  padding: 2px 8px;
-  cursor: pointer;
-}
-
-.outcome-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 13px;
-}
-
-.outcome-table th {
-  text-align: left;
-  color: #9ca3af;
-  font-weight: 600;
-  padding: 4px 8px;
-  border-bottom: 1px solid #1f293d;
-}
-
-.outcome-table td {
-  padding: 4px 8px;
-  color: #d1d5db;
-  border-bottom: 1px solid rgba(31, 41, 61, 0.6);
-}
-
-.outcome-table tr.outcome-row--active td {
-  background: rgba(59, 130, 246, 0.08);
-}
-
-.outcome-cell {
-  font: inherit;
-  font-weight: 700;
-  color: #e5e7eb;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 6px;
-  padding: 2px 10px;
-  cursor: pointer;
-  min-width: 44px;
-}
-
-.outcome-cell:hover {
-  background: rgba(255, 255, 255, 0.12);
-}
-
-.outcome-cell.active {
-  background: rgba(59, 130, 246, 0.25);
-  border-color: rgba(59, 130, 246, 0.5);
-  color: #bfdbfe;
-}
-
-.outcome-total {
-  font-weight: 700;
-}

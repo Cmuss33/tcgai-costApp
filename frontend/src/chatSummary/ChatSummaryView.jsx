@@ -118,10 +118,8 @@ function ChatSummaryView() {
 
   const [activeFilter, setActiveFilter] = useState(searchParams.get("filter") || "all");
   const [searchQuery, setSearchQuery] = useState("");
-  // Outcome breakdown (2026-10-15): per-month buckets from
-  // /api/cost/chat_outcomes_by_month/; selectedMonth scopes the table to
-  // one month when a breakdown cell is clicked.
-  const [outcomeMonths, setOutcomeMonths] = useState([]);
+  // Month scope: set by the Command Center outcomes table deep link
+  // (/chats?month=YYYY-MM&filter=<bucket>).
   const [selectedMonth, setSelectedMonth] = useState(searchParams.get("month") || null);
 
   // Store attribution filter (mirrors HomeView.jsx). selectedShops === null
@@ -220,21 +218,6 @@ function ChatSummaryView() {
       });
   }, [API_URL, offset, pageSize, activeFilter, selectedMonth, searchQuery, refreshKey, shopConfigLoaded, selectedShops]);
 
-  // Fetch the outcome breakdown (respects the same store selection).
-  useEffect(() => {
-    if (!shopConfigLoaded) return;
-    const params = new URLSearchParams();
-    if (selectedShops && selectedShops.length) {
-      selectedShops.forEach((shop) => params.append("shop", shop));
-    }
-    fetch(`${API_URL}/api/cost/chat_outcomes_by_month/?${params.toString()}`, { credentials: "include" })
-      .then((res) => res.json())
-      .then((data) => {
-        if (Array.isArray(data.months)) setOutcomeMonths(data.months);
-      })
-      .catch((err) => console.error("Error fetching outcome breakdown:", err));
-  }, [API_URL, shopConfigLoaded, selectedShops, refreshKey]);
-
   // Deep link: /chats?chat=<id> auto-opens that chat's transcript modal
   useEffect(() => {
     const chatParam = searchParams.get("chat");
@@ -299,31 +282,6 @@ function ChatSummaryView() {
     setSearchParams(nextParams, { replace: true });
   };
 
-  // Breakdown cell click: scope the table to that month + bucket.
-  // Clicking the active cell again clears the scope.
-  const handleOutcomeCell = (month, bucket) => {
-    const nextParams = new URLSearchParams(searchParams);
-    nextParams.delete("page");
-    if (selectedMonth === month && activeFilter === bucket) {
-      setSelectedMonth(null);
-      setActiveFilter("all");
-      nextParams.delete("month");
-      nextParams.delete("filter");
-    } else {
-      setSelectedMonth(month);
-      setActiveFilter(bucket);
-      nextParams.set("month", month);
-      nextParams.set("filter", bucket);
-    }
-    setOffset(0);
-    setSearchParams(nextParams, { replace: true });
-  };
-
-  const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-  const monthLabel = (key) => {
-    const [y, m] = (key || "").split("-");
-    return `${MONTH_NAMES[parseInt(m, 10) - 1] || m} ${y}`;
-  };
 
   const OUTCOME_LABELS = {
     purchased: "💰 Purchased",
@@ -332,33 +290,46 @@ function ChatSummaryView() {
     no_buying_intent: "No buying intent",
   };
 
-  const renderOutcomeBadge = (chat) => {
-    switch (chat.outcome) {
-      case "purchased":
-        return (
-          <span className="chat-outcome-badge chat-outcome-badge--purchased" title={chat.outcome_reason || ""}>
-            💰 Purchased
-          </span>
-        );
-      case "cart_no_purchase": {
-        const value = chat.outcome_value != null ? Number(chat.outcome_value) : null;
-        return (
-          <span className="chat-outcome-badge chat-outcome-badge--cart" title={chat.outcome_reason || ""}>
-            🛒 {value != null && !Number.isNaN(value) ? `${chat.outcome_currency || ""} ${value.toFixed(2)}` : "Cart"}
-          </span>
-        );
+  // Intent column: one icon per fired outcome signal -- a chat that
+  // added to cart AND purchased shows both. Signals come from
+  // chat.outcome_signals; rows labeled before signals existed fall
+  // back to the single precedence outcome.
+  const renderOutcomeIcons = (chat) => {
+    let signals = chat.outcome_signals;
+    if (!signals) {
+      signals = {};
+      if (chat.outcome === "purchased") {
+        signals.purchased = { reason: chat.outcome_reason, value: chat.outcome_value, currency: chat.outcome_currency };
+      } else if (chat.outcome === "cart_no_purchase") {
+        signals.cart = { reason: chat.outcome_reason, value: chat.outcome_value, currency: chat.outcome_currency };
+      } else if (chat.outcome === "purchase_intent") {
+        signals.purchase_intent = { reason: chat.outcome_reason };
       }
-      case "purchase_intent":
-        return (
-          <span className="chat-outcome-badge chat-outcome-badge--intent" title={chat.outcome_reason || ""}>
-            🎯 Intent
-          </span>
-        );
-      case "no_buying_intent":
-        return <span className="chat-outcome-none" title={chat.outcome_reason || ""}>No intent</span>;
-      default:
-        return "—";
     }
+    const icons = [];
+    if (signals.purchased) {
+      icons.push(
+        <span key="purchased" className="outcome-icon outcome-icon--purchased" title={signals.purchased.reason || "Purchased"}>💰</span>
+      );
+    }
+    if (signals.cart) {
+      const v = signals.cart.value != null ? Number(signals.cart.value) : null;
+      icons.push(
+        <span key="cart" className="outcome-icon outcome-icon--cart" title={signals.cart.reason || "Added to cart"}>
+          🛒{v != null && !Number.isNaN(v) ? ` ${signals.cart.currency || ""} ${v.toFixed(2)}` : ""}
+        </span>
+      );
+    }
+    if (signals.purchase_intent) {
+      icons.push(
+        <span key="intent" className="outcome-icon outcome-icon--intent" title={signals.purchase_intent.reason || "Purchase intent"}>🎯</span>
+      );
+    }
+    if (!icons.length) {
+      if (!chat.outcome) return "—";
+      return <span className="chat-outcome-none" title={chat.outcome_reason || ""}>No intent</span>;
+    }
+    return <span className="outcome-icons">{icons}</span>;
   };
 
   const handleSearchChange = (e) => {
@@ -885,65 +856,6 @@ function ChatSummaryView() {
         )}
       </div>
 
-      {/* Outcome breakdown by month: every conversation in exactly one
-          bucket (see chat_outcomes.py). Clicking a bucket scopes the
-          table below to that month + bucket; click again to clear. */}
-      {outcomeMonths.length > 0 && (
-        <div className="outcome-breakdown">
-          <div className="outcome-breakdown-header">
-            <span className="outcome-breakdown-title">🧭 Chat outcomes by month</span>
-            {selectedMonth && (
-              <span className="outcome-breakdown-scope">
-                Showing {monthLabel(selectedMonth)}
-                {activeFilter !== "all" && OUTCOME_LABELS[activeFilter] ? ` · ${OUTCOME_LABELS[activeFilter]}` : ""}
-                <button type="button" className="outcome-clear-btn" onClick={() => handleFilterClick("all")}>
-                  ✕ Clear
-                </button>
-              </span>
-            )}
-          </div>
-          <table className="outcome-table">
-            <thead>
-              <tr>
-                <th>Month</th>
-                <th>💰 Purchased</th>
-                <th>🛒 Cart, no purchase</th>
-                <th>🎯 Purchase intent</th>
-                <th>No buying intent</th>
-                <th>Total</th>
-              </tr>
-            </thead>
-            <tbody>
-              {[...outcomeMonths].reverse().map((m) => (
-                <tr key={m.month} className={selectedMonth === m.month ? "outcome-row--active" : ""}>
-                  <td style={{ whiteSpace: "nowrap" }}>{monthLabel(m.month)}</td>
-                  <td>
-                    <button type="button" className={`outcome-cell ${selectedMonth === m.month && activeFilter === "purchased" ? "active" : ""}`} onClick={() => handleOutcomeCell(m.month, "purchased")}>
-                      {m.purchased}
-                    </button>
-                  </td>
-                  <td>
-                    <button type="button" className={`outcome-cell ${selectedMonth === m.month && activeFilter === "cart_no_purchase" ? "active" : ""}`} onClick={() => handleOutcomeCell(m.month, "cart_no_purchase")}>
-                      {m.cart_no_purchase}
-                    </button>
-                  </td>
-                  <td>
-                    <button type="button" className={`outcome-cell ${selectedMonth === m.month && activeFilter === "purchase_intent" ? "active" : ""}`} onClick={() => handleOutcomeCell(m.month, "purchase_intent")}>
-                      {m.purchase_intent}
-                    </button>
-                  </td>
-                  <td>
-                    <button type="button" className={`outcome-cell ${selectedMonth === m.month && activeFilter === "no_buying_intent" ? "active" : ""}`} onClick={() => handleOutcomeCell(m.month, "no_buying_intent")}>
-                      {m.no_buying_intent}
-                    </button>
-                  </td>
-                  <td className="outcome-total">{m.total}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
 
       {/* Table meta bar with count, active page info, and page size selector */}
       <div className="chat-meta-bar" ref={tableRef}>
@@ -989,7 +901,7 @@ function ChatSummaryView() {
             <th>Customer Inquiry</th>
             <th>AI Accuracy Score</th>
             <th>Products</th>
-            <th>Outcome</th>
+            <th>Intent</th>
             <th>Est. Cost ($)</th>
             <th>Model</th>
             <th>Investigation</th>
@@ -1071,7 +983,7 @@ function ChatSummaryView() {
                   )}
                 </td>
 
-                <td>{renderOutcomeBadge(chat)}</td>
+                <td>{renderOutcomeIcons(chat)}</td>
 
                 <td>
                   {formatCost(
