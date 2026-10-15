@@ -118,6 +118,11 @@ function ChatSummaryView() {
 
   const [activeFilter, setActiveFilter] = useState(searchParams.get("filter") || "all");
   const [searchQuery, setSearchQuery] = useState("");
+  // Outcome breakdown (2026-10-15): per-month buckets from
+  // /api/cost/chat_outcomes_by_month/; selectedMonth scopes the table to
+  // one month when a breakdown cell is clicked.
+  const [outcomeMonths, setOutcomeMonths] = useState([]);
+  const [selectedMonth, setSelectedMonth] = useState(searchParams.get("month") || null);
 
   // Store attribution filter (mirrors HomeView.jsx). selectedShops === null
   // means "All stores" (no filtering). Defaults to PRODUCTION_SHOPS (from
@@ -167,6 +172,9 @@ function ChatSummaryView() {
     if (activeFilter && activeFilter !== "all") {
       params.set("filter", activeFilter);
     }
+    if (selectedMonth) {
+      params.set("month", selectedMonth);
+    }
     if (searchQuery.trim()) {
       params.set("search", searchQuery.trim());
     }
@@ -210,7 +218,22 @@ function ChatSummaryView() {
       .finally(() => {
         setLoadingChats(false);
       });
-  }, [API_URL, offset, pageSize, activeFilter, searchQuery, refreshKey, shopConfigLoaded, selectedShops]);
+  }, [API_URL, offset, pageSize, activeFilter, selectedMonth, searchQuery, refreshKey, shopConfigLoaded, selectedShops]);
+
+  // Fetch the outcome breakdown (respects the same store selection).
+  useEffect(() => {
+    if (!shopConfigLoaded) return;
+    const params = new URLSearchParams();
+    if (selectedShops && selectedShops.length) {
+      selectedShops.forEach((shop) => params.append("shop", shop));
+    }
+    fetch(`${API_URL}/api/cost/chat_outcomes_by_month/?${params.toString()}`, { credentials: "include" })
+      .then((res) => res.json())
+      .then((data) => {
+        if (Array.isArray(data.months)) setOutcomeMonths(data.months);
+      })
+      .catch((err) => console.error("Error fetching outcome breakdown:", err));
+  }, [API_URL, shopConfigLoaded, selectedShops, refreshKey]);
 
   // Deep link: /chats?chat=<id> auto-opens that chat's transcript modal
   useEffect(() => {
@@ -269,8 +292,73 @@ function ChatSummaryView() {
       nextParams.set("filter", filterKey);
     } else {
       nextParams.delete("filter");
+      // "All Chats" also drops any month scope from the breakdown.
+      setSelectedMonth(null);
+      nextParams.delete("month");
     }
     setSearchParams(nextParams, { replace: true });
+  };
+
+  // Breakdown cell click: scope the table to that month + bucket.
+  // Clicking the active cell again clears the scope.
+  const handleOutcomeCell = (month, bucket) => {
+    const nextParams = new URLSearchParams(searchParams);
+    nextParams.delete("page");
+    if (selectedMonth === month && activeFilter === bucket) {
+      setSelectedMonth(null);
+      setActiveFilter("all");
+      nextParams.delete("month");
+      nextParams.delete("filter");
+    } else {
+      setSelectedMonth(month);
+      setActiveFilter(bucket);
+      nextParams.set("month", month);
+      nextParams.set("filter", bucket);
+    }
+    setOffset(0);
+    setSearchParams(nextParams, { replace: true });
+  };
+
+  const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const monthLabel = (key) => {
+    const [y, m] = (key || "").split("-");
+    return `${MONTH_NAMES[parseInt(m, 10) - 1] || m} ${y}`;
+  };
+
+  const OUTCOME_LABELS = {
+    purchased: "💰 Purchased",
+    cart_no_purchase: "🛒 Cart — no purchase",
+    purchase_intent: "🎯 Purchase intent",
+    no_buying_intent: "No buying intent",
+  };
+
+  const renderOutcomeBadge = (chat) => {
+    switch (chat.outcome) {
+      case "purchased":
+        return (
+          <span className="chat-outcome-badge chat-outcome-badge--purchased" title={chat.outcome_reason || ""}>
+            💰 Purchased
+          </span>
+        );
+      case "cart_no_purchase": {
+        const value = chat.outcome_value != null ? Number(chat.outcome_value) : null;
+        return (
+          <span className="chat-outcome-badge chat-outcome-badge--cart" title={chat.outcome_reason || ""}>
+            🛒 {value != null && !Number.isNaN(value) ? `${chat.outcome_currency || ""} ${value.toFixed(2)}` : "Cart"}
+          </span>
+        );
+      }
+      case "purchase_intent":
+        return (
+          <span className="chat-outcome-badge chat-outcome-badge--intent" title={chat.outcome_reason || ""}>
+            🎯 Intent
+          </span>
+        );
+      case "no_buying_intent":
+        return <span className="chat-outcome-none" title={chat.outcome_reason || ""}>No intent</span>;
+      default:
+        return "—";
+    }
   };
 
   const handleSearchChange = (e) => {
@@ -702,6 +790,27 @@ function ChatSummaryView() {
             >
               ✨ Unaudited
             </button>
+            <button
+              type="button"
+              className={`inspector-filter-btn ${activeFilter === "purchased" ? "active" : ""}`}
+              onClick={() => handleFilterClick("purchased")}
+            >
+              💰 Purchased
+            </button>
+            <button
+              type="button"
+              className={`inspector-filter-btn ${activeFilter === "cart_no_purchase" ? "active" : ""}`}
+              onClick={() => handleFilterClick("cart_no_purchase")}
+            >
+              🛒 Cart — No Purchase
+            </button>
+            <button
+              type="button"
+              className={`inspector-filter-btn ${activeFilter === "purchase_intent" ? "active" : ""}`}
+              onClick={() => handleFilterClick("purchase_intent")}
+            >
+              🎯 Purchase Intent
+            </button>
           </div>
 
           <div className="inspector-actions">
@@ -776,6 +885,66 @@ function ChatSummaryView() {
         )}
       </div>
 
+      {/* Outcome breakdown by month: every conversation in exactly one
+          bucket (see chat_outcomes.py). Clicking a bucket scopes the
+          table below to that month + bucket; click again to clear. */}
+      {outcomeMonths.length > 0 && (
+        <div className="outcome-breakdown">
+          <div className="outcome-breakdown-header">
+            <span className="outcome-breakdown-title">🧭 Chat outcomes by month</span>
+            {selectedMonth && (
+              <span className="outcome-breakdown-scope">
+                Showing {monthLabel(selectedMonth)}
+                {activeFilter !== "all" && OUTCOME_LABELS[activeFilter] ? ` · ${OUTCOME_LABELS[activeFilter]}` : ""}
+                <button type="button" className="outcome-clear-btn" onClick={() => handleFilterClick("all")}>
+                  ✕ Clear
+                </button>
+              </span>
+            )}
+          </div>
+          <table className="outcome-table">
+            <thead>
+              <tr>
+                <th>Month</th>
+                <th>💰 Purchased</th>
+                <th>🛒 Cart, no purchase</th>
+                <th>🎯 Purchase intent</th>
+                <th>No buying intent</th>
+                <th>Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              {[...outcomeMonths].reverse().map((m) => (
+                <tr key={m.month} className={selectedMonth === m.month ? "outcome-row--active" : ""}>
+                  <td style={{ whiteSpace: "nowrap" }}>{monthLabel(m.month)}</td>
+                  <td>
+                    <button type="button" className={`outcome-cell ${selectedMonth === m.month && activeFilter === "purchased" ? "active" : ""}`} onClick={() => handleOutcomeCell(m.month, "purchased")}>
+                      {m.purchased}
+                    </button>
+                  </td>
+                  <td>
+                    <button type="button" className={`outcome-cell ${selectedMonth === m.month && activeFilter === "cart_no_purchase" ? "active" : ""}`} onClick={() => handleOutcomeCell(m.month, "cart_no_purchase")}>
+                      {m.cart_no_purchase}
+                    </button>
+                  </td>
+                  <td>
+                    <button type="button" className={`outcome-cell ${selectedMonth === m.month && activeFilter === "purchase_intent" ? "active" : ""}`} onClick={() => handleOutcomeCell(m.month, "purchase_intent")}>
+                      {m.purchase_intent}
+                    </button>
+                  </td>
+                  <td>
+                    <button type="button" className={`outcome-cell ${selectedMonth === m.month && activeFilter === "no_buying_intent" ? "active" : ""}`} onClick={() => handleOutcomeCell(m.month, "no_buying_intent")}>
+                      {m.no_buying_intent}
+                    </button>
+                  </td>
+                  <td className="outcome-total">{m.total}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
       {/* Table meta bar with count, active page info, and page size selector */}
       <div className="chat-meta-bar" ref={tableRef}>
         <div className="chat-meta-count">
@@ -820,6 +989,7 @@ function ChatSummaryView() {
             <th>Customer Inquiry</th>
             <th>AI Accuracy Score</th>
             <th>Products</th>
+            <th>Outcome</th>
             <th>Est. Cost ($)</th>
             <th>Model</th>
             <th>Investigation</th>
@@ -829,14 +999,14 @@ function ChatSummaryView() {
         <tbody>
           {loadingChats && chats.length === 0 ? (
             <tr>
-              <td colSpan="8" style={{ textAlign: "center", padding: "40px", color: "#9ca3af" }}>
+              <td colSpan="9" style={{ textAlign: "center", padding: "40px", color: "#9ca3af" }}>
                 <span className="spinner" style={{ width: 18, height: 18, marginRight: 8, verticalAlign: "middle" }} />
                 Loading conversations...
               </td>
             </tr>
           ) : chats.length === 0 ? (
             <tr>
-              <td colSpan="8" style={{ textAlign: "center", padding: "40px", color: "#9ca3af" }}>
+              <td colSpan="9" style={{ textAlign: "center", padding: "40px", color: "#9ca3af" }}>
                 No conversations found matching criteria.
               </td>
             </tr>
@@ -900,6 +1070,8 @@ function ChatSummaryView() {
                     "—"
                   )}
                 </td>
+
+                <td>{renderOutcomeBadge(chat)}</td>
 
                 <td>
                   {formatCost(
@@ -1107,6 +1279,22 @@ function ChatSummaryView() {
                     <span style={{ color: "#9ca3af" }}>
                       {" "}· previously {chat.evaluation_history[chat.evaluation_history.length - 1].score}%
                     </span>
+                  )}
+                </div>
+              );
+            })()}
+
+            {/* Outcome receipt: the chat's category and why it earned it
+                (outcome labels, 2026-10-15). */}
+            {(() => {
+              const chat = chats.find((c) => c.chat_id === selectedChatId);
+              if (!chat || !chat.outcome) return null;
+              return (
+                <div style={{ padding: "0 20px 10px", fontSize: "13px", color: "#d1d5db" }}>
+                  <span style={{ color: "#9ca3af", fontWeight: 600 }}>Outcome: </span>
+                  {OUTCOME_LABELS[chat.outcome] || chat.outcome}
+                  {chat.outcome_reason && (
+                    <span style={{ color: "#9ca3af" }}> — {chat.outcome_reason}</span>
                   )}
                 </div>
               );
