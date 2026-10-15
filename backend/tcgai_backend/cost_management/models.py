@@ -50,6 +50,30 @@ class Chat(models.Model):
     evaluation_at = models.DateTimeField(null=True, blank=True)
     evaluation_history = models.JSONField(null=True, blank=True)
 
+    # Outcome labels (2026-10-15): every conversation is categorized by how
+    # far the shopper got -- purchased / cart_no_purchase / purchase_intent
+    # / no_buying_intent -- derived in chat_outcomes.py from behaviour
+    # records (AttributedOrder, CartEvent) first and, failing those, from
+    # purchase-intent signals in the shopper's own messages. outcome_reason
+    # is the receipt: the order id, the cart value, or the shopper's words
+    # that earned the label, so a label can be audited like a score.
+    # outcome_value/outcome_currency carry the money where the label has
+    # one (influenced revenue for purchased, latest cart total for cart).
+    # Null outcome = not yet labeled (pre-label rows, pre-backfill).
+    OUTCOME_CHOICES = [
+        ("purchased", "Purchased"),
+        ("cart_no_purchase", "Added to cart, no purchase"),
+        ("purchase_intent", "Purchase intent"),
+        ("no_buying_intent", "No buying intent"),
+    ]
+    outcome = models.CharField(
+        max_length=20, choices=OUTCOME_CHOICES, null=True, blank=True, db_index=True
+    )
+    outcome_reason = models.TextField(null=True, blank=True)
+    outcome_value = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    outcome_currency = models.CharField(max_length=3, default="")
+    outcome_at = models.DateTimeField(null=True, blank=True)
+
     # ENG-149/150: a scripted caller pinging the live chat endpoint with the
     # same message on a schedule (a fresh chat_id each time) is not a real
     # conversation. Set by the `flag_automated_chats` management command,

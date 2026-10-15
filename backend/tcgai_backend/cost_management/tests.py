@@ -7431,3 +7431,190 @@ class ProbeChatsExcludedFromMetricsTests(TestCase):
         day10_rows = [r for r in d["conversations"]["daily"] if r["day"] == day10.date().isoformat()]
         self.assertEqual(day10_rows[0]["count"], 2)
         self.assertEqual(day10_rows[0]["bot_count"], 0)
+
+
+class ChatOutcomeTests(TestCase):
+    """Outcome labels (2026-10-15): every conversation in exactly one
+    bucket -- purchased > cart_no_purchase > purchase_intent >
+    no_buying_intent -- each with an auditable receipt. Behaviour records
+    beat message signals; post-purchase service is not purchase intent."""
+
+    def setUp(self):
+        cache.clear()
+        self.user = User.objects.create_user(username="owner", password="<redacted>")
+
+    def tearDown(self):
+        cache.clear()
+
+    def _chat(self, chat_id, text="do you have any Charizard cards?", **kw):
+        kw.setdefault("shop", "pvpshoppe.myshopify.com")
+        c = Chat.objects.create(chat_id=chat_id, model="claude-haiku-4-5", **kw)
+        Message.objects.create(
+            chat=c, content=text, returned_content="let me check",
+            model="claude-haiku-4-5", llm_formatted_message="",
+            llm_formatted_returned_message="", tokens_in=0, tokens_out=0,
+        )
+        return c
+
+    def _cart(self, chat_id, value="42.50", when=None):
+        return CartEvent.objects.create(
+            shop="pvpshoppe.myshopify.com", session_id=f"sess-{chat_id}",
+            conversation_id=chat_id, source="p4_chat",
+            items=[{"variant_id": "1", "quantity": 1, "price": value}],
+            cart_value=value, currency="CAD",
+            occurred_at=when or timezone.now(),
+        )
+
+    def _order(self, chat_id, order_id="1001", revenue="42.50"):
+        chat = Chat.objects.filter(chat_id=chat_id).first()
+        return AttributedOrder.objects.create(
+            chat=chat, chat_id_raw=chat_id, shop="pvpshoppe.myshopify.com",
+            order_id=order_id, influenced_revenue=revenue, currency="CAD",
+            order_created_at=timezone.now(),
+        )
+
+    # -- derivation --------------------------------------------------------
+
+    def test_purchased_beats_cart_and_intent(self):
+        from .chat_outcomes import label_chat
+        c = self._chat("c-buy", text="how much is shipping?")
+        self._cart("c-buy")
+        self._order("c-buy", order_id="777", revenue="99.99")
+        self.assertEqual(label_chat(c), "purchased")
+        c.refresh_from_db()
+        self.assertIn("#777", c.outcome_reason)
+        self.assertEqual(str(c.outcome_value), "99.99")
+        self.assertIsNotNone(c.outcome_at)
+
+    def test_cart_no_purchase_uses_latest_cart_value(self):
+        from .chat_outcomes import label_chat
+        from datetime import timedelta
+        c = self._chat("c-cart")
+        self._cart("c-cart", value="10.00", when=timezone.now() - timedelta(days=2))
+        self._cart("c-cart", value="42.50", when=timezone.now())
+        self.assertEqual(label_chat(c), "cart_no_purchase")
+        c.refresh_from_db()
+        self.assertIn("CAD 42.50", c.outcome_reason)
+
+    def test_purchase_intent_from_policy_question(self):
+        from .chat_outcomes import label_chat
+        c = self._chat("c-policy", text="How much is shipping to Ottawa?")
+        self.assertEqual(label_chat(c), "purchase_intent")
+        c.refresh_from_db()
+        self.assertIn("shipping to Ottawa", c.outcome_reason)
+
+    def test_purchase_intent_from_buying_language(self):
+        from .chat_outcomes import label_chat
+        c = self._chat("c-want", text="I want to buy a booster box for my son")
+        self.assertEqual(label_chat(c), "purchase_intent")
+
+    def test_service_question_is_not_purchase_intent(self):
+        from .chat_outcomes import label_chat
+        c = self._chat("c-service", text="Where is my order? It hasn't arrived yet")
+        self.assertEqual(label_chat(c), "no_buying_intent")
+        c.refresh_from_db()
+        self.assertTrue(c.outcome_reason.startswith("Post-purchase service"))
+
+    def test_plain_browsing_is_no_intent(self):
+        from .chat_outcomes import label_chat
+        c = self._chat("c-browse")
+        self.assertEqual(label_chat(c), "no_buying_intent")
+
+    def test_label_is_idempotent(self):
+        from .chat_outcomes import label_chat
+        c = self._chat("c-idem", text="what is your return policy?")
+        label_chat(c)
+        c.refresh_from_db()
+        first_at = c.outcome_at
+        label_chat(c)
+        c.refresh_from_db()
+        self.assertEqual(c.outcome_at, first_at)
+
+    # -- ingest hooks ------------------------------------------------------
+
+    def test_cart_event_ingest_labels_the_chat(self):
+        self._chat("c-hook-cart")
+        resp = self.client.post(
+            "/api/cost/log_cart_event/",
+            data=json.dumps({
+                "shop": "pvpshoppe.myshopify.com", "session_id": "s1",
+                "source": "p4_chat", "conversation_id": "c-hook-cart",
+                "items": [{"variant_id": "1", "quantity": 1, "price": "25.00"}],
+                "cart_value": "25.00", "currency": "CAD",
+                "occurred_at": timezone.now().isoformat(),
+            }),
+            content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        chat = Chat.objects.get(chat_id="c-hook-cart")
+        self.assertEqual(chat.outcome, "cart_no_purchase")
+
+    def test_attribution_ingest_marks_purchased(self):
+        self._chat("c-hook-order")
+        resp = self.client.post(
+            "/api/cost/log_attribution/",
+            data=json.dumps({
+                "chat_id": "c-hook-order", "shop": "pvpshoppe.myshopify.com",
+                "order_id": "555", "influenced_revenue": "12.34", "currency": "CAD",
+            }),
+            content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        chat = Chat.objects.get(chat_id="c-hook-order")
+        self.assertEqual(chat.outcome, "purchased")
+
+    # -- API surface -------------------------------------------------------
+
+    def test_get_chat_ids_outcome_filter_and_month(self):
+        from .chat_outcomes import label_chat
+        a = self._chat("c-a")
+        self._order("c-a")
+        label_chat(a)
+        b = self._chat("c-b", text="how much is shipping?")
+        label_chat(b)
+        Chat.objects.filter(chat_id="c-b").update(
+            timestamp=timezone.now().replace(year=2026, month=8, day=15)
+        )
+        self.client.force_login(self.user)
+
+        d = self.client.get("/api/cost/get_chat_ids/?filter=purchased").json()
+        self.assertEqual([r["chat_id"] for r in d["results"]], ["c-a"])
+        self.assertEqual(d["results"][0]["outcome"], "purchased")
+
+        d = self.client.get("/api/cost/get_chat_ids/?month=2026-08").json()
+        self.assertEqual([r["chat_id"] for r in d["results"]], ["c-b"])
+
+    def test_outcomes_by_month_buckets_sum_to_total(self):
+        from .chat_outcomes import label_chat
+        a = self._chat("c-m1")
+        self._order("c-m1")
+        label_chat(a)
+        label_chat(self._chat("c-m2", text="can I preorder the new set?"))
+        label_chat(self._chat("c-m3"))
+        self.client.force_login(self.user)
+
+        resp = self.client.get("/api/cost/chat_outcomes_by_month/")
+        self.assertEqual(resp.status_code, 200)
+        d = resp.json()
+        for row in d["months"]:
+            self.assertEqual(
+                row["purchased"] + row["cart_no_purchase"]
+                + row["purchase_intent"] + row["no_buying_intent"],
+                row["total"],
+            )
+        self.assertEqual(d["totals"]["total"], 3)
+        self.assertEqual(d["totals"]["purchased"], 1)
+        self.assertEqual(d["totals"]["purchase_intent"], 1)
+        self.assertEqual(d["totals"]["no_buying_intent"], 1)
+
+    def test_outcomes_by_month_requires_login(self):
+        self.assertEqual(self.client.get("/api/cost/chat_outcomes_by_month/").status_code, 401)
+
+    def test_backfill_command_labels_population(self):
+        self._chat("c-bf1", text="do you offer local pickup?")
+        self._chat("c-bf2")
+        out = StringIO()
+        call_command("label_chat_outcomes", stdout=out)
+        self.assertEqual(Chat.objects.get(chat_id="c-bf1").outcome, "purchase_intent")
+        self.assertEqual(Chat.objects.get(chat_id="c-bf2").outcome, "no_buying_intent")
+        self.assertIn("labeled 2 chats", out.getvalue())

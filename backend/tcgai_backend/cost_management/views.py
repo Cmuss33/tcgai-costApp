@@ -12,11 +12,12 @@ import anthropic
 import os
 from django.db import transaction
 from django.db.models import Avg, Count, IntegerField, Q, Sum, Value
-from django.db.models.functions import Coalesce, TruncDate
+from django.db.models.functions import Coalesce, TruncDate, TruncMonth
 from django.utils.dateparse import parse_datetime
 from django.utils.timezone import now
 from datetime import datetime, timedelta, timezone as dt_timezone
 from .api_auth import api_login_required
+from .chat_outcomes import refresh_outcome_for_chat_id
 from .month_utils import CONVERSATION_START_DATE, apply_shop_filter, real_chats
 from django.conf import settings
 
@@ -428,6 +429,7 @@ def log_message(request):
                     print("Error parsing llm_formatted_message for intent:", e)
 
             chat.save(update_fields=['tokens_in', 'tokens_out', 'intent'])
+            refresh_outcome_for_chat_id(chat.chat_id)
 
         # Smart Auto-Audit: triggers evaluation in background thread if eligible
         # Runs asynchronously after transaction commits with zero impact on shopper latency
@@ -498,6 +500,19 @@ def get_chat_ids(request):
             shops,
         )
 
+        # Optional single-month scope (YYYY-MM), used by the Chat Logs
+        # outcome breakdown to drill into one month's bucket. Unparseable
+        # values are ignored, like a bad limit/offset above.
+        month_param = (request.GET.get("month") or "").strip()
+        if month_param:
+            try:
+                _year, _month = month_param.split("-")
+                visible_chats = visible_chats.filter(
+                    timestamp__year=int(_year), timestamp__month=int(_month)
+                )
+            except (ValueError, AttributeError):
+                pass
+
         if filter_type == "needs_attention":
             visible_chats = visible_chats.filter(
                 Q(evaluation_score__lt=75) | Q(investigation_status="flagged")
@@ -511,6 +526,12 @@ def get_chat_ids(request):
             visible_chats = visible_chats.filter(chat_id__in=chat_ids_with_oos)
         elif filter_type == "unaudited":
             visible_chats = visible_chats.filter(evaluation_score__isnull=True)
+        elif filter_type in ("purchased", "cart_no_purchase", "purchase_intent", "no_buying_intent"):
+            # Outcome buckets (chat_outcomes.py). The stored label IS the
+            # category, so the filter is a straight equality -- and the
+            # precedence is already baked in (an intent-labeled chat has,
+            # by construction, no cart event and no order).
+            visible_chats = visible_chats.filter(outcome=filter_type)
 
         if search_query:
             matching_chat_ids = Message.objects.filter(
@@ -601,6 +622,59 @@ def get_chat_ids(request):
 
     except Exception as e:
         return JsonResponse({'status': 'error', 'message': str(e)}, status=400)
+
+@api_login_required
+def chat_outcomes_by_month(request):
+    """Monthly outcome breakdown for Chat Logs: every real conversation
+    since CONVERSATION_START_DATE in exactly one bucket (see
+    chat_outcomes.py), counted by the month the conversation happened
+    (a later order still credits its chat's month). Unlabeled rows count
+    as no_buying_intent so the buckets always sum to the month's total.
+    Months are UTC, like every other monthly cut in this app.
+    """
+    try:
+        shops = request.GET.getlist("shop")
+        qs = apply_shop_filter(
+            real_chats(Chat.objects.filter(timestamp__gte=CONVERSATION_START_DATE)),
+            shops,
+        )
+        rows = (
+            qs.annotate(month=TruncMonth("timestamp"))
+            .values("month", "outcome")
+            .annotate(n=Count("chat_id"))
+        )
+        buckets = {}
+        for r in rows:
+            if r["month"] is None:
+                continue
+            key = r["month"].strftime("%Y-%m")
+            bucket = buckets.setdefault(
+                key,
+                {"purchased": 0, "cart_no_purchase": 0, "purchase_intent": 0, "no_buying_intent": 0},
+            )
+            outcome = r["outcome"] if r["outcome"] in bucket else "no_buying_intent"
+            bucket[outcome] += r["n"]
+
+        start = CONVERSATION_START_DATE
+        end = now()
+        months = []
+        totals = {"purchased": 0, "cart_no_purchase": 0, "purchase_intent": 0, "no_buying_intent": 0, "total": 0}
+        year, month = start.year, start.month
+        while (year, month) <= (end.year, end.month):
+            key = f"{year:04d}-{month:02d}"
+            bucket = dict(buckets.get(key, {"purchased": 0, "cart_no_purchase": 0, "purchase_intent": 0, "no_buying_intent": 0}))
+            bucket["month"] = key
+            bucket["total"] = sum(bucket[k] for k in ("purchased", "cart_no_purchase", "purchase_intent", "no_buying_intent"))
+            months.append(bucket)
+            for k in totals:
+                totals[k] += bucket[k]
+            month += 1
+            if month > 12:
+                year, month = year + 1, 1
+        return JsonResponse({"months": months, "totals": totals})
+    except Exception as e:
+        return JsonResponse({'status': 'error', 'message': str(e)}, status=400)
+
 
 @api_login_required
 def get_messages_by_chat_id(request, chat_id):
@@ -910,6 +984,7 @@ def log_attribution(request):
             )
         if created and obj.influenced_revenue > 0:
             _notify_attributed_revenue(obj)
+        refresh_outcome_for_chat_id(chat_id)
         return JsonResponse({"status": "success", "created": created})
     except Exception as e:
         return JsonResponse({"status": "error", "message": str(e)}, status=400)
@@ -990,6 +1065,8 @@ def log_cart_event(request):
                     "currency": str(data.get("currency") or "USD")[:3].upper(),
                 },
             )
+        if conversation_id:
+            refresh_outcome_for_chat_id(conversation_id)
         return JsonResponse({"status": "success", "created": created})
     except Exception as e:
         return JsonResponse({"status": "error", "message": str(e)}, status=400)
