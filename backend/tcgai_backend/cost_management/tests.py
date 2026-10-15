@@ -5231,6 +5231,59 @@ class LogCartEventTests(TestCase):
         self.assertEqual(response.status_code, 200)
 
 
+class LowScoreExportTests(TestCase):
+    """The offline-review export door: login-gated, v2-only, below the
+    threshold, real chats only, transcripts attached."""
+
+    def setUp(self):
+        cache.clear()
+        self.user = User.objects.create_user(username="owner", password="pw")
+
+    def tearDown(self):
+        cache.clear()
+
+    def _chat(self, chat_id, score, version="v2", **kw):
+        c = Chat.objects.create(
+            chat_id=chat_id, model="claude-haiku-4-5",
+            evaluation_score=score, evaluation_rubric_version=version,
+            evaluation_samples=[score] * 5, evaluation_justification="judge said so",
+            **kw,
+        )
+        Message.objects.create(chat=c, content="do you have X?",
+                               returned_content="no", model="claude-haiku-4-5",
+                               llm_formatted_message="", llm_formatted_returned_message="",
+                               tokens_in=0, tokens_out=0)
+        return c
+
+    def test_requires_login(self):
+        self.assertEqual(self.client.get("/api/cost/low_score_export/").status_code, 401)
+
+    def test_exports_only_v2_real_chats_below_threshold(self):
+        self._chat("low-v2", 42)
+        self._chat("edge-70", 70)
+        self._chat("high-v2", 90)
+        self._chat("low-v1", 30, version="v1")
+        self._chat("low-probe", 25, is_probe=True)
+        self.client.force_login(self.user)
+
+        resp = self.client.get("/api/cost/low_score_export/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("attachment", resp["Content-Disposition"])
+        d = resp.json()
+        self.assertEqual(d["count"], 1)
+        self.assertEqual([c["chat_id"] for c in d["chats"]], ["low-v2"])
+        self.assertEqual(d["chats"][0]["evaluation_samples"], [42] * 5)
+        self.assertEqual(d["chats"][0]["messages"][0]["content"], "do you have X?")
+
+    def test_below_param_moves_the_threshold(self):
+        self._chat("mid", 65)
+        self.client.force_login(self.user)
+        d = self.client.get("/api/cost/low_score_export/?below=60").json()
+        self.assertEqual(d["count"], 0)
+        d = self.client.get("/api/cost/low_score_export/?below=abc").status_code
+        self.assertEqual(d, 400)
+
+
 class CommercialImpactTests(TestCase):
     def setUp(self):
         cache.clear()

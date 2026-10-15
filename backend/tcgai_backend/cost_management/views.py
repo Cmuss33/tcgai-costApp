@@ -613,6 +613,53 @@ def get_messages_by_chat_id(request, chat_id):
     except Exception as e:
         return JsonResponse({'status': 'error', 'message': str(e)}, status=400)
 
+
+@api_login_required
+def low_score_export(request):
+    """One-shot JSON export of the low-scoring population for offline
+    review: every real chat since CONVERSATION_START_DATE graded under
+    rubric v2 below ?below= (default 70), with evaluator receipts and
+    full transcripts, served as a file download. The failure analysis
+    runs offline (there is no other read path out of the service), so
+    this is the extraction door for the post-retro-grade backlog
+    review."""
+    try:
+        below = float(request.GET.get("below", 70))
+    except (TypeError, ValueError):
+        return JsonResponse({"error": "below must be a number"}, status=400)
+    chats = (
+        real_chats(Chat.objects.filter(
+            timestamp__gte=CONVERSATION_START_DATE,
+            evaluation_rubric_version="v2",
+            evaluation_score__lt=below,
+        ))
+        .order_by("evaluation_score", "timestamp")
+    )
+    payload = {
+        "exported_at": now().isoformat(),
+        "below": below,
+        "count": chats.count(),
+        "chats": [
+            {
+                "chat_id": c.chat_id,
+                "shop": c.shop,
+                "timestamp": c.timestamp.isoformat(),
+                "evaluation_score": c.evaluation_score,
+                "evaluation_samples": c.evaluation_samples,
+                "evaluation_justification": c.evaluation_justification,
+                "messages": list(
+                    Message.objects.filter(chat=c)
+                    .order_by("timestamp")
+                    .values("content", "returned_content")
+                ),
+            }
+            for c in chats
+        ],
+    }
+    resp = JsonResponse(payload)
+    resp["Content-Disposition"] = 'attachment; filename="low-score-review.json"'
+    return resp
+
 @csrf_exempt
 def login_view(request):
     if request.method != "POST":
