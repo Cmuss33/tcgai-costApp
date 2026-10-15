@@ -35,6 +35,21 @@ class Chat(models.Model):
     timestamp = models.DateTimeField(auto_now_add=True)
     evaluation_score = models.IntegerField(null=True, blank=True)
 
+    # Evaluator receipts (2026-10-15): why the score is what it is.
+    # evaluation_score is the MEDIAN of the judge samples listed in
+    # evaluation_samples; evaluation_justification is the median sample's
+    # one-sentence rationale; evaluation_rubric_version tags which rubric
+    # produced the score (scores from different rubric versions are not
+    # trend-comparable). evaluation_history holds superseded scores
+    # ([{score, rubric_version, graded_at}]) so a re-grade -- manual,
+    # batch, or a bulk retro-grade -- never silently destroys the score
+    # it replaced. All nullable: every pre-receipts row simply has none.
+    evaluation_justification = models.TextField(null=True, blank=True)
+    evaluation_samples = models.JSONField(null=True, blank=True)
+    evaluation_rubric_version = models.CharField(max_length=16, null=True, blank=True)
+    evaluation_at = models.DateTimeField(null=True, blank=True)
+    evaluation_history = models.JSONField(null=True, blank=True)
+
     # ENG-149/150: a scripted caller pinging the live chat endpoint with the
     # same message on a schedule (a fresh chat_id each time) is not a real
     # conversation. Set by the `flag_automated_chats` management command,

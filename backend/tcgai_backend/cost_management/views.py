@@ -40,7 +40,21 @@ GREETING_REGEX = re.compile(
 
 def score_single_chat(chat):
     """Evaluates a single Chat instance using Claude Haiku and saves evaluation_score.
-    Returns the integer score (1-100) or None on failure."""
+    Returns the integer score (1-100) or None on failure.
+
+    Hardened 2026-10-14 after chat fd6ef56b scored 25 on auto-audit and 92
+    on manual re-evaluation with the identical judge: the call now runs at
+    temperature 0, the rubric defines its score bands (an honest negative
+    answer is explicitly a HIGH score), and the judge must justify itself
+    in one sentence before the number -- a bare sampled integer at default
+    temperature was judge noise, not measurement.
+
+    Extended 2026-10-15: the judge is sampled EVAL_SAMPLE_COUNT times and
+    the MEDIAN sample wins (a wild roll can no longer outvote the rest),
+    and every score carries receipts -- the median sample's justification,
+    all samples, the rubric version, and the graded-at time. A re-grade
+    appends the superseded score to evaluation_history instead of
+    destroying it."""
     messages = Message.objects.filter(chat=chat).order_by("timestamp")
     if not messages.exists():
         return None
@@ -50,11 +64,17 @@ def score_single_chat(chat):
         conversation_text += f"\nUser: {msg.content}\nAssistant: {msg.returned_content}\n"
 
     prompt = f"""
-    Evaluate the following conversation and assign a numeric accuracy score (1-100) for the assistant's responses. Respond with only the number.
-    If the assistant's answer is related to the question, regardless of if it is positive or negative (for example, not having required item in stock or not being able to return an item) give 100. 
-    If it is not related, or the assistant doesn't know the answer, give a lower number. 
-    The shopper may write with dialect, slang, abbreviations, typos, code-switching, or non-standard grammar -- NEVER lower the score for the shopper's writing style. If you can understand what the shopper is asking for, grade the assistant's response against that inferred intent, not against the polish of the shopper's writing. A shopper who writes informally but gets a correct, helpful answer deserves the same score as one who writes formally.
-    Do NOT include any text or explanation.
+    Evaluate the following conversation and assign a numeric accuracy score (1-100) for the assistant's responses.
+
+    Grade against the shopper's INFERRED intent. The shopper may write with dialect, slang, abbreviations, typos, code-switching, or non-standard grammar -- NEVER lower the score for the shopper's writing style. If you can understand what the shopper is asking for, grade the assistant's response against that inferred intent, not against the polish of the shopper's writing.
+
+    Score bands:
+    - 90-100: The assistant addressed the intent correctly and helpfully. An honest negative answer earns this band when it is true and helpful: the item is not in stock, a preorder is not open yet, or the request is something the assistant genuinely cannot do (sign the shopper up for a newsletter, change an account) -- provided it says so plainly and offers a useful alternative or next step.
+    - 70-89: Addressed the intent but incompletely: partially helpful, a missed follow-up, or a minor inaccuracy that did not change the outcome.
+    - 40-69: Partially related but misses the main ask, gives an evasive or generic non-answer, or gets a material fact wrong.
+    - 1-39: Unrelated to the intent, invents products/prices/policies, refuses something the assistant could have done, or does not engage at all.
+
+    First write ONE sentence justifying the score, naming the strongest evidence for it. Then, on the final line, output exactly: SCORE: <number>
 
     Conversation:
     {conversation_text}
@@ -65,23 +85,108 @@ def score_single_chat(chat):
 
     try:
         client = anthropic.Anthropic(api_key=api_key)
-        message = client.messages.create(
-            model="claude-haiku-4-5",
-            max_tokens=1024,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        text = message.content[0].text.strip()
-        match = re.search(r'\d+', text)
-        if not match:
+        samples = []
+        for _ in range(EVAL_SAMPLE_COUNT):
+            try:
+                judged = _judge_once(client, prompt)
+            except Exception as sample_error:
+                # One failed sample must not fail the grade -- the median
+                # of the survivors is still a sound score.
+                print(f"[score_single_chat] Sample failed for {chat.chat_id}: {sample_error}")
+                judged = None
+            if judged is not None:
+                samples.append(judged)
+        if not samples:
             return None
-        score = int(match.group())
-        score = max(1, min(100, score))
+
+        # Median sample: the stored score is a score the judge actually
+        # gave, carrying its own justification.
+        samples.sort(key=lambda pair: pair[0])
+        score, justification = samples[len(samples) // 2]
+
+        if chat.evaluation_score is not None:
+            history = list(chat.evaluation_history or [])
+            history.append({
+                "score": chat.evaluation_score,
+                "rubric_version": chat.evaluation_rubric_version,
+                "graded_at": chat.evaluation_at.isoformat() if chat.evaluation_at else None,
+            })
+            chat.evaluation_history = history
         chat.evaluation_score = score
-        chat.save(update_fields=['evaluation_score'])
+        chat.evaluation_justification = justification
+        chat.evaluation_samples = [s for s, _ in samples]
+        chat.evaluation_rubric_version = RUBRIC_VERSION
+        chat.evaluation_at = now()
+        chat.save(update_fields=[
+            'evaluation_score', 'evaluation_justification',
+            'evaluation_samples', 'evaluation_rubric_version',
+            'evaluation_at', 'evaluation_history',
+        ])
         return score
     except Exception as e:
         print(f"[score_single_chat] Error evaluating {chat.chat_id}: {e}")
         return None
+
+
+# The rubric in score_single_chat's prompt is version "v2" (v1 was the
+# pre-2026-10-14 number-only prompt, whose scores carry no receipts and no
+# version tag). Bump this whenever the prompt's bands or instructions
+# change, so trend lines never silently mix incomparable scores.
+RUBRIC_VERSION = "v2"
+
+# Judge samples per chat. A single sampled integer was the fd6ef56b
+# failure (25 vs 92 on the identical transcript); the median of 5 makes a
+# wild roll structurally unable to win -- it would take 3 of 5 samples
+# missing the same way. Cost stays trivial (~$0.0018/chat all-in).
+EVAL_SAMPLE_COUNT = 5
+
+
+def _judge_once(client, prompt):
+    """One judge call. Returns (score, justification) or None on failure."""
+    message = client.messages.create(
+        model="claude-haiku-4-5",
+        max_tokens=1024,
+        temperature=0,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    text = message.content[0].text.strip()
+    match = re.search(r'SCORE:\s*(\d{1,3})', text, re.IGNORECASE)
+    if match:
+        score = int(match.group(1))
+        justification = re.sub(
+            r'SCORE:\s*\d{1,3}\s*$', '', text, flags=re.IGNORECASE).strip()
+    else:
+        # Fallback for a judge that ignored the format: take the LAST
+        # integer in the reply (the justification may cite counts).
+        numbers = re.findall(r'\d+', text)
+        if not numbers:
+            return None
+        score = int(numbers[-1])
+        justification = text
+    justification = " ".join(justification.split())[:500] or None
+    return max(1, min(100, score)), justification
+
+
+# A conversation counts as completed once its latest message is this old.
+# Scoring mid-conversation grades a fragment: the fd6ef56b auto-audit fired
+# after the first exchange (a stock refusal) and scored 25 on a chat that
+# read fine in full.
+CONVERSATION_QUIET_PERIOD = timedelta(minutes=30)
+
+
+def _conversation_completed(chat):
+    """True when the chat's latest message is older than the quiet period
+    (or the chat itself is, when it somehow has no messages)."""
+    last_msg_ts = (
+        Message.objects.filter(chat=chat)
+        .order_by("-timestamp")
+        .values_list("timestamp", flat=True)
+        .first()
+    )
+    last_activity = last_msg_ts or chat.timestamp
+    if last_activity is None:
+        return False
+    return now() - last_activity >= CONVERSATION_QUIET_PERIOD
 
 
 def should_auto_audit_chat(chat, products_shown=None):
@@ -101,6 +206,12 @@ def should_auto_audit_chat(chat, products_shown=None):
 
     # 2. Skip if already scored
     if chat.evaluation_score is not None:
+        return False
+
+    # 2b. Never audit a conversation that may still be in progress --
+    # grading a fragment punishes chats whose later turns resolve the
+    # request (see _conversation_completed / fd6ef56b).
+    if not _conversation_completed(chat):
         return False
 
     # 3. Check daily budget cap
@@ -151,7 +262,13 @@ def evaluate_chat(request):
     if score is None:
         return JsonResponse({"error": "Failed to evaluate chat or no messages found"}, status=400)
 
-    return JsonResponse({"eval_percentage": score})
+    chat.refresh_from_db()
+    return JsonResponse({
+        "eval_percentage": score,
+        "justification": chat.evaluation_justification,
+        "samples": chat.evaluation_samples,
+        "rubric_version": chat.evaluation_rubric_version,
+    })
 
 
 @api_login_required
@@ -167,7 +284,9 @@ def batch_evaluate(request):
             Chat.objects.filter(timestamp__gte=CONVERSATION_START_DATE, evaluation_score__isnull=True)
         ).order_by('-timestamp')[:limit]
 
-        chats_to_audit = list(unaudited_qs)
+        # Same completion gate as auto-audit: batch runs newest-first, so
+        # without it the batch would grade live conversations mid-flight.
+        chats_to_audit = [c for c in unaudited_qs if _conversation_completed(c)]
         if not chats_to_audit:
             return JsonResponse({
                 "status": "success",
@@ -188,7 +307,7 @@ def batch_evaluate(request):
                 except Exception as e:
                     print(f"[batch_evaluate] Error auditing {c.chat_id}: {e}")
 
-        estimated_cost = round(len(results) * 0.00035, 4)
+        estimated_cost = round(len(results) * 0.0018, 4)
         return JsonResponse({
             "status": "success",
             "audited_count": len(results),
