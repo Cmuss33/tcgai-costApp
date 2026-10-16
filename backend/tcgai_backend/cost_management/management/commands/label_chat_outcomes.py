@@ -36,6 +36,11 @@ class Command(BaseCommand):
             help="Maximum chats to label (0 = all).",
         )
         parser.add_argument(
+            "--llm",
+            action="store_true",
+            help="Use the AI intent classifier for the intent tier (needs ANTHROPIC_API_KEY); falls back to the rules per chat when unavailable.",
+        )
+        parser.add_argument(
             "--dry-run",
             action="store_true",
             help="Count what would be labeled without writing anything.",
@@ -53,6 +58,6 @@ class Command(BaseCommand):
             if options["dry_run"]:
                 counts[chat.outcome or "unlabeled"] += 1
                 continue
-            counts[label_chat(chat)] += 1
+            counts[label_chat(chat, use_llm=options["llm"])] += 1
         verb = "would label" if options["dry_run"] else "labeled"
         self.stdout.write(f"{verb} {total} chats since {options['since']}: {dict(counts)}")

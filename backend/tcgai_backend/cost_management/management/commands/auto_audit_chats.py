@@ -13,7 +13,7 @@ Usage:
 from django.core.management.base import BaseCommand
 from cost_management.models import Chat
 from cost_management.month_utils import real_chats
-from cost_management.views import score_single_chat, _conversation_completed
+from cost_management.views import score_and_classify_chat, _conversation_completed
 
 
 class Command(BaseCommand):
@@ -87,7 +87,7 @@ class Command(BaseCommand):
         for c in candidate_chats:
             previous = c.evaluation_score
             self.stdout.write(f"Auditing chat: {c.chat_id}...", ending="")
-            score = score_single_chat(c)
+            score = score_and_classify_chat(c)
             if score is not None:
                 success_count += 1
                 note = f" (was {previous})" if rescore and previous is not None else ""
