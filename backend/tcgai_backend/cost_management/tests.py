@@ -4630,7 +4630,7 @@ class AutoAuditAndBatchEvaluationTests(TestCase):
         self.assertEqual(chat.evaluation_history,
                          [{"score": 25, "rubric_version": None, "graded_at": None}])
 
-    @patch("cost_management.management.commands.auto_audit_chats.score_single_chat")
+    @patch("cost_management.management.commands.auto_audit_chats.score_and_classify_chat")
     def test_auto_audit_command_rescore_mode(self, mock_score):
         """Default run grades only unscored chats. --rescore retro-grades
         scored ones too; --since bounds the pass. The completion gate
@@ -7635,6 +7635,107 @@ class ChatOutcomeTests(TestCase):
         self.assertEqual(label_chat(c), "no_buying_intent")
         c.refresh_from_db()
         self.assertIsNone(c.outcome_signals)
+
+    # -- AI intent classifier (mocked) --------------------------------
+
+    def test_llm_shopping_is_intent_with_family_and_source(self):
+        from unittest.mock import patch
+        from .chat_outcomes import label_chat
+        text = "that new set looks cool, might grab one friday"
+        c = self._chat("ai-shop", text=text)
+        with patch(
+            "cost_management.chat_outcomes.classify_intent_llm",
+            return_value=("shopping", text),
+        ):
+            self.assertEqual(label_chat(c, use_llm=True), "purchase_intent")
+        c.refresh_from_db()
+        self.assertEqual(c.intent_family, "shopping")
+        self.assertTrue(c.intent_source.startswith("llm:"))
+        self.assertEqual(c.outcome_signals["purchase_intent"]["family"], "shopping")
+        self.assertIn("(AI)", c.outcome_reason)
+
+    def test_llm_sell_to_store_is_not_purchase_intent(self):
+        from unittest.mock import patch
+        from .chat_outcomes import label_chat
+        text = "can i sell my etb at your store"
+        c = self._chat("ai-sell", text=text)
+        with patch(
+            "cost_management.chat_outcomes.classify_intent_llm",
+            return_value=("sell_to_store", text),
+        ):
+            self.assertEqual(label_chat(c, use_llm=True), "no_buying_intent")
+        c.refresh_from_db()
+        self.assertEqual(c.intent_family, "sell_to_store")
+        self.assertIn("Selling to the store", c.outcome_reason)
+        self.assertNotIn("purchase_intent", c.outcome_signals or {})
+
+    def test_llm_service_receipt(self):
+        from unittest.mock import patch
+        from .chat_outcomes import label_chat
+        text = "where is my order? it never arrived"
+        c = self._chat("ai-service", text=text)
+        with patch(
+            "cost_management.chat_outcomes.classify_intent_llm",
+            return_value=("service", text),
+        ):
+            self.assertEqual(label_chat(c, use_llm=True), "no_buying_intent")
+        c.refresh_from_db()
+        self.assertIn("Post-purchase service question (AI)", c.outcome_reason)
+
+    def test_llm_unavailable_falls_back_to_rules(self):
+        from unittest.mock import patch
+        from .chat_outcomes import label_chat
+        c = self._chat("ai-fallback", text="what is your shipping policy?")
+        with patch(
+            "cost_management.chat_outcomes.classify_intent_llm", return_value=None
+        ):
+            self.assertEqual(label_chat(c, use_llm=True), "purchase_intent")
+        c.refresh_from_db()
+        self.assertEqual(c.intent_source, "rules")
+        self.assertIsNone(c.intent_family)
+
+    def test_rules_label_does_not_call_classifier(self):
+        from unittest.mock import patch
+        from .chat_outcomes import label_chat
+        c = self._chat("ai-notcalled", text="what is your shipping policy?")
+        with patch("cost_management.chat_outcomes.classify_intent_llm") as mocked:
+            self.assertEqual(label_chat(c), "purchase_intent")
+            mocked.assert_not_called()
+
+    def test_llm_quote_must_be_verbatim(self):
+        from unittest.mock import patch
+        from .chat_outcomes import classify_intent_llm
+        with patch(
+            "cost_management.chat_outcomes._call_intent_llm",
+            return_value={"family": "shopping", "quote": "a paraphrase never said"},
+        ):
+            family, quote = classify_intent_llm(["i want the new set"])
+        self.assertEqual(family, "shopping")
+        self.assertIsNone(quote)
+
+    def test_behaviour_beats_llm_browsing(self):
+        from unittest.mock import patch
+        from .chat_outcomes import label_chat
+        c = self._chat("ai-order", text="just browsing, thanks")
+        self._order("ai-order")
+        with patch(
+            "cost_management.chat_outcomes.classify_intent_llm",
+            return_value=("browsing", None),
+        ):
+            self.assertEqual(label_chat(c, use_llm=True), "purchased")
+        c.refresh_from_db()
+        self.assertIn("purchased", c.outcome_signals)
+        self.assertNotIn("purchase_intent", c.outcome_signals)
+
+    def test_score_and_classify_upgrades_label_with_llm(self):
+        from unittest.mock import patch
+        c = self._chat("ai-wrapper", text="what is your shipping policy?")
+        with patch(
+            "cost_management.views.score_single_chat", return_value=88
+        ), patch("cost_management.views.refresh_outcome_for_chat_id") as refresh:
+            from cost_management.views import score_and_classify_chat
+            self.assertEqual(score_and_classify_chat(c), 88)
+            refresh.assert_called_once_with(c.chat_id, use_llm=True)
 
     def test_cart_event_ingest_labels_the_chat(self):
         self._chat("c-hook-cart")

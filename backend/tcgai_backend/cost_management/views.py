@@ -129,6 +129,18 @@ def score_single_chat(chat):
         return None
 
 
+def score_and_classify_chat(chat):
+    """Grade a chat, then upgrade its outcome label with the AI intent
+    classifier: a scored chat is a completed chat, which is exactly when
+    intent is clearest. Returns the score (or None). Labeling is
+    fail-silent and never runs inside score_single_chat itself, whose
+    contract stays grade-only."""
+    score = score_single_chat(chat)
+    if score is not None:
+        refresh_outcome_for_chat_id(chat.chat_id, use_llm=True)
+    return score
+
+
 # The rubric in score_single_chat's prompt is version "v2" (v1 was the
 # pre-2026-10-14 number-only prompt, whose scores carry no receipts and no
 # version tag). Bump this whenever the prompt's bands or instructions
@@ -259,7 +271,7 @@ def evaluate_chat(request):
     except Chat.DoesNotExist:
         return JsonResponse({"error": "Chat not found"}, status=404)
 
-    score = score_single_chat(chat)
+    score = score_and_classify_chat(chat)
     if score is None:
         return JsonResponse({"error": "Failed to evaluate chat or no messages found"}, status=400)
 
@@ -298,7 +310,7 @@ def batch_evaluate(request):
 
         results = []
         with ThreadPoolExecutor(max_workers=min(5, len(chats_to_audit))) as executor:
-            future_to_chat = {executor.submit(score_single_chat, c): c for c in chats_to_audit}
+            future_to_chat = {executor.submit(score_and_classify_chat, c): c for c in chats_to_audit}
             for future in future_to_chat:
                 c = future_to_chat[future]
                 try:
@@ -440,7 +452,7 @@ def log_message(request):
                         from django.db import connection
                         connection.close()
                         c = Chat.objects.get(pk=c_pk)
-                        score_single_chat(c)
+                        score_and_classify_chat(c)
                     except Exception as ex:
                         print(f"[auto_audit] Background audit failed for {c_pk}: {ex}")
                     finally:

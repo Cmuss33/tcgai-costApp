@@ -78,6 +78,18 @@ class Chat(models.Model):
         blank=True,
         help_text="Every outcome signal that fired (purchased / cart / purchase_intent), each with its own receipt; the Chat Logs Intent column renders one icon per signal. outcome remains the single precedence bucket.",
     )
+    intent_family = models.CharField(
+        max_length=20,
+        null=True,
+        blank=True,
+        help_text="AI intent family: shopping / policy / service / sell_to_store / browsing. Set when the AI classifier labeled this chat; null for rules-only labels.",
+    )
+    intent_source = models.CharField(
+        max_length=60,
+        null=True,
+        blank=True,
+        help_text="What produced the intent classification: 'rules' or 'llm:<model>:<prompt version>' -- makes classifier drift visible instead of silent.",
+    )
 
     # ENG-149/150: a scripted caller pinging the live chat endpoint with the
     # same message on a schedule (a fresh chat_id each time) is not a real
