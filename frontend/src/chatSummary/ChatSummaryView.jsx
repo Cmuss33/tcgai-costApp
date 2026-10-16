@@ -287,6 +287,9 @@ function ChatSummaryView() {
     purchased: "💰 Purchased",
     cart_no_purchase: "🛒 Cart — no purchase",
     purchase_intent: "🎯 Purchase intent",
+    sell_to_store: "💱 Sell to store",
+    policy_intent: "📋 Policy intent",
+    out_of_bounds: "⛔ Out of bounds",
     no_buying_intent: "No buying intent",
   };
 
@@ -302,8 +305,8 @@ function ChatSummaryView() {
         signals.purchased = { reason: chat.outcome_reason, value: chat.outcome_value, currency: chat.outcome_currency };
       } else if (chat.outcome === "cart_no_purchase") {
         signals.cart = { reason: chat.outcome_reason, value: chat.outcome_value, currency: chat.outcome_currency };
-      } else if (chat.outcome === "purchase_intent") {
-        signals.purchase_intent = { reason: chat.outcome_reason };
+      } else if (chat.outcome) {
+        signals[chat.outcome] = { reason: chat.outcome_reason };
       }
     }
     const icons = [];
@@ -323,6 +326,21 @@ function ChatSummaryView() {
     if (signals.purchase_intent) {
       icons.push(
         <span key="intent" className="outcome-icon outcome-icon--intent" title={signals.purchase_intent.reason || "Purchase intent"}>🎯</span>
+      );
+    }
+    if (signals.sell_to_store) {
+      icons.push(
+        <span key="sell" className="outcome-icon outcome-icon--sell" title={signals.sell_to_store.reason || "Sell to store"}>💱</span>
+      );
+    }
+    if (signals.policy_intent) {
+      icons.push(
+        <span key="policy" className="outcome-icon outcome-icon--policy" title={signals.policy_intent.reason || "Policy intent"}>📋</span>
+      );
+    }
+    if (signals.out_of_bounds) {
+      icons.push(
+        <span key="oob" className="outcome-icon outcome-icon--oob" title={signals.out_of_bounds.reason || "Out of bounds"}>⛔</span>
       );
     }
     if (!icons.length) {
@@ -781,6 +799,27 @@ function ChatSummaryView() {
               onClick={() => handleFilterClick("purchase_intent")}
             >
               🎯 Purchase Intent
+            </button>
+            <button
+              type="button"
+              className={`inspector-filter-btn ${activeFilter === "sell_to_store" ? "active" : ""}`}
+              onClick={() => handleFilterClick("sell_to_store")}
+            >
+              💱 Sell to Store
+            </button>
+            <button
+              type="button"
+              className={`inspector-filter-btn ${activeFilter === "policy_intent" ? "active" : ""}`}
+              onClick={() => handleFilterClick("policy_intent")}
+            >
+              📋 Policy Intent
+            </button>
+            <button
+              type="button"
+              className={`inspector-filter-btn ${activeFilter === "out_of_bounds" ? "active" : ""}`}
+              onClick={() => handleFilterClick("out_of_bounds")}
+            >
+              ⛔ Out of Bounds
             </button>
           </div>
 
