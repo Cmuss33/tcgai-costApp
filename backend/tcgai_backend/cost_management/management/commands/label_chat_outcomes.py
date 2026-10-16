@@ -15,6 +15,8 @@ from datetime import datetime
 
 from django.core.management.base import BaseCommand
 
+from django.db import close_old_connections
+
 from cost_management.chat_outcomes import label_chat
 from cost_management.models import Chat
 
@@ -53,11 +55,26 @@ class Command(BaseCommand):
             chats = chats[: options["limit"]]
         counts = Counter()
         total = 0
-        for chat in chats:
+        errors = 0
+        failed_ids = []
+        for chat in chats.iterator():
             total += 1
             if options["dry_run"]:
                 counts[chat.outcome or "unlabeled"] += 1
                 continue
-            counts[label_chat(chat, use_llm=options["llm"])] += 1
+            # A long backfill must survive one bad chat and a stale DB
+            # connection: refresh connections each pass and never let a
+            # single failure abort the run (2026-10-16: the first --llm
+            # backfill died ~240 chats in and took the whole pass with
+            # it). Failures are counted and named, never hidden.
+            close_old_connections()
+            try:
+                counts[label_chat(chat, use_llm=options["llm"])] += 1
+            except Exception as exc:  # per-chat guard: keep going
+                errors += 1
+                failed_ids.append(chat.chat_id)
+                self.stderr.write(f"label failed for {chat.chat_id}: {exc}")
         verb = "would label" if options["dry_run"] else "labeled"
         self.stdout.write(f"{verb} {total} chats since {options['since']}: {dict(counts)}")
+        if errors:
+            self.stdout.write(f"errors: {errors} chats failed: {failed_ids}")
