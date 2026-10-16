@@ -28,3 +28,20 @@ services:
     buildCommand: pip install -r backend/tcgai_backend/requirements.txt
     startCommand: cd backend/tcgai_backend && python manage.py evaluate_alerts
     schedule: "0 * * * *"
+
+  # Daily auto-audit sweep: grades completed conversations that the
+  # ingest-time check could not (its 30-minute quiet gate can't pass at
+  # the moment a message arrives, and nothing re-checked afterwards).
+  # Volume is a handful of chats/day, so daily is plenty; the command
+  # is completion-gated and capped (default limit 25/run). Once the AI
+  # intent classifier lands (score_and_classify_chat), the same sweep
+  # also upgrades outcome labels with AI intent. NOTE: like the alerts
+  # cron, this service needs its env set in the Render dashboard --
+  # DATABASE_URL and ANTHROPIC_API_KEY. Render does not let a cron
+  # service inherit env vars from the web service automatically.
+  - type: cron
+    name: tcgai-costapp-auto-audit
+    runtime: python
+    buildCommand: pip install -r backend/tcgai_backend/requirements.txt
+    startCommand: cd backend/tcgai_backend && python manage.py auto_audit_chats
+    schedule: "0 8 * * *"
