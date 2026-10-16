@@ -17,7 +17,7 @@ from django.utils.dateparse import parse_datetime
 from django.utils.timezone import now
 from datetime import datetime, timedelta, timezone as dt_timezone
 from .api_auth import api_login_required
-from .chat_outcomes import refresh_outcome_for_chat_id
+from .chat_outcomes import ALL_OUTCOMES, refresh_outcome_for_chat_id
 from .month_utils import CONVERSATION_START_DATE, apply_shop_filter, real_chats
 from django.conf import settings
 
@@ -538,7 +538,11 @@ def get_chat_ids(request):
             visible_chats = visible_chats.filter(chat_id__in=chat_ids_with_oos)
         elif filter_type == "unaudited":
             visible_chats = visible_chats.filter(evaluation_score__isnull=True)
-        elif filter_type in ("purchased", "cart_no_purchase", "purchase_intent", "no_buying_intent"):
+        elif filter_type in (
+            "purchased", "cart_no_purchase", "purchase_intent",
+            "sell_to_store", "policy_intent", "out_of_bounds",
+            "no_buying_intent",
+        ):
             # Outcome buckets (chat_outcomes.py). The stored label IS the
             # category, so the filter is a straight equality -- and the
             # precedence is already baked in (an intent-labeled chat has,
@@ -662,7 +666,7 @@ def chat_outcomes_by_month(request):
             key = r["month"].strftime("%Y-%m")
             bucket = buckets.setdefault(
                 key,
-                {"purchased": 0, "cart_no_purchase": 0, "purchase_intent": 0, "no_buying_intent": 0},
+                {k: 0 for k in ALL_OUTCOMES},
             )
             outcome = r["outcome"] if r["outcome"] in bucket else "no_buying_intent"
             bucket[outcome] += r["n"]
@@ -670,13 +674,13 @@ def chat_outcomes_by_month(request):
         start = CONVERSATION_START_DATE
         end = now()
         months = []
-        totals = {"purchased": 0, "cart_no_purchase": 0, "purchase_intent": 0, "no_buying_intent": 0, "total": 0}
+        totals = {**{k: 0 for k in ALL_OUTCOMES}, "total": 0}
         year, month = start.year, start.month
         while (year, month) <= (end.year, end.month):
             key = f"{year:04d}-{month:02d}"
-            bucket = dict(buckets.get(key, {"purchased": 0, "cart_no_purchase": 0, "purchase_intent": 0, "no_buying_intent": 0}))
+            bucket = dict(buckets.get(key, {k: 0 for k in ALL_OUTCOMES}))
             bucket["month"] = key
-            bucket["total"] = sum(bucket[k] for k in ("purchased", "cart_no_purchase", "purchase_intent", "no_buying_intent"))
+            bucket["total"] = sum(bucket[k] for k in ALL_OUTCOMES)
             months.append(bucket)
             for k in totals:
                 totals[k] += bucket[k]

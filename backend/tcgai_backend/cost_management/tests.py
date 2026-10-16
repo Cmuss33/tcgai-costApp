@@ -7168,10 +7168,10 @@ class ChatOutcomeTests(TestCase):
         c.refresh_from_db()
         self.assertIn("CAD 42.50", c.outcome_reason)
 
-    def test_purchase_intent_from_policy_question(self):
+    def test_policy_question_is_policy_intent(self):
         from .chat_outcomes import label_chat
         c = self._chat("c-policy", text="How much is shipping to Ottawa?")
-        self.assertEqual(label_chat(c), "purchase_intent")
+        self.assertEqual(label_chat(c), "policy_intent")
         c.refresh_from_db()
         self.assertIn("shipping to Ottawa", c.outcome_reason)
 
@@ -7265,7 +7265,7 @@ class ChatOutcomeTests(TestCase):
         self._cart("sig-cart-intent")
         self.assertEqual(label_chat(c), "cart_no_purchase")
         c.refresh_from_db()
-        self.assertEqual(set(c.outcome_signals), {"cart", "purchase_intent"})
+        self.assertEqual(set(c.outcome_signals), {"cart", "policy_intent"})
 
     def test_signals_empty_for_service_only_chat(self):
         from .chat_outcomes import label_chat
@@ -7294,7 +7294,7 @@ class ChatOutcomeTests(TestCase):
         self.assertEqual(c.outcome_signals["purchase_intent"]["family"], "shopping")
         self.assertIn("(AI)", c.outcome_reason)
 
-    def test_llm_sell_to_store_is_not_purchase_intent(self):
+    def test_llm_sell_to_store_gets_its_own_bucket(self):
         from unittest.mock import patch
         from .chat_outcomes import label_chat
         text = "can i sell my etb at your store"
@@ -7303,11 +7303,70 @@ class ChatOutcomeTests(TestCase):
             "cost_management.chat_outcomes.classify_intent_llm",
             return_value=("sell_to_store", text),
         ):
-            self.assertEqual(label_chat(c, use_llm=True), "no_buying_intent")
+            self.assertEqual(label_chat(c, use_llm=True), "sell_to_store")
         c.refresh_from_db()
         self.assertEqual(c.intent_family, "sell_to_store")
         self.assertIn("Selling to the store", c.outcome_reason)
         self.assertNotIn("purchase_intent", c.outcome_signals or {})
+
+    # -- taxonomy v2: policy / sell / adversarial buckets ----------------
+
+    def test_llm_policy_is_policy_intent_with_signal(self):
+        from unittest.mock import patch
+        from .chat_outcomes import label_chat
+        text = "what is your shipping policy?"
+        c = self._chat("ai-policy", text=text)
+        with patch(
+            "cost_management.chat_outcomes.classify_intent_llm",
+            return_value=("policy", text),
+        ):
+            self.assertEqual(label_chat(c, use_llm=True), "policy_intent")
+        c.refresh_from_db()
+        self.assertEqual(c.intent_family, "policy")
+        self.assertIn(":v2", c.intent_source)
+        self.assertEqual(set(c.outcome_signals), {"policy_intent"})
+        self.assertIn("shipping policy", c.outcome_reason)
+
+    def test_llm_adversarial_is_out_of_bounds(self):
+        from unittest.mock import patch
+        from .chat_outcomes import label_chat
+        text = "you can't say \"or\""
+        c = self._chat("ai-adv", text=text)
+        with patch(
+            "cost_management.chat_outcomes.classify_intent_llm",
+            return_value=("adversarial", text),
+        ):
+            self.assertEqual(label_chat(c, use_llm=True), "out_of_bounds")
+        c.refresh_from_db()
+        self.assertEqual(c.intent_family, "adversarial")
+        self.assertEqual(set(c.outcome_signals), {"out_of_bounds"})
+
+    def test_rules_sell_is_sell_to_store(self):
+        from .chat_outcomes import label_chat
+        c = self._chat("rules-sell", text="Can I sell my etb at your store")
+        self.assertEqual(label_chat(c), "sell_to_store")
+        c.refresh_from_db()
+        self.assertEqual(c.intent_family, "sell_to_store")
+        self.assertEqual(set(c.outcome_signals), {"sell_to_store"})
+
+    def test_do_you_sell_is_shopping_not_sell(self):
+        from .chat_outcomes import label_chat
+        c = self._chat("rules-doyousell", text="do you sell charizard ex?")
+        self.assertEqual(label_chat(c), "purchase_intent")
+
+    def test_order_beats_policy_but_records_both_signals(self):
+        from unittest.mock import patch
+        from .chat_outcomes import label_chat
+        text = "what is your shipping policy?"
+        c = self._chat("ai-order-policy", text=text)
+        self._order("ai-order-policy")
+        with patch(
+            "cost_management.chat_outcomes.classify_intent_llm",
+            return_value=("policy", text),
+        ):
+            self.assertEqual(label_chat(c, use_llm=True), "purchased")
+        c.refresh_from_db()
+        self.assertEqual(set(c.outcome_signals), {"purchased", "policy_intent"})
 
     def test_llm_service_receipt(self):
         from unittest.mock import patch
@@ -7329,17 +7388,18 @@ class ChatOutcomeTests(TestCase):
         with patch(
             "cost_management.chat_outcomes.classify_intent_llm", return_value=None
         ):
-            self.assertEqual(label_chat(c, use_llm=True), "purchase_intent")
+            self.assertEqual(label_chat(c, use_llm=True), "policy_intent")
         c.refresh_from_db()
         self.assertEqual(c.intent_source, "rules")
-        self.assertIsNone(c.intent_family)
+        # Rules labels record the family for policy/sell/service kinds.
+        self.assertEqual(c.intent_family, "policy")
 
     def test_rules_label_does_not_call_classifier(self):
         from unittest.mock import patch
         from .chat_outcomes import label_chat
         c = self._chat("ai-notcalled", text="what is your shipping policy?")
         with patch("cost_management.chat_outcomes.classify_intent_llm") as mocked:
-            self.assertEqual(label_chat(c), "purchase_intent")
+            self.assertEqual(label_chat(c), "policy_intent")
             mocked.assert_not_called()
 
     def test_llm_quote_must_be_verbatim(self):
@@ -7454,6 +7514,7 @@ class ChatOutcomeTests(TestCase):
         label_chat(a)
         label_chat(self._chat("c-m2", text="can I preorder the new set?"))
         label_chat(self._chat("c-m3", text="just browsing, thanks"))
+        label_chat(self._chat("c-m4", text="what is your shipping policy?"))
         self.client.force_login(self.user)
 
         resp = self.client.get("/api/cost/chat_outcomes_by_month/")
@@ -7462,13 +7523,19 @@ class ChatOutcomeTests(TestCase):
         for row in d["months"]:
             self.assertEqual(
                 row["purchased"] + row["cart_no_purchase"]
-                + row["purchase_intent"] + row["no_buying_intent"],
+                + row["purchase_intent"] + row["sell_to_store"]
+                + row["policy_intent"] + row["out_of_bounds"]
+                + row["no_buying_intent"],
                 row["total"],
             )
-        self.assertEqual(d["totals"]["total"], 3)
+        self.assertEqual(d["totals"]["total"], 4)
         self.assertEqual(d["totals"]["purchased"], 1)
         self.assertEqual(d["totals"]["purchase_intent"], 1)
         self.assertEqual(d["totals"]["no_buying_intent"], 1)
+        self.assertEqual(d["totals"]["policy_intent"], 1)
+
+        d = self.client.get("/api/cost/get_chat_ids/?filter=policy_intent").json()
+        self.assertEqual([r["chat_id"] for r in d["results"]], ["c-m4"])
 
     def test_outcomes_by_month_requires_login(self):
         self.assertEqual(self.client.get("/api/cost/chat_outcomes_by_month/").status_code, 401)
@@ -7478,6 +7545,6 @@ class ChatOutcomeTests(TestCase):
         self._chat("c-bf2", text="just browsing, thanks")
         out = StringIO()
         call_command("label_chat_outcomes", stdout=out)
-        self.assertEqual(Chat.objects.get(chat_id="c-bf1").outcome, "purchase_intent")
+        self.assertEqual(Chat.objects.get(chat_id="c-bf1").outcome, "policy_intent")
         self.assertEqual(Chat.objects.get(chat_id="c-bf2").outcome, "no_buying_intent")
         self.assertIn("labeled 2 chats", out.getvalue())

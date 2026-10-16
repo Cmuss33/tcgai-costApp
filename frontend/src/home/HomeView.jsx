@@ -1304,6 +1304,9 @@ function ChatOutcomesPanel({ data, isLifetime, selectedMonth, onSelect }) {
       {cell(monthArg, "purchased", r.purchased)}
       {cell(monthArg, "cart_no_purchase", r.cart_no_purchase)}
       {cell(monthArg, "purchase_intent", r.purchase_intent)}
+      {cell(monthArg, "sell_to_store", r.sell_to_store)}
+      {cell(monthArg, "policy_intent", r.policy_intent)}
+      {cell(monthArg, "out_of_bounds", r.out_of_bounds)}
       {cell(monthArg, "no_buying_intent", r.no_buying_intent)}
       <td className="co-total">{r.total}</td>
     </tr>
@@ -1318,6 +1321,9 @@ function ChatOutcomesPanel({ data, isLifetime, selectedMonth, onSelect }) {
             <th>{"\u{1F4B0}"} Purchased</th>
             <th>{"\u{1F6D2}"} Cart, no purchase</th>
             <th>{"\u{1F3AF}"} Purchase intent</th>
+            <th>{"\u{1F4B1}"} Sell to store</th>
+            <th>{"\u{1F4CB}"} Policy intent</th>
+            <th>{"\u{26D4}"} Out of bounds</th>
             <th>No buying intent</th>
             <th>Total</th>
           </tr>
