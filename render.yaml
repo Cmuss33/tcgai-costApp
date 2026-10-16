@@ -27,7 +27,9 @@ services:
     runtime: python
     buildCommand: pip install -r backend/tcgai_backend/requirements.txt
     startCommand: cd backend/tcgai_backend && python manage.py evaluate_alerts
-    schedule: "0 * * * *"
+    # Daily (Prof's call, 2026-10-16): the rules are windowed over days,
+    # so hourly checks bought nothing at this app's volume.
+    schedule: "30 8 * * *"
 
   # Daily auto-audit sweep: grades completed conversations that the
   # ingest-time check could not (its 30-minute quiet gate can't pass at
