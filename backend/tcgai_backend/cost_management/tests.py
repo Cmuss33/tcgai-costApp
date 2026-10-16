@@ -7737,6 +7737,24 @@ class ChatOutcomeTests(TestCase):
             self.assertEqual(score_and_classify_chat(c), 88)
             refresh.assert_called_once_with(c.chat_id, use_llm=True)
 
+    def test_backfill_survives_a_failing_chat(self):
+        from io import StringIO
+        from unittest.mock import patch
+        from django.core.management import call_command
+        self._chat("bf-ok-1", text="just browsing, thanks")
+        self._chat("bf-bad", text="just browsing, thanks")
+        self._chat("bf-ok-2", text="just browsing, thanks")
+        real = ["no_buying_intent", Exception("boom"), "no_buying_intent"]
+        out = StringIO()
+        with patch(
+            "cost_management.management.commands.label_chat_outcomes.label_chat",
+            side_effect=real,
+        ):
+            call_command("label_chat_outcomes", stdout=out)
+        text = out.getvalue()
+        self.assertIn("'no_buying_intent': 2", text)
+        self.assertIn("errors: 1 chats failed: ['bf-bad']", text)
+
     def test_cart_event_ingest_labels_the_chat(self):
         self._chat("c-hook-cart")
         resp = self.client.post(
