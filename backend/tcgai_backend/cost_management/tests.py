@@ -7547,9 +7547,49 @@ class ChatOutcomeTests(TestCase):
         c.refresh_from_db()
         self.assertTrue(c.outcome_reason.startswith("Post-purchase service"))
 
+    # -- seeking language (2026-10-16): the store's real shopping talk --
+
+    def test_intent_from_availability_question(self):
+        from .chat_outcomes import label_chat
+        c = self._chat("c-avail", text="Do you have any Charizard cards?")
+        self.assertEqual(label_chat(c), "purchase_intent")
+
+    def test_intent_from_looking_for_in_stock(self):
+        from .chat_outcomes import label_chat
+        c = self._chat(
+            "c-seek",
+            text="Looking for 30th celebration Pokemon sealed product in stock",
+        )
+        self.assertEqual(label_chat(c), "purchase_intent")
+
+    def test_intent_from_want_a_product(self):
+        from .chat_outcomes import label_chat
+        c = self._chat("c-wantbox", text="I want a Pokemon box with packs")
+        self.assertEqual(label_chat(c), "purchase_intent")
+
+    def test_intent_from_add_named_product_to_cart(self):
+        from .chat_outcomes import label_chat
+        c = self._chat("c-addcart", text="can you add a charizard ex to my cart?")
+        self.assertEqual(label_chat(c), "purchase_intent")
+
+    def test_intent_from_spaced_pre_order(self):
+        from .chat_outcomes import label_chat
+        c = self._chat("c-preorder", text="pre order op-18")
+        self.assertEqual(label_chat(c), "purchase_intent")
+
+    def test_intent_from_price_question(self):
+        from .chat_outcomes import label_chat
+        c = self._chat("c-price", text="how much is the crown zenith etb?")
+        self.assertEqual(label_chat(c), "purchase_intent")
+
+    def test_refund_request_is_not_seeking_intent(self):
+        from .chat_outcomes import label_chat
+        c = self._chat("c-refund", text="i want a refund for my order")
+        self.assertEqual(label_chat(c), "no_buying_intent")
+
     def test_plain_browsing_is_no_intent(self):
         from .chat_outcomes import label_chat
-        c = self._chat("c-browse")
+        c = self._chat("c-browse", text="just browsing, thanks")
         self.assertEqual(label_chat(c), "no_buying_intent")
 
     def test_label_is_idempotent(self):
@@ -7654,7 +7694,7 @@ class ChatOutcomeTests(TestCase):
         self._order("c-m1")
         label_chat(a)
         label_chat(self._chat("c-m2", text="can I preorder the new set?"))
-        label_chat(self._chat("c-m3"))
+        label_chat(self._chat("c-m3", text="just browsing, thanks"))
         self.client.force_login(self.user)
 
         resp = self.client.get("/api/cost/chat_outcomes_by_month/")
@@ -7676,7 +7716,7 @@ class ChatOutcomeTests(TestCase):
 
     def test_backfill_command_labels_population(self):
         self._chat("c-bf1", text="do you offer local pickup?")
-        self._chat("c-bf2")
+        self._chat("c-bf2", text="just browsing, thanks")
         out = StringIO()
         call_command("label_chat_outcomes", stdout=out)
         self.assertEqual(Chat.objects.get(chat_id="c-bf1").outcome, "purchase_intent")
