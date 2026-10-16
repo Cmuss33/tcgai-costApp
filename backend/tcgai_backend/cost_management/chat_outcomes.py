@@ -80,15 +80,30 @@ _POLICY_PATTERNS = [
 
 # Explicit buying language.
 _BUYING_PATTERNS = [
-    r"i (want|wanna|would like|'d like) to (buy|purchase|order|pre-?order|get)",
-    r"how (do|can) i (buy|order|purchase|check ?out|pre-?order)",
-    r"can i (reserve|hold|pre-?order)",
+    r"i (want|wanna|would like|'d like) to (buy|purchase|order|pre[ -]?order|get)",
+    r"how (do|can) i (buy|order|purchase|check ?out|pre[ -]?order)",
+    r"can i (reserve|hold|pre[ -]?order|buy|order|purchase|get)",
     r"put me down for",
     r"i'?ll take (it|one|that|them)",
     r"let me (buy|order|get) ",
-    r"add (it|that|one|this) to (my )?cart",
-    r"\bpre-?order\b",
-    r"sign me up for .*pre-?order",
+    r"add .* to (my )?cart",
+    r"\bpre[ -]?order\b",
+    r"sign me up for .*pre[ -]?order",
+]
+
+# Seeking: the language shoppers actually use in a card store --
+# availability, price, and wanting a product. Still purchase intent
+# (it is the chatbot router's product_search flow), but weaker than
+# the transactional patterns above: a message that is itself a
+# post-purchase service ask never earns intent from this family.
+_SEEKING_PATTERNS = [
+    r"do you (have|carry|stock)\b",
+    r"\blooking for\b",
+    r"\bin stock\b",
+    r"\bavailable\b",
+    r"how much (is|for|does|would)\b",
+    r"\bprice (of|for|on)\b",
+    r"i want (a|an|the|some) (?!refund\b|return\b)",
 ]
 
 # Post-purchase service: already bought -- explicitly NOT purchase intent.
@@ -111,6 +126,7 @@ _SERVICE_PATTERNS = [
 _POLICY_RE = [re.compile(p, re.IGNORECASE) for p in _POLICY_PATTERNS]
 _BUYING_RE = [re.compile(p, re.IGNORECASE) for p in _BUYING_PATTERNS]
 _SERVICE_RE = [re.compile(p, re.IGNORECASE) for p in _SERVICE_PATTERNS]
+_SEEKING_RE = [re.compile(p, re.IGNORECASE) for p in _SEEKING_PATTERNS]
 
 
 def derive_intent(shopper_texts):
@@ -123,6 +139,7 @@ def derive_intent(shopper_texts):
     The quote is the verbatim shopper message that decided it.
     """
     service_quote = None
+    seeking_quote = None
     for text in shopper_texts:
         cleaned = " ".join((text or "").split())
         if not cleaned:
@@ -131,8 +148,14 @@ def derive_intent(shopper_texts):
             p.search(cleaned) for p in _BUYING_RE
         ):
             return "intent", cleaned[:140]
-        if service_quote is None and any(p.search(cleaned) for p in _SERVICE_RE):
-            service_quote = cleaned[:140]
+        if any(p.search(cleaned) for p in _SERVICE_RE):
+            if service_quote is None:
+                service_quote = cleaned[:140]
+            continue
+        if seeking_quote is None and any(p.search(cleaned) for p in _SEEKING_RE):
+            seeking_quote = cleaned[:140]
+    if seeking_quote is not None:
+        return "intent", seeking_quote
     if service_quote is not None:
         return "service", service_quote
     return None, None
