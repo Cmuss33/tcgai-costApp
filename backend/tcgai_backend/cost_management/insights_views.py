@@ -10,7 +10,6 @@ from django.core.cache import cache
 from django.http import JsonResponse
 from django.utils import timezone
 
-from .cost_commentary import cost_commentary_for
 from .models import Chat, InsightsSnapshot, Message
 from .month_utils import (
     CONVERSATION_START_DATE,
@@ -725,15 +724,9 @@ def _build_lifetime_insights():
 
 
 def _finalize(payload, month_start, cached=False):
-    # cost_commentary is independent of the transcript-narrative payload
-    # above -- its own data source (monthly_stats) and its own cache, so it
-    # shows up immediately even while the (slower, transcript-heavy)
-    # customer-insights narrative is still generating or reports
-    # insufficient_data.
     body = {
         **payload,
         "available_months": _available_months(),
-        "cost_commentary": cost_commentary_for(month_start) if month_start else None,
     }
     if cached:
         body["cached"] = True

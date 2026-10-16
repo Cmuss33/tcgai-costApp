@@ -155,9 +155,9 @@ class CostMethodologyChange(models.Model):
     """A dated, human-maintained log of anything that can move the
     cost/conversation numbers WITHOUT a real change in customer-facing
     behavior -- a pricing/scoping bug fix, a new LLM call site added to a
-    surface, a config change, a traffic incident. Feeds cost_commentary.py's
-    grounded narrative so it can say "this delta lines up with a known
-    change on this date" instead of inventing a cause -- the same discipline
+    surface, a config change, a traffic incident. Consulted when reviewing
+    cost moves, so a delta can be lined up with a known change on this
+    date instead of inventing a cause -- the same discipline
     insights_views.report_insights already applies to conversation counts
     (see _build_prompt's grounding instruction).
 
