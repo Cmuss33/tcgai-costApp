@@ -62,7 +62,22 @@ def score_single_chat(chat):
 
     conversation_text = ""
     for msg in messages:
-        conversation_text += f"\nUser: {msg.content}\nAssistant: {msg.returned_content}\n"
+        assistant_text = (msg.returned_content or "").strip()
+        if not assistant_text:
+            # A turn whose model call ended in a tool call logs no text.
+            # Render what actually happened instead of an empty reply --
+            # the judge otherwise reads the turn as the assistant saying
+            # nothing at all (chat ef6efb16 scored 1 partly on that
+            # illusion, 2026-10-17). The tool's name is not recorded in
+            # the cost log, so the marker names none.
+            raw_returned = msg.llm_formatted_returned_message or ""
+            if re.search(r"stop_reason\W{1,6}tool_use", raw_returned):
+                assistant_text = (
+                    "[assistant made a tool call in this turn and produced no text]"
+                )
+            else:
+                assistant_text = "[no reply recorded for this turn]"
+        conversation_text += f"\nUser: {msg.content}\nAssistant: {assistant_text}\n"
 
     prompt = f"""
     Evaluate the following conversation and assign a numeric accuracy score (1-100) for the assistant's responses.
@@ -141,11 +156,13 @@ def score_and_classify_chat(chat):
     return score
 
 
-# The rubric in score_single_chat's prompt is version "v2" (v1 was the
-# pre-2026-10-14 number-only prompt, whose scores carry no receipts and no
-# version tag). Bump this whenever the prompt's bands or instructions
-# change, so trend lines never silently mix incomparable scores.
-RUBRIC_VERSION = "v2"
+# The rubric in score_single_chat's prompt is version "v3" (v1 was the
+# pre-2026-10-14 number-only prompt; v2 added bands + receipts, 2026-10-15;
+# v3 renders tool-call turns in the transcript as a marker instead of an
+# empty reply, 2026-10-17). Bump this whenever the prompt's bands,
+# instructions, or transcript rendering change, so trend lines never
+# silently mix incomparable scores.
+RUBRIC_VERSION = "v3"
 
 # Judge samples per chat. A single sampled integer was the fd6ef56b
 # failure (25 vs 92 on the identical transcript); the median of 5 makes a

@@ -4290,6 +4290,44 @@ class AutoAuditAndBatchEvaluationTests(TestCase):
             self.assertEqual(chat.evaluation_score, 92)
 
     @patch("anthropic.Anthropic")
+    def test_score_single_chat_renders_tool_turn_as_marker(self, mock_anthropic_class):
+        """A tool_use turn logs no text. The judge's transcript must say
+        a tool call happened -- an empty "Assistant:" line reads as the
+        bot saying nothing (chat ef6efb16, 2026-10-17)."""
+        from .views import score_single_chat
+        mock_client = MagicMock()
+        mock_anthropic_class.return_value = mock_client
+        mock_resp = MagicMock()
+        mock_resp.content = [MagicMock(text="The follow-up never arrived.\nSCORE: 12")]
+        mock_client.messages.create.return_value = mock_resp
+
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}):
+            chat = Chat.objects.create(chat_id="test-tool-turn", model="claude-haiku-4-5")
+            Message.objects.create(
+                chat=chat, content="Where is the store",
+                returned_content="We are at 9390 Woodbine Ave.",
+                llm_formatted_message="", llm_formatted_returned_message="",
+                tokens_in=50, tokens_out=20, model="claude-haiku-4-5",
+            )
+            Message.objects.create(
+                chat=chat, content="Where is the store",
+                returned_content="",
+                llm_formatted_message="",
+                llm_formatted_returned_message=(
+                    "{'role': 'assistant', 'stop_reason': 'tool_use',"
+                    " 'usage': {'output_tokens': 28}}"
+                ),
+                tokens_in=60, tokens_out=28, model="claude-haiku-4-5",
+            )
+            score = score_single_chat(chat)
+            self.assertEqual(score, 12)
+        prompt = mock_client.messages.create.call_args.kwargs["messages"][0]["content"]
+        self.assertIn("[assistant made a tool call in this turn and produced no text]", prompt)
+        self.assertNotIn("Assistant: \n", prompt)
+        chat.refresh_from_db()
+        self.assertEqual(chat.evaluation_rubric_version, "v3")
+
+    @patch("anthropic.Anthropic")
     def test_score_single_chat_deterministic_and_parses_score_line(self, mock_anthropic_class):
         """The hardened judge: temperature 0, and the score comes from the
         SCORE: line after the one-sentence justification -- numbers cited
@@ -4372,7 +4410,7 @@ class AutoAuditAndBatchEvaluationTests(TestCase):
         self.assertEqual(chat.evaluation_samples, [25, 88, 90, 91, 92])
         self.assertEqual(chat.evaluation_justification,
                          "Both answers were correct and offered next steps.")
-        self.assertEqual(chat.evaluation_rubric_version, "v2")
+        self.assertEqual(chat.evaluation_rubric_version, "v3")
         self.assertIsNotNone(chat.evaluation_at)
         self.assertEqual(mock_client.messages.create.call_count, 5)
 
