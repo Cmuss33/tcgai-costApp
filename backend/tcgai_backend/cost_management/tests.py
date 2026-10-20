@@ -7586,3 +7586,210 @@ class ChatOutcomeTests(TestCase):
         self.assertEqual(Chat.objects.get(chat_id="c-bf1").outcome, "policy_intent")
         self.assertEqual(Chat.objects.get(chat_id="c-bf2").outcome, "no_buying_intent")
         self.assertIn("labeled 2 chats", out.getvalue())
+
+
+class CuratorSurfaceIngestTests(TestCase):
+    """PR 3 (AI Curator redesign): CartEvent.surface ingest.
+
+    - explicit ai_curator (and chat/storefront) accepted and stored
+    - unknown surface rejected exactly like unknown source (400, no row)
+    - missing surface defaults from source (p4_chat -> chat,
+      storefront -> storefront) so legacy emitters keep working
+    - model-level default for rows created without a surface is
+      "storefront" (the legacy-row default in migration 0032)
+    - the chatbot's bundle marker is stored as is_bundle
+    """
+
+    def _post(self, payload):
+        return self.client.post(
+            "/api/cost/log_cart_event/",
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+    def test_model_default_surface_is_storefront(self):
+        event = CartEvent.objects.create(
+            shop="s.myshopify.com", session_id="sess-default",
+            source="storefront",
+            items=[{"variant_id": "1", "quantity": 1, "price": 1}],
+            cart_value="1.00", currency="USD",
+            occurred_at=_now(),
+        )
+        self.assertEqual(event.surface, "storefront")
+        self.assertFalse(event.is_bundle)
+        # Field definition is the migration-backed contract.
+        field = CartEvent._meta.get_field("surface")
+        self.assertEqual(field.max_length, 32)
+        self.assertEqual(field.default, "storefront")
+        self.assertIn("ai_curator", dict(CartEvent.SURFACE_CHOICES))
+
+    def test_ai_curator_surface_accepted_and_stored(self):
+        response = self._post(make_cart_event_payload(surface="ai_curator"))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(CartEvent.objects.get().surface, "ai_curator")
+
+    def test_chat_and_storefront_surfaces_accepted(self):
+        r1 = self._post(make_cart_event_payload(
+            session_id="sess-a", surface="chat", source="p4_chat"))
+        r2 = self._post(make_cart_event_payload(
+            session_id="sess-b", surface="storefront",
+            occurred_at="2026-10-13T16:00:00Z"))
+        self.assertEqual(r1.status_code, 200)
+        self.assertEqual(r2.status_code, 200)
+        self.assertEqual(
+            CartEvent.objects.get(session_id="sess-a").surface, "chat")
+        self.assertEqual(
+            CartEvent.objects.get(session_id="sess-b").surface, "storefront")
+
+    def test_unknown_surface_rejected_like_unknown_source(self):
+        response = self._post(make_cart_event_payload(surface="carrier_pigeon"))
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("unknown surface", response.json()["message"])
+        self.assertEqual(CartEvent.objects.count(), 0)
+
+    def test_missing_surface_defaults_from_source(self):
+        # Legacy payload: no surface key at all.
+        r1 = self._post(make_cart_event_payload(source="p4_chat"))
+        self.assertEqual(r1.status_code, 200)
+        self.assertEqual(CartEvent.objects.get().surface, "chat")
+
+        r2 = self._post(make_cart_event_payload(
+            session_id="sess-legacy-2", source="storefront",
+            occurred_at="2026-10-13T16:30:00Z"))
+        self.assertEqual(r2.status_code, 200)
+        self.assertEqual(
+            CartEvent.objects.get(session_id="sess-legacy-2").surface,
+            "storefront")
+
+    def test_bundle_marker_stored(self):
+        response = self._post(make_cart_event_payload(
+            surface="ai_curator", is_bundle=True))
+        self.assertEqual(response.status_code, 200)
+        event = CartEvent.objects.get()
+        self.assertEqual(event.surface, "ai_curator")
+        self.assertTrue(event.is_bundle)
+
+    def test_non_bundle_add_defaults_is_bundle_false(self):
+        response = self._post(make_cart_event_payload(surface="ai_curator"))
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(CartEvent.objects.get().is_bundle)
+
+
+class CuratorSurfaceReportingSplitTests(TestCase):
+    """PR 3 reporting split: commercial_impact + cart funnel.
+
+    Bucketing: an order counts in the curator bucket if its surfaces
+    include "ai_curator", in the chat bucket if they include "chat",
+    and in BOTH (plus the separate both_surfaces_* breakout) if it
+    carries both. Cart adds split by CartEvent.surface.
+    """
+
+    SHOP = "split.myshopify.com"
+
+    def setUp(self):
+        cache.clear()
+        self.user = User.objects.create_user(username="owner", password="pw")
+        self.client.force_login(self.user)
+        self.now = _now().replace(day=15, hour=12, minute=0, second=0, microsecond=0)
+        self._seq = 0
+
+    def tearDown(self):
+        cache.clear()
+
+    def _order(self, chat_id_raw, revenue, surfaces):
+        self._seq += 1
+        return AttributedOrder.objects.create(
+            chat_id_raw=chat_id_raw, chat=None, shop=self.SHOP,
+            order_id=f"split-ord-{self._seq}",
+            influenced_revenue=revenue, order_total=revenue,
+            currency="USD", order_created_at=self.now, surfaces=surfaces,
+        )
+
+    def _cart(self, session_id, surface, value=10, is_bundle=False,
+              conversation_id=None):
+        # Distinct occurred_at per session keeps the dedupe key unique.
+        self._seq += 1
+        return CartEvent.objects.create(
+            shop=self.SHOP, session_id=session_id,
+            conversation_id=conversation_id, source="storefront",
+            surface=surface, is_bundle=is_bundle,
+            items=[{"variant_id": "1", "quantity": 1, "price": float(value)}],
+            cart_value=value, currency="USD",
+            occurred_at=self.now.replace(minute=self._seq % 60),
+        )
+
+    def _patch_spend(self, spend=10.0):
+        p = patch(
+            "cost_management.stats_views._spend_for",
+            return_value=(spend, [], None),
+        )
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_commercial_impact_surface_split_math(self):
+        self._patch_spend()
+        self._order("curator-only", 100, ["ai_curator"])
+        self._order("chat-only", 50, ["chat"])
+        self._order("both-surfaces", 30, ["chat", "ai_curator"])
+        self._order("no-surface", 20, None)
+
+        d = self.client.get("/api/cost/commercial_impact/").json()
+
+        # Totals unchanged (additive split only).
+        self.assertEqual(d["influenced_revenue"], 200.0)
+        self.assertEqual(d["orders_count"], 4)
+        # Both-surfaces order counts in both buckets AND the breakout.
+        self.assertEqual(d["curator_influenced_revenue"], 130.0)
+        self.assertEqual(d["chat_influenced_revenue"], 80.0)
+        self.assertEqual(d["both_surfaces_influenced_revenue"], 30.0)
+        self.assertEqual(d["curator_orders_count"], 2)
+        self.assertEqual(d["chat_orders_count"], 2)
+        self.assertEqual(d["both_surfaces_orders_count"], 1)
+        self.assertEqual(d["surface_split"]["curator_influenced_revenue"], 130.0)
+
+    def test_commercial_impact_split_is_zero_with_no_orders(self):
+        self._patch_spend()
+        d = self.client.get("/api/cost/commercial_impact/").json()
+        self.assertEqual(d["curator_influenced_revenue"], 0.0)
+        self.assertEqual(d["chat_influenced_revenue"], 0.0)
+        self.assertEqual(d["curator_orders_count"], 0)
+
+    def test_cart_funnel_surface_split_math(self):
+        Chat.objects.create(
+            chat_id="funnel-chat", model="claude-haiku-4-5",
+            intent="product_search", shop=self.SHOP)
+        self._cart("sess-curator", "ai_curator", value=40,
+                   conversation_id="funnel-chat", is_bundle=True)
+        self._cart("sess-curator-2", "ai_curator", value=15)
+        self._cart("sess-chat", "chat", value=25)
+        self._cart("sess-store", "storefront", value=10)
+        self._order("funnel-chat", 60, ["ai_curator"])
+        self._order("sess-chat", 25, ["chat"])
+
+        d = self.client.get("/api/cost/cart_funnel/").json()
+
+        self.assertEqual(d["curator_cart_events"], 2)
+        self.assertEqual(d["chat_cart_events"], 1)
+        self.assertEqual(d["storefront_cart_events"], 1)
+        self.assertEqual(d["bundle_cart_events"], 1)
+        self.assertEqual(d["curator_cart_sessions"], 2)
+        self.assertEqual(d["chat_cart_sessions"], 1)
+        # Order split rides along in the funnel payload too.
+        self.assertEqual(d["curator_influenced_revenue"], 60.0)
+        self.assertEqual(d["chat_influenced_revenue"], 25.0)
+        self.assertEqual(d["both_surfaces_orders_count"], 0)
+        # Pre-existing funnel fields unchanged in meaning.
+        self.assertEqual(d["influenced_revenue"], 85.0)
+        self.assertTrue(d["has_cart_events"])
+
+    def test_cart_funnel_legacy_rows_count_as_storefront(self):
+        # Row created with no surface argument -> model default.
+        CartEvent.objects.create(
+            shop=self.SHOP, session_id="sess-legacy", source="storefront",
+            items=[{"variant_id": "1", "quantity": 1, "price": 9}],
+            cart_value=9, currency="USD", occurred_at=self.now,
+        )
+        d = self.client.get("/api/cost/cart_funnel/").json()
+        self.assertEqual(d["storefront_cart_events"], 1)
+        self.assertEqual(d["curator_cart_events"], 0)
+        self.assertEqual(d["chat_cart_events"], 0)

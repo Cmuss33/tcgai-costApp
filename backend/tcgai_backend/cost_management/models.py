@@ -331,14 +331,42 @@ class CartEvent(models.Model):
     key: the chatbot retries emits up to 3x, and a redelivery carries the
     identical occurred_at, so update_or_create on the natural key absorbs
     it instead of double-counting the funnel.
+
+    `surface` (AI Curator redesign, PR 3) records which surface produced
+    the add -- ``chat``, ``ai_curator`` or ``storefront`` -- so reporting
+    can split curator vs chat without re-deriving it from `source`.
+    `is_bundle` preserves the chatbot's bundle marker for curator bundle
+    adds.
     """
 
     SOURCE_CHOICES = [("p4_chat", "P4 Chat"), ("storefront", "Storefront")]
+
+    # Which product surface produced the add. Distinct from `source`
+    # (the transport/mechanism: chat draft-cart vs theme interceptor):
+    # `surface` is the attribution surface used for the curator-vs-chat
+    # reporting split. Legacy rows (created before this field existed)
+    # default to "storefront"; new emitters that omit `surface` are
+    # mapped from `source` at ingest (p4_chat -> chat,
+    # storefront -> storefront) so old emitters keep working unchanged.
+    SURFACE_CHOICES = [
+        ("chat", "Chat"),
+        ("ai_curator", "AI Curator"),
+        ("storefront", "Storefront"),
+    ]
+    # Ingest default when the payload omits `surface`.
+    SOURCE_TO_SURFACE = {"p4_chat": "chat", "storefront": "storefront"}
 
     shop = models.CharField(max_length=255, db_index=True, default="")
     session_id = models.CharField(max_length=255, db_index=True)
     conversation_id = models.CharField(max_length=255, null=True, blank=True, db_index=True)
     source = models.CharField(max_length=20, choices=SOURCE_CHOICES)
+    surface = models.CharField(
+        max_length=32, choices=SURFACE_CHOICES, default="storefront", db_index=True
+    )
+    # Bundle marker sent by the chatbot for curator bundle adds
+    # (primary + protection bundle bar). False for ordinary adds and
+    # for legacy emitters that never send it.
+    is_bundle = models.BooleanField(default=False)
     # [{variant_id, quantity, price}] as sent by the chatbot; price in shop
     # currency units. Kept verbatim -- the funnel only needs the event and
     # its cart_value, item detail is for later drill-down.

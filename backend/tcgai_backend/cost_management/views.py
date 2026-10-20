@@ -1037,6 +1037,14 @@ def log_cart_event(request):
     required and must parse -- a retry that lost it could never dedupe.
     conversation_id is nullable by design: search-only sessions have no
     conversation, and their cart events still count.
+
+    `surface` (AI Curator redesign, PR 3) is optional for backwards
+    compatibility: when present it must be one of CartEvent.SURFACE_CHOICES
+    (chat | ai_curator | storefront) and is rejected the same way an
+    unknown `source` is; when missing it defaults from `source`
+    (p4_chat -> chat, storefront -> storefront) so old emitters keep
+    working unchanged. The chatbot's bundle marker is accepted as
+    `is_bundle` (bool) or `bundle` (bool/dict) and stored as `is_bundle`.
     """
     try:
         data = json.loads(request.body)
@@ -1063,6 +1071,28 @@ def log_cart_event(request):
                 {"status": "error", "message": f"unknown source: {source}"},
                 status=400,
             )
+
+        # Surface: explicit value wins; missing -> derived from source.
+        surface_raw = data.get("surface")
+        if surface_raw is None or surface_raw == "":
+            surface = CartEvent.SOURCE_TO_SURFACE.get(source, "storefront")
+        else:
+            surface = str(surface_raw)
+            if surface not in {key for key, _label in CartEvent.SURFACE_CHOICES}:
+                return JsonResponse(
+                    {"status": "error", "message": f"unknown surface: {surface}"},
+                    status=400,
+                )
+
+        # Bundle marker: `is_bundle` bool preferred; tolerate `bundle`
+        # as bool or a non-empty dict/object describing the bundle.
+        _bundle_raw = data.get("is_bundle", data.get("bundle"))
+        if isinstance(_bundle_raw, str):
+            is_bundle = _bundle_raw.strip().lower() in ("1", "true", "yes")
+        elif isinstance(_bundle_raw, dict):
+            is_bundle = bool(_bundle_raw)
+        else:
+            is_bundle = bool(_bundle_raw)
 
         def _dec(value):
             try:
@@ -1093,6 +1123,8 @@ def log_cart_event(request):
                 occurred_at=occurred_at,
                 defaults={
                     "conversation_id": conversation_id,
+                    "surface": surface,
+                    "is_bundle": is_bundle,
                     "items": items,
                     "cart_value": _dec(data.get("cart_value")),
                     "currency": str(data.get("currency") or "USD")[:3].upper(),
