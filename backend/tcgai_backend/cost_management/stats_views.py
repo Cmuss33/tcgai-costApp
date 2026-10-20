@@ -1620,6 +1620,102 @@ COMMERCIAL_IMPACT_METHODOLOGY = (
     "least one attributed order links to its chat id."
 )
 
+# --- Curator-vs-chat surface split (AI Curator redesign, PR 3) -------------
+# Additive only: every pre-existing response field is unchanged. The split
+# answers "can the cost app tell curator conversion from chat conversion?"
+# which it previously could not (AttributedOrder.surfaces was stored but
+# never read, and CartEvent had no surface at all).
+#
+# Bucketing rule (documented choice): an AttributedOrder whose `surfaces`
+# list includes "ai_curator" counts in the curator bucket; one that
+# includes "chat" counts in the chat bucket. An order with BOTH surfaces
+# counts in BOTH buckets (it was genuinely influenced by both) AND is
+# broken out separately in the `both_surfaces_*` figures, so
+# curator + chat - both == orders with at least one known surface.
+# Orders with no/unknown surfaces count only in the totals.
+CURATOR_SURFACE = "ai_curator"
+CHAT_SURFACE = "chat"
+
+
+def _order_surface_split(orders):
+    """Surface split over an iterable of AttributedOrder rows (or dicts
+    with `surfaces` / `influenced_revenue`). Returns flat fields safe to
+    splat into a payload dict."""
+    curator_rev = Decimal("0")
+    chat_rev = Decimal("0")
+    both_rev = Decimal("0")
+    curator_count = 0
+    chat_count = 0
+    both_count = 0
+    for o in orders:
+        if isinstance(o, dict):
+            surfaces = o.get("surfaces")
+            amount = o.get("influenced_revenue") or Decimal("0")
+        else:
+            surfaces = getattr(o, "surfaces", None)
+            amount = getattr(o, "influenced_revenue", None) or Decimal("0")
+        if not isinstance(amount, Decimal):
+            try:
+                amount = Decimal(str(amount))
+            except Exception:
+                amount = Decimal("0")
+        surface_set = set(surfaces) if isinstance(surfaces, (list, tuple, set)) else set()
+        is_curator = CURATOR_SURFACE in surface_set
+        is_chat = CHAT_SURFACE in surface_set
+        if is_curator:
+            curator_rev += amount
+            curator_count += 1
+        if is_chat:
+            chat_rev += amount
+            chat_count += 1
+        if is_curator and is_chat:
+            both_rev += amount
+            both_count += 1
+    return {
+        "curator_influenced_revenue": float(curator_rev),
+        "chat_influenced_revenue": float(chat_rev),
+        "both_surfaces_influenced_revenue": float(both_rev),
+        "curator_orders_count": curator_count,
+        "chat_orders_count": chat_count,
+        "both_surfaces_orders_count": both_count,
+    }
+
+
+def _cart_event_surface_split(event_rows):
+    """Surface split over CartEvent dict rows (values() with surface /
+    is_bundle / session_id). Event counts are literal add-to-cart events;
+    session counts are distinct session_ids per surface."""
+    curator_events = chat_events = storefront_events = bundle_events = 0
+    curator_sessions = set()
+    chat_sessions = set()
+    storefront_sessions = set()
+    for ev in event_rows:
+        surface = ev.get("surface") or "storefront"
+        session_id = ev.get("session_id")
+        if ev.get("is_bundle"):
+            bundle_events += 1
+        if surface == CURATOR_SURFACE:
+            curator_events += 1
+            if session_id:
+                curator_sessions.add(session_id)
+        elif surface == CHAT_SURFACE:
+            chat_events += 1
+            if session_id:
+                chat_sessions.add(session_id)
+        elif surface == "storefront":
+            storefront_events += 1
+            if session_id:
+                storefront_sessions.add(session_id)
+    return {
+        "curator_cart_events": curator_events,
+        "chat_cart_events": chat_events,
+        "storefront_cart_events": storefront_events,
+        "bundle_cart_events": bundle_events,
+        "curator_cart_sessions": len(curator_sessions),
+        "chat_cart_sessions": len(chat_sessions),
+        "storefront_cart_sessions": len(storefront_sessions),
+    }
+
 
 @api_login_required
 def commercial_impact(request):
@@ -1681,7 +1777,10 @@ def commercial_impact(request):
         convs = sum(_chat_qs(m, shops).count() for m in months)
         converting = orders.values("chat_id_raw").distinct().count()
         unlinked = orders.filter(chat__isnull=True).count()
+        surface_split = _order_surface_split(list(orders))
         payload = {
+            **surface_split,
+            "surface_split": surface_split,
             "month": "lifetime",
             "is_lifetime": True,
             "spend": round(total_spend, 2),
@@ -1750,8 +1849,11 @@ def commercial_impact(request):
     convs = _chat_qs(month_start, shops).count()
     converting = orders.values("chat_id_raw").distinct().count()
     unlinked = orders.filter(chat__isnull=True).count()
+    surface_split = _order_surface_split(list(orders))
 
     payload = {
+        **surface_split,
+        "surface_split": surface_split,
         "month": month_start.strftime("%Y-%m"),
         "spend": spend,
         "influenced_revenue": float(revenue),
@@ -1826,7 +1928,8 @@ def _cart_funnel_payload(start, end, shops):
     if shops:
         events = events.filter(shop__in=list(shops))
     event_rows = list(events.values(
-        "session_id", "conversation_id", "cart_value", "currency", "occurred_at"
+        "session_id", "conversation_id", "cart_value", "currency", "occurred_at",
+        "surface", "is_bundle",
     ))
 
     orders = AttributedOrder.objects.filter(order_created_at__gte=start)
@@ -1834,7 +1937,9 @@ def _cart_funnel_payload(start, end, shops):
         orders = orders.filter(order_created_at__lt=end)
     if shops:
         orders = orders.filter(shop__in=list(shops))
-    order_rows = list(orders.values("chat_id_raw", "influenced_revenue", "currency"))
+    order_rows = list(orders.values(
+        "chat_id_raw", "influenced_revenue", "currency", "surfaces"
+    ))
 
     if probe_chat_ids:
         event_rows = [
@@ -1905,7 +2010,15 @@ def _cart_funnel_payload(start, end, shops):
     else:
         currency = "USD"
 
+    # Surface split is computed over the probe-filtered rows above, so
+    # it describes exactly the same population as the funnel totals.
+    cart_surface_split = _cart_event_surface_split(event_rows)
+    order_surface_split = _order_surface_split(order_rows)
+
     return {
+        **cart_surface_split,
+        **order_surface_split,
+        "surface_split": {**cart_surface_split, **order_surface_split},
         "shopping_chats": shopping,
         "cart_sessions": len(cart_units),
         "purchased": purchased,
