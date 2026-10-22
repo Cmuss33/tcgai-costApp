@@ -1246,6 +1246,21 @@ section[aria-label] > .cr__section-eyebrow:first-child {
   margin-bottom: 6px;
 }
 
+/* Curator split inside the cart funnel panel: the AI Curator's own
+   add-to-cart numbers, shown beside (never instead of) the funnel totals.
+   Cards reuse the funnel step styles; only the wrapper/head are new. */
+.cr__funnel-split {
+  margin-top: 14px;
+}
+
+.cr__funnel-split-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-bottom: 10px;
+}
+
 @media (max-width: 900px) {
   .cr__funnel-strip {
     flex-direction: column;

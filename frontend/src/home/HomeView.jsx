@@ -1410,6 +1410,42 @@ function CartFunnelPanel({ data }) {
           </div>
         </div>
       </div>
+      <div className="cr__funnel-split">
+        <div className="cr__funnel-split-head">
+          <span className="cr__labor-label">{"\u2728"} AI Curator Split</span>
+          <span className="cr__funnel-sub">
+            The curator&rsquo;s own numbers, split out from the funnel above
+            &mdash; the chat totals stay as they are
+          </span>
+        </div>
+        <div className="cr__funnel-strip">
+          <div className="cr__funnel-step">
+            <div className="cr__funnel-step-label">{"\u2728"} Curator Cart Events</div>
+            <div className="cr__funnel-val">{data.curator_cart_events ?? 0}</div>
+            <div className="cr__funnel-sub">Add-to-carts from the AI Curator</div>
+          </div>
+          <div className="cr__funnel-step">
+            <div className="cr__funnel-step-label">{"\u{1F4E6}"} Bundle Adds</div>
+            <div className="cr__funnel-val">{data.bundle_cart_events ?? 0}</div>
+            <div className="cr__funnel-sub">Add-to-carts flagged as bundles</div>
+          </div>
+          <div className="cr__funnel-step">
+            <div className="cr__funnel-step-label">{"\u{1F6CD}\uFE0F"} Curator Sessions</div>
+            <div className="cr__funnel-val">{data.curator_cart_sessions ?? 0}</div>
+            <div className="cr__funnel-sub">
+              Shopping sessions with at least one curator add
+            </div>
+          </div>
+          <div className="cr__funnel-step">
+            <div className="cr__funnel-step-label">{"\u{1F4B8}"} Abandoned Value</div>
+            <div className="cr__funnel-val">{fmtUsd(data.abandoned_value ?? 0, true)}</div>
+            <div className="cr__funnel-sub">
+              Value left in carts across the funnel
+              {data.mixed_currencies ? ` (${data.currency}, mixed currencies)` : ""}
+            </div>
+          </div>
+        </div>
+      </div>
       {prov}
     </div>
   );
