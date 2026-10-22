@@ -117,6 +117,11 @@ function ChatSummaryView() {
   }, [API_URL, navigate]);
 
   const [activeFilter, setActiveFilter] = useState(searchParams.get("filter") || "all");
+  // Taxonomy v3 deep-link filters (Command Center v3 panel):
+  // ?intent_v3=<primary id>&outcome_v3=<outcome axis value>, preserved
+  // alongside month/shop so the list shows exactly what was counted.
+  const [intentV3Filter, setIntentV3Filter] = useState(searchParams.get("intent_v3") || null);
+  const [outcomeV3Filter, setOutcomeV3Filter] = useState(searchParams.get("outcome_v3") || null);
   const [searchQuery, setSearchQuery] = useState("");
   // Month scope: set by the Command Center outcomes table deep link
   // (/chats?month=YYYY-MM&filter=<bucket>).
@@ -170,6 +175,12 @@ function ChatSummaryView() {
     if (activeFilter && activeFilter !== "all") {
       params.set("filter", activeFilter);
     }
+    if (intentV3Filter) {
+      params.set("intent_v3", intentV3Filter);
+    }
+    if (outcomeV3Filter) {
+      params.set("outcome_v3", outcomeV3Filter);
+    }
     if (selectedMonth) {
       params.set("month", selectedMonth);
     }
@@ -216,7 +227,7 @@ function ChatSummaryView() {
       .finally(() => {
         setLoadingChats(false);
       });
-  }, [API_URL, offset, pageSize, activeFilter, selectedMonth, searchQuery, refreshKey, shopConfigLoaded, selectedShops]);
+  }, [API_URL, offset, pageSize, activeFilter, intentV3Filter, outcomeV3Filter, selectedMonth, searchQuery, refreshKey, shopConfigLoaded, selectedShops]);
 
   // Deep link: /chats?chat=<id> auto-opens that chat's transcript modal
   useEffect(() => {
@@ -275,9 +286,14 @@ function ChatSummaryView() {
       nextParams.set("filter", filterKey);
     } else {
       nextParams.delete("filter");
-      // "All Chats" also drops any month scope from the breakdown.
+      // "All Chats" also drops any month scope from the breakdown
+      // and any Taxonomy v3 deep-link filters.
       setSelectedMonth(null);
       nextParams.delete("month");
+      setIntentV3Filter(null);
+      setOutcomeV3Filter(null);
+      nextParams.delete("intent_v3");
+      nextParams.delete("outcome_v3");
     }
     setSearchParams(nextParams, { replace: true });
   };
@@ -291,6 +307,61 @@ function ChatSummaryView() {
     policy_intent: "📋 Policy intent",
     out_of_bounds: "⛔ Out of bounds",
     no_buying_intent: "No buying intent",
+  };
+
+  // Taxonomy v3 labels (2026-10-22.1). The v3 primary intent is the
+  // headline; the v2 outcome above stays as a clearly-labelled legacy
+  // field. Human corrections supersede the classifier stamp.
+  const INTENT_V3_LABELS = {
+    product_lookup: "Product lookup",
+    recommendation_discovery: "Recommendation / discovery",
+    market_research: "Market research",
+    deck_help: "Deck help",
+    sell_trade: "Sell / trade",
+    store_policy: "Store policy",
+    grading_services: "Grading services",
+    store_events: "Store events",
+    store_info_contact: "Store info / contact",
+    order_tracking: "Order tracking",
+    post_purchase_service: "Post-purchase service",
+    account_service: "Account service",
+    cart_checkout_assistance: "Cart / checkout assistance",
+    out_of_bounds_or_manipulation: "Out of bounds / manipulation",
+    no_clear_intent: "No clear intent",
+    unknown_unclassified: "❓ Unknown — needs review",
+  };
+
+  const renderIntentV3 = (chat) => {
+    const primary = chat.intent_primary_human_v3 || chat.intent_primary_v3;
+    if (!primary) {
+      return (
+        <div className="chat-intent-v3" title="Not yet stamped with Taxonomy v3">
+          <span className="chat-outcome-none">v3: not stamped</span>
+        </div>
+      );
+    }
+    const secondary = Array.isArray(chat.intent_secondary_v3) ? chat.intent_secondary_v3 : [];
+    const subjects = Array.isArray(chat.subject_v3) ? chat.subject_v3 : [];
+    return (
+      <div className="chat-intent-v3" style={{ fontSize: "12px", marginTop: "2px" }}>
+        <span title={`Taxonomy v3 primary intent${chat.intent_primary_human_v3 ? " (human-corrected)" : ""} · ${chat.intent_source_v3 || ""}`}>
+          {INTENT_V3_LABELS[primary] || primary}
+        </span>
+        {secondary.length > 0 && (
+          <span style={{ color: "#9ca3af" }} title={`Secondary intents (non-additive): ${secondary.join(", ")}`}>
+            {" "}+{secondary.length} more
+          </span>
+        )}
+        {subjects.length > 0 && subjects[0] !== "none" && (
+          <span style={{ color: "#9ca3af" }} title="Subject"> · {subjects.join(", ")}</span>
+        )}
+        {primary === "unknown_unclassified" && (
+          <span style={{ color: "#f59e0b" }} title="Unknown reason">
+            {" "}({chat.unknown_reason_v3 || "unclassified"})
+          </span>
+        )}
+      </div>
+    );
   };
 
   // Intent column: one icon per fired outcome signal -- a chat that
@@ -821,6 +892,32 @@ function ChatSummaryView() {
             >
               ⛔ Out of Bounds
             </button>
+            {/* Unknown review queue (Taxonomy v3): unknown_unclassified
+                chats, by effective v3 primary — a human-review state,
+                not a shopper failure. */}
+            <button
+              type="button"
+              className={`inspector-filter-btn ${intentV3Filter === "unknown_unclassified" ? "active" : ""}`}
+              onClick={() => {
+                setIntentV3Filter(intentV3Filter === "unknown_unclassified" ? null : "unknown_unclassified");
+                setOffset(0);
+              }}
+            >
+              ❓ Unknown (v3 review)
+            </button>
+            {(intentV3Filter || outcomeV3Filter) && (
+              <span className="inspector-filter-btn" style={{ cursor: "default" }} title="Active Taxonomy v3 deep-link filters">
+                v3: {intentV3Filter ? (INTENT_V3_LABELS[intentV3Filter] || intentV3Filter) : "any intent"}
+                {outcomeV3Filter ? ` · outcome ${outcomeV3Filter}` : ""}
+                <button
+                  type="button"
+                  onClick={() => { setIntentV3Filter(null); setOutcomeV3Filter(null); setOffset(0); }}
+                  style={{ marginLeft: 6 }}
+                >
+                  ✕
+                </button>
+              </span>
+            )}
           </div>
 
           <div className="inspector-actions">
@@ -1022,7 +1119,7 @@ function ChatSummaryView() {
                   )}
                 </td>
 
-                <td>{renderOutcomeIcons(chat)}</td>
+                <td>{renderOutcomeIcons(chat)}{renderIntentV3(chat)}</td>
 
                 <td>
                   {formatCost(
@@ -1235,14 +1332,44 @@ function ChatSummaryView() {
               );
             })()}
 
+            {/* Taxonomy v3 receipt: primary intent (human correction
+                supersedes), secondaries, subject, unknown state. */}
+            {(() => {
+              const chat = chats.find((c) => c.chat_id === selectedChatId);
+              const primary = chat && (chat.intent_primary_human_v3 || chat.intent_primary_v3);
+              if (!chat || !primary) return null;
+              return (
+                <div style={{ padding: "0 20px 10px", fontSize: "13px", color: "#d1d5db" }}>
+                  <span style={{ color: "#9ca3af", fontWeight: 600 }}>Intent (v3): </span>
+                  {INTENT_V3_LABELS[primary] || primary}
+                  {chat.intent_primary_human_v3 && (
+                    <span style={{ color: "#9ca3af" }}> (human-corrected{chat.intent_correction_source_v3 ? ` · ${chat.intent_correction_source_v3}` : ""}; classifier said {INTENT_V3_LABELS[chat.intent_primary_v3] || chat.intent_primary_v3})</span>
+                  )}
+                  {Array.isArray(chat.intent_secondary_v3) && chat.intent_secondary_v3.length > 0 && (
+                    <span style={{ color: "#9ca3af" }}> · also: {chat.intent_secondary_v3.join(", ")} (non-additive)</span>
+                  )}
+                  {Array.isArray(chat.subject_v3) && chat.subject_v3.length > 0 && (
+                    <span style={{ color: "#9ca3af" }}> · subject: {chat.subject_v3.join(", ")}</span>
+                  )}
+                  {primary === "unknown_unclassified" && (
+                    <span style={{ color: "#f59e0b" }}> · unknown: {chat.unknown_reason_v3 || "unclassified"} — in the human review queue</span>
+                  )}
+                  {chat.outcome_v3 && (
+                    <span style={{ color: "#9ca3af" }}> · outcome (separate axis): {chat.outcome_v3}</span>
+                  )}
+                </div>
+              );
+            })()}
+
             {/* Outcome receipt: the chat's category and why it earned it
-                (outcome labels, 2026-10-15). */}
+                (outcome labels, 2026-10-15). Kept as the clearly
+                labelled LEGACY v2 field under Taxonomy v3. */}
             {(() => {
               const chat = chats.find((c) => c.chat_id === selectedChatId);
               if (!chat || !chat.outcome) return null;
               return (
                 <div style={{ padding: "0 20px 10px", fontSize: "13px", color: "#d1d5db" }}>
-                  <span style={{ color: "#9ca3af", fontWeight: 600 }}>Outcome: </span>
+                  <span style={{ color: "#9ca3af", fontWeight: 600 }}>Legacy v2 outcome: </span>
                   {OUTCOME_LABELS[chat.outcome] || chat.outcome}
                   {chat.outcome_reason && (
                     <span style={{ color: "#9ca3af" }}> — {chat.outcome_reason}</span>

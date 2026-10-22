@@ -91,6 +91,87 @@ class Chat(models.Model):
         help_text="What produced the intent classification: 'rules' or 'llm:<model>:<prompt version>' -- makes classifier drift visible instead of silent.",
     )
 
+    # Taxonomy v3 stamps (2026-10-22, Intent Alignment Pack §6.3A):
+    # a separate intent axis alongside the v2 outcome above, which is
+    # preserved unchanged. intent_primary_v3 is the classifier's one
+    # primary intent (16 canonical ids, taxonomy_version 2026-10-22.1);
+    # secondary/subject/mission are JSON lists (secondary counts are
+    # non-additive). outcome_v3 is the BEHAVIOURAL outcome axis
+    # (purchased / cart_no_purchase / neither / not_observed), derived
+    # from behaviour records only -- it never overwrites intent, and
+    # intent never overwrites it. unknown_reason_v3 is set iff the
+    # primary is unknown_unclassified. Human corrections live in
+    # intent_primary_human_v3 and supersede the classifier stamp for
+    # reporting (effective_intent_primary_v3) without erasing it.
+    INTENT_V3_CHOICES = [
+        ("product_lookup", "Product lookup"),
+        ("recommendation_discovery", "Recommendation / discovery"),
+        ("market_research", "Market research"),
+        ("deck_help", "Deck help"),
+        ("sell_trade", "Sell / trade"),
+        ("store_policy", "Store policy"),
+        ("grading_services", "Grading services"),
+        ("store_events", "Store events"),
+        ("store_info_contact", "Store info / contact"),
+        ("order_tracking", "Order tracking"),
+        ("post_purchase_service", "Post-purchase service"),
+        ("account_service", "Account service"),
+        ("cart_checkout_assistance", "Cart / checkout assistance"),
+        ("out_of_bounds_or_manipulation", "Out of bounds / manipulation"),
+        ("no_clear_intent", "No clear intent"),
+        ("unknown_unclassified", "Unknown — unclassified"),
+    ]
+    intent_primary_v3 = models.CharField(
+        max_length=40, choices=INTENT_V3_CHOICES, null=True, blank=True, db_index=True
+    )
+    intent_secondary_v3 = models.JSONField(null=True, blank=True)
+    intent_confidence_v3 = models.FloatField(null=True, blank=True)
+    intent_classifier_version_v3 = models.CharField(
+        max_length=20,
+        null=True,
+        blank=True,
+        help_text="Taxonomy version the v3 stamp was made under (2026-10-22.1).",
+    )
+    intent_source_v3 = models.CharField(
+        max_length=60,
+        null=True,
+        blank=True,
+        help_text="What produced the v3 stamp: 'rules:v3' or 'llm:<model>:v3' -- verify backfills by reading these stamps, never by job status.",
+    )
+    subject_v3 = models.JSONField(null=True, blank=True)
+    mission_v3 = models.JSONField(null=True, blank=True)
+    surface_v3 = models.CharField(
+        max_length=16,
+        choices=[("chat", "Chat"), ("curator", "Curator")],
+        default="chat",
+        db_index=True,
+    )
+    unknown_reason_v3 = models.CharField(max_length=40, null=True, blank=True)
+    outcome_v3 = models.CharField(
+        max_length=20,
+        choices=[
+            ("purchased", "Purchased"),
+            ("cart_no_purchase", "Added to cart, no purchase"),
+            ("neither", "Neither"),
+            ("not_observed", "Not observed"),
+        ],
+        null=True,
+        blank=True,
+        db_index=True,
+    )
+    intent_v3_at = models.DateTimeField(null=True, blank=True)
+    intent_primary_human_v3 = models.CharField(
+        max_length=40, choices=INTENT_V3_CHOICES, null=True, blank=True
+    )
+    intent_correction_source_v3 = models.CharField(max_length=120, blank=True, default="")
+    intent_corrected_at_v3 = models.DateTimeField(null=True, blank=True)
+
+    @property
+    def effective_intent_primary_v3(self):
+        """The v3 primary used for reporting: a human correction
+        supersedes the classifier stamp, which stays on the row."""
+        return self.intent_primary_human_v3 or self.intent_primary_v3
+
     # ENG-149/150: a scripted caller pinging the live chat endpoint with the
     # same message on a schedule (a fresh chat_id each time) is not a real
     # conversation. Set by the `flag_automated_chats` management command,

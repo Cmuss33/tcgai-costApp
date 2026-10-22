@@ -1313,7 +1313,7 @@ function ChatOutcomesPanel({ data, isLifetime, selectedMonth, onSelect }) {
   );
   return (
     <div className="cr__labor-section">
-      <div className="cr__labor-label">{"\u{1F9ED}"} Chat outcomes</div>
+      <div className="cr__labor-label">{"\u{1F9ED}"} Chat outcomes (legacy v2)</div>
       <table className="co-table">
         <thead>
           <tr>
@@ -1338,6 +1338,97 @@ function ChatOutcomesPanel({ data, isLifetime, selectedMonth, onSelect }) {
         add, which beats purchase-intent signals in the shopper&rsquo;s own words.
         Click a number to see those chats in Chat Logs.
       </p>
+    </div>
+  );
+}
+
+/* ---------- Taxonomy v3 intents by month (Intent Alignment Pack §6.3E) ----------
+   Primary intent is the headline and sums to the month total; purchased /
+   cart live on the separate outcome axis; secondary counts are labelled
+   non-additive. Cells deep-link into Chat Logs with intent_v3 + month
+   preserved. The v2 outcomes table above stays as the legacy record, and
+   the API response carries the v2->v3 bridge explaining why the counts
+   differ. */
+const INTENT_V3_COLUMNS = [
+  ["product_lookup", "Product lookup"],
+  ["recommendation_discovery", "Recommend."],
+  ["market_research", "Market"],
+  ["deck_help", "Deck help"],
+  ["sell_trade", "Sell / trade"],
+  ["store_policy", "Policy"],
+  ["grading_services", "Grading"],
+  ["store_events", "Events"],
+  ["store_info_contact", "Store info"],
+  ["order_tracking", "Tracking"],
+  ["post_purchase_service", "Post-purchase"],
+  ["account_service", "Account"],
+  ["cart_checkout_assistance", "Cart help"],
+  ["out_of_bounds_or_manipulation", "Out of bounds"],
+  ["no_clear_intent", "No clear intent"],
+  ["unknown_unclassified", "❓ Unknown"],
+];
+
+function ChatIntentsV3Panel({ data, isLifetime, selectedMonth, onSelect, onSelectOutcome }) {
+  if (!data || !Array.isArray(data.months) || data.months.length === 0) return null;
+  const rows = isLifetime
+    ? [...data.months].reverse()
+    : data.months.filter((m) => m.month === selectedMonth);
+  if (!rows.length) return null;
+  const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const label = (key) => {
+    const [y, m] = (key || "").split("-");
+    return `${MONTHS[parseInt(m, 10) - 1] || m} ${y}`;
+  };
+  const cell = (month, intent, value) => (
+    <td key={intent}>
+      <button type="button" className="co-cell" onClick={() => onSelect(month, intent)}>
+        {value}
+      </button>
+    </td>
+  );
+  const row = (r, monthArg, cls) => (
+    <tr key={monthArg || "totals"} className={cls}>
+      <td style={{ whiteSpace: "nowrap" }}>{monthArg ? label(r.month) : "All months"}</td>
+      {INTENT_V3_COLUMNS.map(([key]) => cell(monthArg, key, r.intents?.[key] ?? 0))}
+      <td className="co-total">{r.total}</td>
+    </tr>
+  );
+  const t = data.totals || {};
+  return (
+    <div className="cr__labor-section">
+      <div className="cr__labor-label">{"\u{1F9ED}"} Chat intents — Taxonomy v3 ({data.taxonomy_version})</div>
+      <div style={{ overflowX: "auto" }}>
+        <table className="co-table">
+          <thead>
+            <tr>
+              <th>Month</th>
+              {INTENT_V3_COLUMNS.map(([key, name]) => <th key={key}>{name}</th>)}
+              <th>Total</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => row(r, r.month, ""))}
+            {isLifetime && t.intents ? row(t, null, "co-row--totals") : null}
+          </tbody>
+        </table>
+      </div>
+      {t.outcomes && (
+        <p className="cr__prov" style={{ marginTop: "10px" }}>
+          Outcome (separate axis, never an intent):{" "}
+          <button type="button" className="co-cell" onClick={() => onSelectOutcome(null, "purchased")}>
+            💰 Purchased {t.outcomes.purchased ?? 0}
+          </button>{" · "}
+          <button type="button" className="co-cell" onClick={() => onSelectOutcome(null, "cart_no_purchase")}>
+            🛒 Cart, no purchase {t.outcomes.cart_no_purchase ?? 0}
+          </button>
+          {" · "}Neither {t.outcomes.neither ?? 0}
+          {t.outcomes.not_observed ? ` · Not observed ${t.outcomes.not_observed}` : ""}
+          {". "}Secondary intents are counted separately and are non-additive.
+          {" "}❓ Unknown ({data.unknown_total ?? 0}) is a human-review queue, not a shopper failure.
+          {" "}v3 primary counts will not match the legacy v2 table: v2 mixed outcomes with
+          intent and collapsed several categories (see the v2→v3 bridge in the API response).
+        </p>
+      )}
     </div>
   );
 }
@@ -1885,6 +1976,7 @@ function HomeView() {
   const [commercialImpact, setCommercialImpact] = useState(null);
   const [cartFunnel, setCartFunnel] = useState(null);
   const [chatOutcomes, setChatOutcomes] = useState(null);
+  const [chatIntentsV3, setChatIntentsV3] = useState(null);
   const [cacheEconomics, setCacheEconomics] = useState(null);
   const [verdicts, setVerdicts] = useState(null);
   const [needsAttention, setNeedsAttention] = useState(null);
@@ -2060,6 +2152,26 @@ function HomeView() {
     [navigate]
   );
 
+  const loadChatIntentsV3 = useCallback(
+    async () => {
+      try {
+        const params = new URLSearchParams();
+        appendShopParams(params);
+        const qs = params.toString();
+        const res = await fetch(`${API_URL}/api/cost/chat_intents_v3_by_month/${qs ? `?${qs}` : ""}`, {
+          credentials: "include",
+        });
+        if (res.status === 401 || res.status === 403) return navigate("/");
+        setChatIntentsV3(await res.json());
+      } catch {
+        // Non-critical panel -- the rest of the dashboard still works without it.
+      } finally {
+        setLoadProgress((p) => p + 1);
+      }
+    },
+    [navigate]
+  );
+
   const loadCacheEconomics = useCallback(
     async (month, refresh) => {
       try {
@@ -2206,12 +2318,13 @@ function HomeView() {
         loadCommercialImpact(arg, refresh),
         loadCartFunnel(arg, refresh),
         loadChatOutcomes(),
+        loadChatIntentsV3(),
         loadVerdicts(arg, refresh),
         loadNeedsAttention(refresh),
         loadBudgetAudit(arg, refresh),
       ]);
     },
-    [loadStats, loadInsights, loadCostReconciliation, loadCacheEconomics, loadCommercialImpact, loadCartFunnel, loadChatOutcomes, loadVerdicts, loadNeedsAttention, loadBudgetAudit]
+    [loadStats, loadInsights, loadCostReconciliation, loadCacheEconomics, loadCommercialImpact, loadCartFunnel, loadChatOutcomes, loadChatIntentsV3, loadVerdicts, loadNeedsAttention, loadBudgetAudit]
   );
 
   useEffect(() => {
@@ -2521,6 +2634,17 @@ function HomeView() {
               selectedMonth={selectedMonth}
               onSelect={(month, bucket) =>
                 navigate(month ? `/chats?month=${month}&filter=${bucket}` : `/chats?filter=${bucket}`)
+              }
+            />
+            <ChatIntentsV3Panel
+              data={chatIntentsV3}
+              isLifetime={isLifetime}
+              selectedMonth={selectedMonth}
+              onSelect={(month, intent) =>
+                navigate(month ? `/chats?month=${month}&intent_v3=${intent}` : `/chats?intent_v3=${intent}`)
+              }
+              onSelectOutcome={(month, outcome) =>
+                navigate(month ? `/chats?month=${month}&outcome_v3=${outcome}` : `/chats?outcome_v3=${outcome}`)
               }
             />
             <CommercialImpactHero data={commercialImpact} isLifetime={isLifetime} />
