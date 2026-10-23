@@ -18,7 +18,15 @@ from django.utils.timezone import now
 from datetime import datetime, timedelta, timezone as dt_timezone
 from .api_auth import api_login_required
 from .chat_outcomes import ALL_OUTCOMES, refresh_outcome_for_chat_id
+from .intent_v3 import refresh_intent_v3_for_chat_id
 from .month_utils import CONVERSATION_START_DATE, apply_shop_filter, real_chats
+from .taxonomy_v3 import (
+    COUNT_DISCREPANCY,
+    OUTCOME_VALUES_V3,
+    PRIMARY_INTENTS_V3,
+    TAXONOMY_VERSION,
+    V2_TO_V3_BRIDGE,
+)
 from django.conf import settings
 
 llmprovider = AnthropicAdapter()
@@ -153,6 +161,7 @@ def score_and_classify_chat(chat):
     score = score_single_chat(chat)
     if score is not None:
         refresh_outcome_for_chat_id(chat.chat_id, use_llm=True)
+        refresh_intent_v3_for_chat_id(chat.chat_id, use_llm=True)
     return score
 
 
@@ -459,6 +468,7 @@ def log_message(request):
 
             chat.save(update_fields=['tokens_in', 'tokens_out', 'intent'])
             refresh_outcome_for_chat_id(chat.chat_id)
+            refresh_intent_v3_for_chat_id(chat.chat_id)
 
         # Smart Auto-Audit: triggers evaluation in background thread if eligible
         # Runs asynchronously after transaction commits with zero impact on shopper latency
@@ -565,6 +575,22 @@ def get_chat_ids(request):
             # precedence is already baked in (an intent-labeled chat has,
             # by construction, no cart event and no order).
             visible_chats = visible_chats.filter(outcome=filter_type)
+
+        # Taxonomy v3 deep-link filters (pack §6.3E): the Command Center
+        # v3 panel links with ?intent_v3=<id> and/or ?outcome_v3=<axis
+        # value>, and the list must show exactly the chats the panel
+        # counted. intent_v3 matches the EFFECTIVE primary (a human
+        # correction supersedes the classifier stamp). Unrecognised
+        # values are ignored, like a bad month above.
+        intent_v3_param = (request.GET.get("intent_v3") or "").strip()
+        if intent_v3_param in PRIMARY_INTENTS_V3:
+            visible_chats = visible_chats.filter(
+                Q(intent_primary_human_v3=intent_v3_param)
+                | Q(intent_primary_human_v3__isnull=True, intent_primary_v3=intent_v3_param)
+            )
+        outcome_v3_param = (request.GET.get("outcome_v3") or "").strip()
+        if outcome_v3_param in OUTCOME_VALUES_V3:
+            visible_chats = visible_chats.filter(outcome_v3=outcome_v3_param)
 
         if search_query:
             matching_chat_ids = Message.objects.filter(
@@ -705,6 +731,173 @@ def chat_outcomes_by_month(request):
             if month > 12:
                 year, month = year + 1, 1
         return JsonResponse({"months": months, "totals": totals})
+    except Exception as e:
+        return JsonResponse({'status': 'error', 'message': str(e)}, status=400)
+
+
+@api_login_required
+def chat_intents_v3_by_month(request):
+    """Taxonomy v3 monthly breakdown (pack §6.3E): every real
+    conversation since CONVERSATION_START_DATE counted by its EFFECTIVE
+    v3 primary intent (human correction supersedes the classifier
+    stamp), so primary counts sum to the month's total. Purchased /
+    cart ride the SEPARATE outcome axis (outcome_v3), secondary intent
+    counts are reported explicitly as non-additive, and unstamped rows
+    count as unknown_unclassified so nothing silently disappears
+    before the backfill lands. The v2->v3 bridge and the reconciled
+    October count discrepancy ride along so historical v2 counts stay
+    interpretable next to the v3 numbers."""
+    try:
+        shops = request.GET.getlist("shop")
+        qs = apply_shop_filter(
+            real_chats(Chat.objects.filter(timestamp__gte=CONVERSATION_START_DATE)),
+            shops,
+        )
+        rows = list(
+            qs.values(
+                "timestamp",
+                "intent_primary_v3",
+                "intent_primary_human_v3",
+                "intent_secondary_v3",
+                "outcome_v3",
+            )
+        )
+        buckets = {}
+        for r in rows:
+            if r["timestamp"] is None:
+                continue
+            key = r["timestamp"].strftime("%Y-%m")
+            bucket = buckets.setdefault(
+                key,
+                {
+                    "intents": {k: 0 for k in PRIMARY_INTENTS_V3},
+                    "outcomes": {k: 0 for k in OUTCOME_VALUES_V3},
+                    "secondary_non_additive": {},
+                    "total": 0,
+                },
+            )
+            primary = (
+                r["intent_primary_human_v3"]
+                or r["intent_primary_v3"]
+                or "unknown_unclassified"
+            )
+            if primary not in bucket["intents"]:
+                primary = "unknown_unclassified"
+            bucket["intents"][primary] += 1
+            outcome = r["outcome_v3"] or "not_observed"
+            if outcome not in bucket["outcomes"]:
+                outcome = "not_observed"
+            bucket["outcomes"][outcome] += 1
+            for sec in r["intent_secondary_v3"] or []:
+                bucket["secondary_non_additive"][sec] = (
+                    bucket["secondary_non_additive"].get(sec, 0) + 1
+                )
+            bucket["total"] += 1
+
+        start = CONVERSATION_START_DATE
+        end = now()
+        months = []
+        totals = {
+            "intents": {k: 0 for k in PRIMARY_INTENTS_V3},
+            "outcomes": {k: 0 for k in OUTCOME_VALUES_V3},
+            "secondary_non_additive": {},
+            "total": 0,
+        }
+        year, month = start.year, start.month
+        while (year, month) <= (end.year, end.month):
+            key = f"{year:04d}-{month:02d}"
+            bucket = buckets.get(
+                key,
+                {
+                    "intents": {k: 0 for k in PRIMARY_INTENTS_V3},
+                    "outcomes": {k: 0 for k in OUTCOME_VALUES_V3},
+                    "secondary_non_additive": {},
+                    "total": 0,
+                },
+            )
+            months.append({"month": key, **bucket})
+            for k in totals["intents"]:
+                totals["intents"][k] += bucket["intents"][k]
+            for k in totals["outcomes"]:
+                totals["outcomes"][k] += bucket["outcomes"][k]
+            for k, v in bucket["secondary_non_additive"].items():
+                totals["secondary_non_additive"][k] = (
+                    totals["secondary_non_additive"].get(k, 0) + v
+                )
+            totals["total"] += bucket["total"]
+            month += 1
+            if month > 12:
+                year, month = year + 1, 1
+        return JsonResponse(
+            {
+                "taxonomy_version": TAXONOMY_VERSION,
+                "months": months,
+                "totals": totals,
+                "unknown_total": totals["intents"]["unknown_unclassified"],
+                "bridge": V2_TO_V3_BRIDGE,
+                "count_discrepancy": COUNT_DISCREPANCY,
+            }
+        )
+    except Exception as e:
+        return JsonResponse({'status': 'error', 'message': str(e)}, status=400)
+
+
+@api_login_required
+def unknown_review_queue(request):
+    """Unknown review queue (pack §1.7 / §6.3E): real chats whose
+    effective v3 primary is unknown_unclassified, filterable by
+    ?reason= and ?month=YYYY-MM and ?shop=, newest first. Unknown is a
+    statement about the classifier, not the shopper — this queue is
+    where a human assigns an existing intent or proposes a taxonomy
+    change."""
+    try:
+        shops = request.GET.getlist("shop")
+        qs = apply_shop_filter(
+            real_chats(Chat.objects.filter(timestamp__gte=CONVERSATION_START_DATE)),
+            shops,
+        ).filter(
+            Q(intent_primary_human_v3="unknown_unclassified")
+            | Q(
+                intent_primary_human_v3__isnull=True,
+                intent_primary_v3="unknown_unclassified",
+            )
+            | Q(intent_primary_human_v3__isnull=True, intent_primary_v3__isnull=True)
+        )
+        reason = (request.GET.get("reason") or "").strip()
+        if reason:
+            qs = qs.filter(unknown_reason_v3=reason)
+        month_param = (request.GET.get("month") or "").strip()
+        if month_param:
+            try:
+                _year, _month = month_param.split("-")
+                qs = qs.filter(
+                    timestamp__year=int(_year), timestamp__month=int(_month)
+                )
+            except (ValueError, AttributeError):
+                pass
+        try:
+            limit = max(1, int(request.GET.get("limit", 50)))
+        except (ValueError, TypeError):
+            limit = 50
+        total = qs.count()
+        results = list(
+            qs.order_by("-timestamp")[:limit].values(
+                "chat_id",
+                "shop",
+                "timestamp",
+                "intent_primary_v3",
+                "intent_primary_human_v3",
+                "intent_confidence_v3",
+                "intent_source_v3",
+                "unknown_reason_v3",
+                "surface_v3",
+            )
+        )
+        for row in results:
+            row["month"] = row["timestamp"].strftime("%Y-%m") if row["timestamp"] else None
+            if row["timestamp"] is not None:
+                row["timestamp"] = row["timestamp"].isoformat()
+        return JsonResponse({"results": results, "total": total, "limit": limit})
     except Exception as e:
         return JsonResponse({'status': 'error', 'message': str(e)}, status=400)
 
@@ -1018,6 +1211,7 @@ def log_attribution(request):
         if created and obj.influenced_revenue > 0:
             _notify_attributed_revenue(obj)
         refresh_outcome_for_chat_id(chat_id)
+        refresh_intent_v3_for_chat_id(chat_id)
         return JsonResponse({"status": "success", "created": created})
     except Exception as e:
         return JsonResponse({"status": "error", "message": str(e)}, status=400)
@@ -1132,6 +1326,7 @@ def log_cart_event(request):
             )
         if conversation_id:
             refresh_outcome_for_chat_id(conversation_id)
+            refresh_intent_v3_for_chat_id(conversation_id)
         return JsonResponse({"status": "success", "created": created})
     except Exception as e:
         return JsonResponse({"status": "error", "message": str(e)}, status=400)
