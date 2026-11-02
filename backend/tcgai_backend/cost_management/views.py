@@ -18,6 +18,7 @@ from django.utils.timezone import now
 from datetime import datetime, timedelta, timezone as dt_timezone
 from .api_auth import api_login_required
 from .chat_outcomes import ALL_OUTCOMES, refresh_outcome_for_chat_id
+from .eval_evidence import apply_score_caps, build_evidence, render_evidence_block
 from .intent_v3 import refresh_intent_v3_for_chat_id
 from .month_utils import CONVERSATION_START_DATE, apply_shop_filter, real_chats
 from .taxonomy_v3 import (
@@ -63,9 +64,15 @@ def score_single_chat(chat):
     and every score carries receipts -- the median sample's justification,
     all samples, the rubric version, and the graded-at time. A re-grade
     appends the superseded score to evaluation_history instead of
-    destroying it."""
-    messages = Message.objects.filter(chat=chat).order_by("timestamp")
-    if not messages.exists():
+    destroying it.
+
+    Grounded 2026-11 (rubric v4): the judge also receives the store's own
+    records (eval_evidence.py) and deterministic caps bound the stored
+    score when those records show a guard closure, a false retraction, or
+    a retraction of a shown product. The returned score is the final,
+    possibly capped, one."""
+    messages = list(Message.objects.filter(chat=chat).order_by("timestamp"))
+    if not messages:
         return None
 
     conversation_text = ""
@@ -103,6 +110,19 @@ def score_single_chat(chat):
     Conversation:
     {conversation_text}
     """
+
+    # Grounding (rubric v4, 2026-11): the judge also gets the store's own
+    # records for this conversation -- products actually shown per turn,
+    # self-retractions detected in the bot's text, how the conversation
+    # ended -- assembled deterministically in eval_evidence.py from the
+    # same Message rows. Chat c5b596ef scored 92 from all five samples on
+    # the transcript alone while the records showed a false retraction
+    # and a guard closure; grading plausibility is what this block ends.
+    evidence = build_evidence(messages)
+    evidence_block = render_evidence_block(evidence)
+    if evidence_block:
+        prompt += f"\n{evidence_block}\n"
+
     api_key = os.environ.get('ANTHROPIC_API_KEY')
     if not api_key:
         return None
@@ -123,10 +143,19 @@ def score_single_chat(chat):
         if not samples:
             return None
 
-        # Median sample: the stored score is a score the judge actually
+        # Median sample: the judge's score is a score the judge actually
         # gave, carrying its own justification.
         samples.sort(key=lambda pair: pair[0])
         score, justification = samples[len(samples) // 2]
+
+        # The judge proposes, code disposes: deterministic caps from the
+        # evidence records (guard closure / false retraction / retraction
+        # of a shown product) bound the stored score. The judge's median
+        # survives untouched in evaluation_samples and in the evidence
+        # receipt's judge_score, so a cap is always visible as a cap.
+        final_score, caps_applied = apply_score_caps(score, evidence)
+        evidence["judge_score"] = score
+        evidence["caps_applied"] = caps_applied
 
         if chat.evaluation_score is not None:
             history = list(chat.evaluation_history or [])
@@ -136,17 +165,18 @@ def score_single_chat(chat):
                 "graded_at": chat.evaluation_at.isoformat() if chat.evaluation_at else None,
             })
             chat.evaluation_history = history
-        chat.evaluation_score = score
+        chat.evaluation_score = final_score
         chat.evaluation_justification = justification
         chat.evaluation_samples = [s for s, _ in samples]
+        chat.evaluation_evidence = evidence
         chat.evaluation_rubric_version = RUBRIC_VERSION
         chat.evaluation_at = now()
         chat.save(update_fields=[
             'evaluation_score', 'evaluation_justification',
             'evaluation_samples', 'evaluation_rubric_version',
-            'evaluation_at', 'evaluation_history',
+            'evaluation_at', 'evaluation_history', 'evaluation_evidence',
         ])
-        return score
+        return final_score
     except Exception as e:
         print(f"[score_single_chat] Error evaluating {chat.chat_id}: {e}")
         return None
@@ -165,13 +195,18 @@ def score_and_classify_chat(chat):
     return score
 
 
-# The rubric in score_single_chat's prompt is version "v3" (v1 was the
+# The rubric in score_single_chat's prompt is version "v4" (v1 was the
 # pre-2026-10-14 number-only prompt; v2 added bands + receipts, 2026-10-15;
 # v3 renders tool-call turns in the transcript as a marker instead of an
-# empty reply, 2026-10-17). Bump this whenever the prompt's bands,
-# instructions, or transcript rendering change, so trend lines never
-# silently mix incomparable scores.
-RUBRIC_VERSION = "v3"
+# empty reply, 2026-10-17; v4 grounds the judge in the store's own records
+# -- the eval_evidence block in the prompt -- and caps the stored score in
+# code when those records show a guard closure, a false retraction, or a
+# retraction of a shown product, 2026-11). Note v4 scores are therefore
+# capped finals, not raw judge medians; the median is preserved in
+# evaluation_samples / evaluation_evidence.judge_score. Bump this whenever
+# the prompt's bands, instructions, or transcript rendering change, so
+# trend lines never silently mix incomparable scores.
+RUBRIC_VERSION = "v4"
 
 # Judge samples per chat. A single sampled integer was the fd6ef56b
 # failure (25 vs 92 on the identical transcript); the median of 5 makes a
@@ -302,11 +337,14 @@ def evaluate_chat(request):
         return JsonResponse({"error": "Failed to evaluate chat or no messages found"}, status=400)
 
     chat.refresh_from_db()
+    evidence = chat.evaluation_evidence or {}
     return JsonResponse({
         "eval_percentage": score,
         "justification": chat.evaluation_justification,
         "samples": chat.evaluation_samples,
         "rubric_version": chat.evaluation_rubric_version,
+        "judge_score": evidence.get("judge_score"),
+        "caps_applied": evidence.get("caps_applied", []),
     })
 
 
