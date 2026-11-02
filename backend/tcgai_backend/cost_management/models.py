@@ -50,6 +50,16 @@ class Chat(models.Model):
     evaluation_at = models.DateTimeField(null=True, blank=True)
     evaluation_history = models.JSONField(null=True, blank=True)
 
+    # Judge grounding (2026-11): the deterministic evidence the judge was
+    # shown (eval_evidence.py -- per-turn products shown, self-retractions
+    # detected in the bot's text, how the conversation ended) plus the
+    # receipts of any score cap applied in code after the judge scored:
+    # {judge_score, caps_applied: [{rule, cap}]}. evaluation_score is the
+    # FINAL (possibly capped) score; the judge's own median survives in
+    # evaluation_samples and as judge_score here, so a cap never silently
+    # rewrites what the judge said. Null on every pre-grounding row.
+    evaluation_evidence = models.JSONField(null=True, blank=True)
+
     # Outcome labels (2026-10-15): every conversation is categorized by how
     # far the shopper got -- purchased / cart_no_purchase / purchase_intent
     # / no_buying_intent -- derived in chat_outcomes.py from behaviour

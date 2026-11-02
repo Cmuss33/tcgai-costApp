@@ -4325,7 +4325,7 @@ class AutoAuditAndBatchEvaluationTests(TestCase):
         self.assertIn("[assistant made a tool call in this turn and produced no text]", prompt)
         self.assertNotIn("Assistant: \n", prompt)
         chat.refresh_from_db()
-        self.assertEqual(chat.evaluation_rubric_version, "v3")
+        self.assertEqual(chat.evaluation_rubric_version, "v4")
 
     @patch("anthropic.Anthropic")
     def test_score_single_chat_deterministic_and_parses_score_line(self, mock_anthropic_class):
@@ -4410,7 +4410,7 @@ class AutoAuditAndBatchEvaluationTests(TestCase):
         self.assertEqual(chat.evaluation_samples, [25, 88, 90, 91, 92])
         self.assertEqual(chat.evaluation_justification,
                          "Both answers were correct and offered next steps.")
-        self.assertEqual(chat.evaluation_rubric_version, "v3")
+        self.assertEqual(chat.evaluation_rubric_version, "v4")
         self.assertIsNotNone(chat.evaluation_at)
         self.assertEqual(mock_client.messages.create.call_count, 5)
 

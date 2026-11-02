@@ -1328,6 +1328,17 @@ function ChatSummaryView() {
                       {" "}· previously {chat.evaluation_history[chat.evaluation_history.length - 1].score}%
                     </span>
                   )}
+                  {/* Grounding caps (rubric v4): the stored score was
+                      bounded in code by the store's own records; say so
+                      next to the judge's words, never silently. */}
+                  {chat.evaluation_evidence && Array.isArray(chat.evaluation_evidence.caps_applied) && chat.evaluation_evidence.caps_applied.length > 0 && (
+                    <span style={{ color: "#f59e0b" }}>
+                      {" "}· capped {chat.evaluation_evidence.caps_applied.map((c) => `at ${c.cap} (${String(c.rule).replace(/_/g, " ")})`).join(", ")}
+                      {typeof chat.evaluation_evidence.judge_score === "number" && (
+                        <> — judge said {chat.evaluation_evidence.judge_score}%</>
+                      )}
+                    </span>
+                  )}
                 </div>
               );
             })()}
