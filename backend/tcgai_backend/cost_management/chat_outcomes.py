@@ -55,6 +55,7 @@ from decimal import Decimal
 from django.db.models import Sum
 from django.utils import timezone
 
+from .llm_provider_adapter_implementations import anthropic_inference_key
 from .models import AttributedOrder, CartEvent, Chat, Message
 
 logger = logging.getLogger(__name__)
@@ -263,7 +264,7 @@ def _call_intent_llm(texts):
     """One classifier call. Returns the parsed dict, or None on any
     failure (no API key, API error, unparseable reply) -- callers fall
     back to the deterministic rules."""
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    api_key = anthropic_inference_key()
     if not api_key or not texts:
         return None
     try:

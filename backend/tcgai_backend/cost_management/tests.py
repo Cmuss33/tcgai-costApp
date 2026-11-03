@@ -3108,6 +3108,83 @@ class ChatApiKeyScopingTests(TestCase):
             self.assertEqual(chat_api_key_ids(), ['apikey_chat'])
 
 
+class AnthropicKeyRenameChainTests(TestCase):
+    """Phase 1 of the Anthropic key-rename programme: every read takes
+    the new variable name first and keeps the old name as a fallback, so
+    a deploy with no config change behaves exactly as before. These
+    tests pin the chains for the inference key and both api_key_id
+    lists, including chat_api_key_ids()'s fall-back-to-app-list
+    behaviour under the new names."""
+
+    def test_inference_key_prefers_the_new_name(self):
+        from .llm_provider_adapter_implementations import anthropic_inference_key
+        with patch.dict('os.environ', {
+            'ANTHROPIC_API_KEY_COSTAPP': 'new-key',
+            'ANTHROPIC_API_KEY': 'old-key',
+        }, clear=True):
+            self.assertEqual(anthropic_inference_key(), 'new-key')
+
+    def test_inference_key_works_on_the_old_name_alone(self):
+        from .llm_provider_adapter_implementations import anthropic_inference_key
+        with patch.dict('os.environ', {'ANTHROPIC_API_KEY': 'old-key'}, clear=True):
+            self.assertEqual(anthropic_inference_key(), 'old-key')
+
+    def test_inference_key_is_none_when_neither_name_is_set(self):
+        from .llm_provider_adapter_implementations import anthropic_inference_key
+        with patch.dict('os.environ', {}, clear=True):
+            self.assertIsNone(anthropic_inference_key())
+
+    def test_app_api_key_ids_prefers_the_new_name(self):
+        from .llm_provider_adapter_implementations import app_api_key_ids
+        with patch.dict('os.environ', {
+            'ANTHROPIC_COSTAPP_API_KEY_IDS': 'apikey_new_a,apikey_new_b',
+            'ANTHROPIC_APP_API_KEY_IDS': 'apikey_old',
+        }, clear=True):
+            self.assertEqual(app_api_key_ids(), ['apikey_new_a', 'apikey_new_b'])
+
+    def test_app_api_key_ids_works_on_the_old_name_alone(self):
+        from .llm_provider_adapter_implementations import app_api_key_ids
+        with patch.dict('os.environ', {'ANTHROPIC_APP_API_KEY_IDS': 'apikey_old'}, clear=True):
+            self.assertEqual(app_api_key_ids(), ['apikey_old'])
+
+    def test_chat_api_key_ids_prefers_the_new_name(self):
+        from .llm_provider_adapter_implementations import chat_api_key_ids
+        with patch.dict('os.environ', {
+            'ANTHROPIC_CHATBOT_API_KEY_IDS': 'apikey_new_chat',
+            'ANTHROPIC_CHAT_API_KEY_IDS': 'apikey_old_chat',
+            'ANTHROPIC_COSTAPP_API_KEY_IDS': 'apikey_new_chat,apikey_search',
+        }, clear=True):
+            self.assertEqual(chat_api_key_ids(), ['apikey_new_chat'])
+
+    def test_chat_api_key_ids_works_on_the_old_name_alone(self):
+        from .llm_provider_adapter_implementations import chat_api_key_ids
+        with patch.dict('os.environ', {'ANTHROPIC_CHAT_API_KEY_IDS': 'apikey_old_chat'}, clear=True):
+            self.assertEqual(chat_api_key_ids(), ['apikey_old_chat'])
+
+    def test_chat_api_key_ids_falls_back_to_the_app_list_under_the_new_names(self):
+        from .llm_provider_adapter_implementations import chat_api_key_ids
+        with patch.dict('os.environ', {
+            'ANTHROPIC_COSTAPP_API_KEY_IDS': 'apikey_chat,apikey_search',
+        }, clear=True):
+            self.assertEqual(chat_api_key_ids(), ['apikey_chat', 'apikey_search'])
+
+    def test_chat_api_key_ids_falls_back_to_the_app_list_under_the_old_names(self):
+        from .llm_provider_adapter_implementations import chat_api_key_ids
+        with patch.dict('os.environ', {
+            'ANTHROPIC_APP_API_KEY_IDS': 'apikey_chat,apikey_search',
+        }, clear=True):
+            self.assertEqual(chat_api_key_ids(), ['apikey_chat', 'apikey_search'])
+
+    def test_chat_scope_is_app_wide_reads_the_new_chat_list_name_first(self):
+        from .stats_views import _chat_scope_is_app_wide
+        with patch.dict('os.environ', {'ANTHROPIC_CHATBOT_API_KEY_IDS': 'apikey_chat'}, clear=True):
+            self.assertFalse(_chat_scope_is_app_wide())
+        with patch.dict('os.environ', {'ANTHROPIC_CHAT_API_KEY_IDS': 'apikey_chat'}, clear=True):
+            self.assertFalse(_chat_scope_is_app_wide())
+        with patch.dict('os.environ', {}, clear=True):
+            self.assertTrue(_chat_scope_is_app_wide())
+
+
 class CacheTokenAdapterTests(TestCase):
     """ENG-148: get_tokens/get_model_rates previously only ever read
     uncached_input_tokens, silently excluding cache_creation/cache_read

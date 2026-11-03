@@ -38,7 +38,7 @@ PAST_TTL = 86400        # a day — past months are effectively fixed
 # Billed Anthropic spend the live API can no longer see, by month. Jun-Sep
 # 2026 ran on a pre-rotation API key that carried every surface (the
 # per-surface key split came later); that key was retired in the Oct 2026
-# rotation, its ID is not in ANTHROPIC_CHAT_API_KEY_IDS, and its archived
+# rotation, its ID is not in ANTHROPIC_CHATBOT_API_KEY_IDS, and its archived
 # usage reports $0, so get_cost returns ~$0 for those months even though
 # the traffic -- and its logged conversations -- is real. These are the old
 # key's whole-key monthly totals from the Anthropic console, supplied by
@@ -471,11 +471,11 @@ def _shop_filtered_figures(month_start, rates, shops):
 
 
 def _chat_scope_is_app_wide():
-    """True when ANTHROPIC_CHAT_API_KEY_IDS isn't set -- chat_api_key_ids()
+    """True when ANTHROPIC_CHATBOT_API_KEY_IDS isn't set -- chat_api_key_ids()
     then falls back to app_api_key_ids(), so cost_pc's numerator (and
     cost_reconciliation below) still includes AI Search Curator/narrative/
     report spend, not chat traffic alone."""
-    raw = os.environ.get('ANTHROPIC_CHAT_API_KEY_IDS') or ''
+    raw = os.environ.get('ANTHROPIC_CHATBOT_API_KEY_IDS') or os.environ.get('ANTHROPIC_CHAT_API_KEY_IDS') or ''
     return not bool([k.strip() for k in raw.split(',') if k.strip()])
 
 
@@ -1098,7 +1098,7 @@ def usage_by_key(request):
 
     Unlike get_usage_by_key itself (deliberately unscoped -- it exists to
     show every key with usage, expected or not), this VIEW filters its
-    output down to ANTHROPIC_APP_API_KEY_IDS when set, the same key-id list
+    output down to ANTHROPIC_COSTAPP_API_KEY_IDS when set, the same key-id list
     that already scopes the "Anthropic spend"/"Tokens" KPIs -- so this
     panel reads as "usage by *our* keys" rather than every key in the org,
     and its rows sum to the same spend total shown elsewhere on the page."""
@@ -1286,7 +1286,7 @@ def cost_reconciliation(request):
     estimates (_logged_spend_split's real+bot total). The gap
     ("unaccounted") is chat-key spend with no matching Message row --
     rejected probes, failed requests, calls the chatbot never logged.
-    `chat_scope_is_app_wide` warns when ANTHROPIC_CHAT_API_KEY_IDS isn't
+    `chat_scope_is_app_wide` warns when ANTHROPIC_CHATBOT_API_KEY_IDS isn't
     set: in that state both sides of this reconciliation (and cost_pc's own
     numerator) are still scoped to every key this app has issued -- AI
     Search Curator/narrative/report included, not chat alone."""
@@ -1493,7 +1493,7 @@ def cache_economics(request):
     prices each token type at its own rate via _rates_for's whole-org unit
     rates, same as cost_reconciliation/usage_by_key. Same chat_api_key_ids()
     scope as cost_reconciliation, so it carries the same chat_scope_is_app_wide
-    caveat when ANTHROPIC_CHAT_API_KEY_IDS is unset.
+    caveat when ANTHROPIC_CHATBOT_API_KEY_IDS is unset.
 
     Also returns `roi_multiple` ($ returned via the read discount per $1
     "invested" via the write premium -- see the inline comment above the

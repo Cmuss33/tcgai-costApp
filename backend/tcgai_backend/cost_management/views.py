@@ -1,5 +1,5 @@
 from django.http import JsonResponse
-from .llm_provider_adapter_implementations import AnthropicAdapter
+from .llm_provider_adapter_implementations import AnthropicAdapter, anthropic_inference_key
 from .models import AdvisorTelemetry, AttributedOrder, CartEvent, Chat, Message
 from django.views.decorators.http import require_http_methods
 from django.views.decorators.csrf import csrf_exempt
@@ -123,7 +123,7 @@ def score_single_chat(chat):
     if evidence_block:
         prompt += f"\n{evidence_block}\n"
 
-    api_key = os.environ.get('ANTHROPIC_API_KEY')
+    api_key = anthropic_inference_key()
     if not api_key:
         return None
 
@@ -266,7 +266,7 @@ def _conversation_completed(chat):
 def should_auto_audit_chat(chat, products_shown=None):
     """Determines whether a chat qualifies for smart auto-audit within cost boundaries."""
     # 0. Must have Anthropic API key configured
-    if not os.environ.get('ANTHROPIC_API_KEY'):
+    if not anthropic_inference_key():
         return False
 
     # 1. Never audit bots or shadowtest
