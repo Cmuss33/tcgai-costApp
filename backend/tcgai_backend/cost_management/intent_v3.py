@@ -33,6 +33,7 @@ import re
 
 from django.utils import timezone
 
+from .llm_provider_adapter_implementations import anthropic_inference_key
 from .models import AttributedOrder, CartEvent, Message
 from .taxonomy_v3 import (
     LOW_CONFIDENCE_THRESHOLD,
@@ -347,7 +348,7 @@ _INTENT_V3_SYSTEM = (
 
 
 def _call_intent_v3_llm(texts):
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    api_key = anthropic_inference_key()
     if not api_key or not texts:
         return None
     try:

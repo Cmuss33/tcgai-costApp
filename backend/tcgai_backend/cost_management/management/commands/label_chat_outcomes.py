@@ -40,7 +40,7 @@ class Command(BaseCommand):
         parser.add_argument(
             "--llm",
             action="store_true",
-            help="Use the AI intent classifier for the intent tier (needs ANTHROPIC_API_KEY); falls back to the rules per chat when unavailable.",
+            help="Use the AI intent classifier for the intent tier (needs ANTHROPIC_API_KEY_COSTAPP); falls back to the rules per chat when unavailable.",
         )
         parser.add_argument(
             "--dry-run",

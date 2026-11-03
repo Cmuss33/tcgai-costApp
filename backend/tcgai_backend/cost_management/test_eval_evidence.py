@@ -304,3 +304,46 @@ class GroundedScoringIntegrationTests(TestCase):
         self.assertEqual(chat.evaluation_score, 92)
         self.assertEqual(chat.evaluation_evidence["caps_applied"], [])
         self.assertEqual(chat.evaluation_evidence["judge_score"], 92)
+
+    @patch("anthropic.Anthropic")
+    def test_judge_uses_the_new_costapp_key_name_alone(self, mock_anthropic_class):
+        """Phase 1 of the Anthropic key rename: the judge's inference
+        read works when only ANTHROPIC_API_KEY_COSTAPP is set (the old
+        ANTHROPIC_API_KEY name absent)."""
+        from .views import score_single_chat
+        mock_client = MagicMock()
+        mock_anthropic_class.return_value = mock_client
+        mock_client.messages.create.return_value = self._judge_resp(
+            "Both answers were correct and offered next steps.\nSCORE: 92")
+
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY_COSTAPP": "new-test-key"}, clear=False):
+            os.environ.pop("ANTHROPIC_API_KEY", None)
+            chat = self._create_chat("clean-chat-new-key-name", [
+                ("do you have charizard", "Yes -- Charizard VMAX, CAD 89.99.", DECKS_SHOWN),
+                ("thanks", "Any time!", None),
+            ])
+            self.assertEqual(score_single_chat(chat), 92)
+
+        mock_anthropic_class.assert_called_with(api_key="new-test-key")
+
+    @patch("anthropic.Anthropic")
+    def test_judge_prefers_the_new_costapp_key_name_over_the_old(self, mock_anthropic_class):
+        """When both names are set, the judge must use
+        ANTHROPIC_API_KEY_COSTAPP, not the pre-rename fallback."""
+        from .views import score_single_chat
+        mock_client = MagicMock()
+        mock_anthropic_class.return_value = mock_client
+        mock_client.messages.create.return_value = self._judge_resp(
+            "Both answers were correct and offered next steps.\nSCORE: 92")
+
+        with patch.dict(os.environ, {
+            "ANTHROPIC_API_KEY_COSTAPP": "new-test-key",
+            "ANTHROPIC_API_KEY": "old-test-key",
+        }):
+            chat = self._create_chat("clean-chat-both-key-names", [
+                ("do you have charizard", "Yes -- Charizard VMAX, CAD 89.99.", DECKS_SHOWN),
+                ("thanks", "Any time!", None),
+            ])
+            self.assertEqual(score_single_chat(chat), 92)
+
+        mock_anthropic_class.assert_called_with(api_key="new-test-key")

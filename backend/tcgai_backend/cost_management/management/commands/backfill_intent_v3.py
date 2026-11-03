@@ -48,7 +48,7 @@ class Command(BaseCommand):
         parser.add_argument("--limit", type=int, default=0,
                             help="Maximum chats to label (0 = all).")
         parser.add_argument("--llm", action="store_true",
-                            help="Use the AI v3 classifier (needs ANTHROPIC_API_KEY); falls back to rules per chat when unavailable.")
+                            help="Use the AI v3 classifier (needs ANTHROPIC_API_KEY_COSTAPP); falls back to rules per chat when unavailable.")
         parser.add_argument("--dry-run", action="store_true",
                             help="Count the population without writing anything.")
         parser.add_argument("--review-output", type=str, default="",

@@ -157,7 +157,7 @@ def _reconciliation_verdict(ctx):
         alternatives.insert(0, {
             "label": "Scope the chat key",
             "detail": (
-                "Set ANTHROPIC_CHAT_API_KEY_IDS so the billed figure covers chat traffic "
+                "Set ANTHROPIC_CHATBOT_API_KEY_IDS so the billed figure covers chat traffic "
                 "only, not every key this app has issued."
             ),
         })
