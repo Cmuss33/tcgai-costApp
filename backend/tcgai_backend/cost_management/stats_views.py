@@ -475,7 +475,7 @@ def _chat_scope_is_app_wide():
     then falls back to app_api_key_ids(), so cost_pc's numerator (and
     cost_reconciliation below) still includes AI Search Curator/narrative/
     report spend, not chat traffic alone."""
-    raw = os.environ.get('ANTHROPIC_CHATBOT_API_KEY_IDS') or os.environ.get('ANTHROPIC_CHAT_API_KEY_IDS') or ''
+    raw = os.environ.get('ANTHROPIC_CHATBOT_API_KEY_IDS') or ''
     return not bool([k.strip() for k in raw.split(',') if k.strip()])
 
 
