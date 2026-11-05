@@ -199,3 +199,14 @@ PRODUCTION_SHOPS = [s.strip() for s in os.environ.get('PRODUCTION_SHOPS', '').sp
 COSTAPP_SSO_SECRET = os.environ.get('COSTAPP_SSO_SECRET', '')
 # Which existing Django user AOP's dashboard link logs the browser in as.
 COSTAPP_SSO_USERNAME = os.environ.get('COSTAPP_SSO_USERNAME', '')
+
+# ----------------------------
+# AOP Command Center machine read (revenue feed)
+# ----------------------------
+# Shared secret the AOP monitoring app presents as the X-CostApp-Token
+# header for its server-to-server read of GET /api/cost/commercial_impact/
+# (the Money section's revenue line). Must match the value AOP is deployed
+# with. Empty/unset disables the token path entirely -- the endpoint stays
+# session-only, exactly as before. The token admits that one GET and
+# nothing else (see cost_management/api_auth.py).
+COSTAPP_API_TOKEN = os.environ.get('COSTAPP_API_TOKEN', '')

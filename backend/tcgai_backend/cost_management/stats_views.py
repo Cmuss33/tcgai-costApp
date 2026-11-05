@@ -5,7 +5,7 @@ import re
 from datetime import datetime
 from decimal import Decimal
 
-from .api_auth import api_login_required
+from .api_auth import api_login_or_token_required, api_login_required
 from django.conf import settings
 from django.core.cache import cache
 from django.db.models import Avg, Count, Q, Sum
@@ -1717,7 +1717,7 @@ def _cart_event_surface_split(event_rows):
     }
 
 
-@api_login_required
+@api_login_or_token_required
 def commercial_impact(request):
     """Rufus-style commercial metrics for the store, in plain numbers: AI spend
     vs chat-influenced revenue, return per $1 of AI spend, and the share of
