@@ -5388,6 +5388,113 @@ class CommercialImpactTests(TestCase):
         self.assertEqual(d["influenced_revenue"], 100.0)
         self.assertEqual(d["orders_count"], 1)
 
+    # --- Probe (test-traffic) exclusion from revenue ---
+    # Revenue obeys the same doctrine as spend: a chat tagged is_probe is
+    # test traffic and never sits in merchant metrics. Orders linked to a
+    # probe chat drop out of revenue, orders_count and the converting
+    # count in both the lifetime and monthly branches. Orders with NO
+    # linked chat cannot be proven tests, so they stay in (and keep
+    # surfacing as unlinked_orders).
+
+    def _seed_probe(self, chat_id, revenue, when=None, currency="USD", order_id=None):
+        when = when or self.this_month.replace(day=10)
+        chat = Chat.objects.create(
+            chat_id=chat_id, model="claude-haiku-4-5", is_probe=True)
+        AttributedOrder.objects.create(
+            chat_id_raw=chat_id,
+            chat=chat,
+            shop="test-shop.myshopify.com",
+            order_id=order_id or f"ord-{chat_id}",
+            influenced_revenue=revenue,
+            order_total=revenue,
+            currency=currency,
+            order_created_at=when,
+        )
+        return chat
+
+    def test_probe_order_excluded_from_monthly_revenue(self):
+        self._patch_spend(10.0)
+        self._seed("c1", 100, order_id="o1")
+        self._seed_probe("probe-1", "6.39", order_id="o-probe")
+        self.client.force_login(self.user)
+
+        d = self.client.get("/api/cost/commercial_impact/").json()
+        self.assertEqual(d["influenced_revenue"], 100.0)
+        self.assertEqual(d["orders_count"], 1)
+        self.assertEqual(d["converting_conversations"], 1)
+
+    def test_probe_order_excluded_from_lifetime_revenue(self):
+        self._patch_spend(10.0)
+        self._seed("c1", 100, order_id="o1")
+        self._seed_probe("probe-1", "6.39", order_id="o-probe")
+        self.client.force_login(self.user)
+
+        d = self.client.get("/api/cost/commercial_impact/?month=lifetime").json()
+        self.assertEqual(d["influenced_revenue"], 100.0)
+        self.assertEqual(d["orders_count"], 1)
+        self.assertEqual(d["converting_conversations"], 1)
+
+    def test_unlinked_order_still_counted_alongside_probe(self):
+        self._patch_spend(10.0)
+        self._seed_probe("probe-1", "6.39", order_id="o-probe")
+        AttributedOrder.objects.create(
+            chat_id_raw="ghost-chat",
+            chat=None,
+            shop="test-shop.myshopify.com",
+            order_id="o-ghost",
+            influenced_revenue=25,
+            order_total=25,
+            currency="USD",
+            order_created_at=self.this_month.replace(day=10),
+        )
+        self.client.force_login(self.user)
+
+        d = self.client.get("/api/cost/commercial_impact/").json()
+        self.assertEqual(d["influenced_revenue"], 25.0)
+        self.assertEqual(d["orders_count"], 1)
+        self.assertEqual(d["unlinked_orders"], 1)
+
+    def test_untagging_probe_chat_restores_its_order(self):
+        # The exclusion is a reporting rule, not a deletion: untag the
+        # chat and its order counts again.
+        self._patch_spend(10.0)
+        chat = self._seed_probe("probe-1", "6.39", order_id="o-probe")
+        self.client.force_login(self.user)
+
+        d = self.client.get("/api/cost/commercial_impact/").json()
+        self.assertEqual(d["influenced_revenue"], 0.0)
+        self.assertEqual(d["orders_count"], 0)
+
+        chat.is_probe = False
+        chat.save(update_fields=["is_probe"])
+        cache.clear()
+
+        d = self.client.get("/api/cost/commercial_impact/").json()
+        self.assertEqual(d["influenced_revenue"], 6.39)
+        self.assertEqual(d["orders_count"], 1)
+
+    def test_token_and_session_payloads_match_under_probe_exclusion(self):
+        token = "probe" + "-parity-" + "7f3a"
+        with override_settings(COSTAPP_API_TOKEN=token):
+            self._patch_spend(10.0)
+            self._seed("c1", 100, order_id="o1")
+            self._seed_probe("probe-1", "6.39", order_id="o-probe")
+            url = "/api/cost/commercial_impact/?month=lifetime"
+
+            self.client.force_login(self.user)
+            session_resp = self.client.get(url)
+            self.assertEqual(session_resp.status_code, 200)
+            self.client.logout()
+
+            token_resp = self.client.get(url, HTTP_X_COSTAPP_TOKEN=token)
+            self.assertEqual(token_resp.status_code, 200)
+            token_body = token_resp.json()
+            self.assertTrue(token_body.pop("cached"))
+            self.assertEqual(token_body, session_resp.json())
+            # And the shared payload really does exclude the probe order.
+            self.assertEqual(token_body["influenced_revenue"], 100.0)
+            self.assertEqual(token_body["orders_count"], 1)
+
 
 class CartFunnelTests(TestCase):
     """Cart funnel panel (Step 3): shopping chats -> added to cart ->

@@ -1617,7 +1617,9 @@ COMMERCIAL_IMPACT_METHODOLOGY = (
     "Influenced revenue = revenue from products the assistant recommended (main + add-on picks), "
     "at price paid after discounts. Excludes shipping/tax. Spend = this app's Anthropic API cost "
     "(same chat-surface scoping as the dashboard). A conversation counts as converting when at "
-    "least one attributed order links to its chat id."
+    "least one attributed order links to its chat id. Orders linked to test (probe) chats are "
+    "excluded from revenue, just as test chats are excluded from spend; orders with no linked "
+    "chat are included and counted as unlinked."
 )
 
 # --- Curator-vs-chat surface split (AI Curator redesign, PR 3) -------------
@@ -1766,7 +1768,13 @@ def commercial_impact(request):
                 total_spend += m_spend
 
         range_start = timezone.make_aware(datetime(2026, 6, 1))
-        orders = AttributedOrder.objects.filter(order_created_at__gte=range_start)
+        # Revenue follows the same test-traffic doctrine as spend: orders
+        # linked to a probe (test) chat are excluded. Orders with NO linked
+        # chat cannot be proven tests, so they stay in -- they surface
+        # below as unlinked_orders, the join-key canary.
+        orders = AttributedOrder.objects.filter(
+            order_created_at__gte=range_start
+        ).exclude(chat__is_probe=True)
         if shops:
             orders = orders.filter(shop__in=list(shops))
         revenue = sum((o.influenced_revenue for o in orders), Decimal("0"))
@@ -1836,7 +1844,11 @@ def commercial_impact(request):
     else:
         spend, _, cost_err = _spend_for(month_start, rates_resp)
 
-    orders = AttributedOrder.objects.filter(order_created_at__gte=start, order_created_at__lt=end)
+    # Probe-linked orders excluded, unlinked orders stay in -- the same
+    # test-traffic rule as the lifetime branch above (see its comment).
+    orders = AttributedOrder.objects.filter(
+        order_created_at__gte=start, order_created_at__lt=end
+    ).exclude(chat__is_probe=True)
     if shops:
         orders = orders.filter(shop__in=list(shops))
 
