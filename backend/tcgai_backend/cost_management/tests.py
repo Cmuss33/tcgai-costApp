@@ -5223,6 +5223,68 @@ class CommercialImpactTests(TestCase):
     def test_requires_login(self):
         self.assertEqual(self.client.get("/api/cost/commercial_impact/").status_code, 401)
 
+    # --- Machine token path (AOP Command Center revenue feed) ---
+    # X-CostApp-Token admits GETs on this endpoint only, and only while
+    # COSTAPP_API_TOKEN is set. Session login keeps working throughout.
+
+    TOKEN = "test-machine-token"
+
+    def _token_get(self, url, token=TOKEN):
+        return self.client.get(url, HTTP_X_COSTAPP_TOKEN=token)
+
+    @override_settings(COSTAPP_API_TOKEN="")
+    def test_token_rejected_when_env_unset(self):
+        resp = self._token_get("/api/cost/commercial_impact/?month=lifetime")
+        self.assertEqual(resp.status_code, 401)
+        self.assertEqual(resp.json(), {"error": "unauthenticated"})
+
+    @override_settings(COSTAPP_API_TOKEN=TOKEN)
+    def test_wrong_token_rejected_with_same_shape_as_login(self):
+        resp = self._token_get("/api/cost/commercial_impact/?month=lifetime", token="nope")
+        self.assertEqual(resp.status_code, 401)
+        self.assertEqual(resp.json(), {"error": "unauthenticated"})
+        # Identical to the no-credential rejection -- no hint which part failed.
+        bare = self.client.get("/api/cost/commercial_impact/?month=lifetime")
+        self.assertEqual(resp.content, bare.content)
+
+    @override_settings(COSTAPP_API_TOKEN=TOKEN)
+    def test_correct_token_payload_matches_session_payload(self):
+        self._patch_spend(10.0)
+        self._seed("c1", 100, order_id="o1")
+        url = "/api/cost/commercial_impact/?month=lifetime"
+
+        self.client.force_login(self.user)
+        session_resp = self.client.get(url)
+        self.assertEqual(session_resp.status_code, 200)
+        self.client.logout()
+
+        token_resp = self._token_get(url)
+        self.assertEqual(token_resp.status_code, 200)
+        token_body = token_resp.json()
+        # The token call is served the very payload the session call stored
+        # (cache serve adds only its "cached" flag).
+        self.assertTrue(token_body.pop("cached"))
+        self.assertEqual(token_body, session_resp.json())
+
+    @override_settings(COSTAPP_API_TOKEN=TOKEN)
+    def test_session_login_still_works_when_token_set(self):
+        self.client.force_login(self.user)
+        resp = self.client.get("/api/cost/commercial_impact/?month=lifetime")
+        self.assertEqual(resp.status_code, 200)
+
+    @override_settings(COSTAPP_API_TOKEN=TOKEN)
+    def test_token_does_not_admit_other_endpoints(self):
+        resp = self._token_get("/api/cost/low_score_export/")
+        self.assertEqual(resp.status_code, 401)
+
+    @override_settings(COSTAPP_API_TOKEN=TOKEN)
+    def test_token_does_not_admit_post_on_this_endpoint(self):
+        resp = self.client.post(
+            "/api/cost/commercial_impact/",
+            HTTP_X_COSTAPP_TOKEN=self.TOKEN,
+        )
+        self.assertEqual(resp.status_code, 401)
+
     def test_lifetime_refresh_recomputes_instead_of_serving_cache(self):
         """Regression (Lifetime Refresh): commercial_impact never read
         the refresh flag at all -- the dashboard's Refresh button could
