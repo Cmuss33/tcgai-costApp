@@ -313,8 +313,10 @@ class GetChatIdsExcludesAutomatedChatsTests(TestCase):
         self.client.force_login(self.user)
 
     def test_flagged_chats_are_excluded_from_results_and_total(self):
-        Chat.objects.create(chat_id="real-1", model="claude-haiku-4-5")
-        Chat.objects.create(chat_id="real-2", model="claude-haiku-4-5")
+        real_1 = Chat.objects.create(chat_id="real-1", model="claude-haiku-4-5")
+        Message.objects.create(chat=real_1, content="hi", llm_formatted_message="{}", returned_content="hello", llm_formatted_returned_message="{}", tokens_in=10, tokens_out=5, model="claude-haiku-4-5")
+        real_2 = Chat.objects.create(chat_id="real-2", model="claude-haiku-4-5")
+        Message.objects.create(chat=real_2, content="hi", llm_formatted_message="{}", returned_content="hello", llm_formatted_returned_message="{}", tokens_in=10, tokens_out=5, model="claude-haiku-4-5")
         for i in range(5):
             Chat.objects.create(chat_id=f"bot-{i}", model="claude-haiku-4-5", likely_automated=True)
 
@@ -327,7 +329,8 @@ class GetChatIdsExcludesAutomatedChatsTests(TestCase):
 
     def test_pagination_offsets_are_not_thrown_off_by_excluded_bot_chats(self):
         for i in range(3):
-            Chat.objects.create(chat_id=f"real-{i}", model="claude-haiku-4-5")
+            chat = Chat.objects.create(chat_id=f"real-{i}", model="claude-haiku-4-5")
+            Message.objects.create(chat=chat, content="hi", llm_formatted_message="{}", returned_content="hello", llm_formatted_returned_message="{}", tokens_in=10, tokens_out=5, model="claude-haiku-4-5")
         for i in range(50):
             Chat.objects.create(chat_id=f"bot-{i}", model="claude-haiku-4-5", likely_automated=True)
 
@@ -361,7 +364,8 @@ class GetChatIdsPaginationTests(TestCase):
 
     def test_multi_page_navigation(self):
         for i in range(25):
-            Chat.objects.create(chat_id=f"chat-{i:02d}", model="claude-haiku-4-5")
+            chat = Chat.objects.create(chat_id=f"chat-{i:02d}", model="claude-haiku-4-5")
+            Message.objects.create(chat=chat, content="hi", llm_formatted_message="{}", returned_content="hello", llm_formatted_returned_message="{}", tokens_in=10, tokens_out=5, model="claude-haiku-4-5")
 
         # Page 1: limit 10, offset 0 -> page 1 of 3
         res1 = self.client.get("/api/cost/get_chat_ids/?limit=10&offset=0")
@@ -393,9 +397,11 @@ class GetChatIdsPaginationTests(TestCase):
     def test_pagination_with_filters(self):
         # 3 audited chats, 2 unaudited
         for i in range(3):
-            Chat.objects.create(chat_id=f"audited-{i}", model="claude-haiku-4-5", evaluation_score=95)
+            chat = Chat.objects.create(chat_id=f"audited-{i}", model="claude-haiku-4-5", evaluation_score=95)
+            Message.objects.create(chat=chat, content="hi", llm_formatted_message="{}", returned_content="hello", llm_formatted_returned_message="{}", tokens_in=10, tokens_out=5, model="claude-haiku-4-5")
         for i in range(2):
-            Chat.objects.create(chat_id=f"unaudited-{i}", model="claude-haiku-4-5", evaluation_score=None)
+            chat = Chat.objects.create(chat_id=f"unaudited-{i}", model="claude-haiku-4-5", evaluation_score=None)
+            Message.objects.create(chat=chat, content="hi", llm_formatted_message="{}", returned_content="hello", llm_formatted_returned_message="{}", tokens_in=10, tokens_out=5, model="claude-haiku-4-5")
 
         res = self.client.get("/api/cost/get_chat_ids/?filter=unaudited&limit=10&offset=0")
         data = res.json()
@@ -478,7 +484,7 @@ class GetChatIdsInvestigationFieldsTests(TestCase):
         self.client.force_login(self.user)
 
     def test_get_chat_ids_row_includes_investigation_fields(self):
-        Chat.objects.create(
+        chat = Chat.objects.create(
             chat_id="conv-inv",
             model="claude-haiku-4-5",
             investigation_status="flagged",
@@ -486,6 +492,7 @@ class GetChatIdsInvestigationFieldsTests(TestCase):
             github_issue_url="https://github.com/x/y/issues/1",
             linear_issue_url="https://linear.app/x/issue/ABC-1",
         )
+        Message.objects.create(chat=chat, content="hi", llm_formatted_message="{}", returned_content="hello", llm_formatted_returned_message="{}", tokens_in=10, tokens_out=5, model="claude-haiku-4-5")
 
         response = self.client.get("/api/cost/get_chat_ids/")
 
@@ -500,6 +507,7 @@ class GetChatIdsInvestigationFieldsTests(TestCase):
         c2 = Chat.objects.create(chat_id="chat-bad", model="claude-haiku-4-5", evaluation_score=60)
         c3 = Chat.objects.create(chat_id="chat-unscored", model="claude-haiku-4-5", evaluation_score=None)
 
+        Message.objects.create(chat=c3, content="hi", llm_formatted_message="{}", returned_content="hello", llm_formatted_returned_message="{}", tokens_in=10, tokens_out=5, model="claude-haiku-4-5")
         Message.objects.create(
             chat=c1, content="Do you have Charizard ex?", returned_content="Yes we do!",
             tokens_in=10, tokens_out=10, model="claude-haiku-4-5"
@@ -571,6 +579,7 @@ class GetChatIdsInvestigationFieldsTests(TestCase):
 
         # Chat on or after June 1, 2026
         c_new = Chat.objects.create(chat_id="chat-june-2026", model="claude-haiku-4-5", evaluation_score=90)
+        Message.objects.create(chat=c_new, content="hi", llm_formatted_message="{}", returned_content="hello", llm_formatted_returned_message="{}", tokens_in=10, tokens_out=5, model="claude-haiku-4-5")
         Chat.objects.filter(pk=c_new.pk).update(timestamp=timezone.make_aware(datetime.datetime(2026, 6, 1, 0, 0, 0)))
 
         res = self.client.get("/api/cost/get_chat_ids/")
@@ -1735,6 +1744,11 @@ class MonthlyStatsTests(TestCase):
                 chat_id=f"{prefix}-{when:%Y%m%d}-{i}", model=model,
                 tokens_in=tokens_in, tokens_out=tokens_out, evaluation_score=score,
             )
+            # Zero-token message with the chat's own model: real_chats only
+            # counts chats that have one; spend/token/model figures in these
+            # tests derive from the Chat rows and the mocked adapter, so the
+            # marker message must contribute no tokens of its own.
+            Message.objects.create(chat=chat, content="hi", llm_formatted_message="{}", returned_content="hello", llm_formatted_returned_message="{}", tokens_in=0, tokens_out=0, model=model)
             Chat.objects.filter(pk=chat.pk).update(timestamp=when)
 
     def _patch_adapter(self):
@@ -2187,10 +2201,12 @@ class MonthlyStatsLifetimeTests(TestCase):
 
         # Chat in June 2026
         c_jun = Chat.objects.create(chat_id="chat-jun", model="claude-haiku-4-5", evaluation_score=90)
+        Message.objects.create(chat=c_jun, content="hi", llm_formatted_message="{}", returned_content="hello", llm_formatted_returned_message="{}", tokens_in=10, tokens_out=5, model="claude-haiku-4-5")
         Chat.objects.filter(pk=c_jun.pk).update(timestamp=self.jun_2026)
 
         # Chat in July 2026
         c_jul = Chat.objects.create(chat_id="chat-jul", model="claude-haiku-4-5", evaluation_score=100)
+        Message.objects.create(chat=c_jul, content="hi", llm_formatted_message="{}", returned_content="hello", llm_formatted_returned_message="{}", tokens_in=10, tokens_out=5, model="claude-haiku-4-5")
         Chat.objects.filter(pk=c_jul.pk).update(timestamp=self.jul_2026)
 
         resp = self.client.get("/api/cost/monthly_stats/?month=lifetime")
@@ -4273,6 +4289,7 @@ class ShadowtestTrafficExclusionTests(TestCase):
     def test_real_chats_excludes_shadowtest_chat_ids(self):
         from .month_utils import real_chats
         c_real = Chat.objects.create(chat_id="customer-1", model="claude-haiku-4-5")
+        Message.objects.create(chat=c_real, content="hi", llm_formatted_message="{}", returned_content="hello", llm_formatted_returned_message="{}", tokens_in=10, tokens_out=5, model="claude-haiku-4-5")
         Chat.objects.create(chat_id="bot-probe", model="claude-haiku-4-5", likely_automated=True)
         Chat.objects.create(chat_id="conv-shadowtest-01", model="claude-haiku-4-5", likely_automated=False)
         Chat.objects.create(chat_id="ShadowTest_Upper", model="claude-haiku-4-5", likely_automated=False)
@@ -4292,7 +4309,8 @@ class ShadowtestTrafficExclusionTests(TestCase):
         self.assertTrue(chat.likely_automated)
 
     def test_get_chat_ids_excludes_shadowtest(self):
-        Chat.objects.create(chat_id="real-shopper", model="claude-haiku-4-5")
+        real = Chat.objects.create(chat_id="real-shopper", model="claude-haiku-4-5")
+        Message.objects.create(chat=real, content="hi", llm_formatted_message="{}", returned_content="hello", llm_formatted_returned_message="{}", tokens_in=10, tokens_out=5, model="claude-haiku-4-5")
         Chat.objects.create(chat_id="qa-shadowtest-1", model="claude-haiku-4-5")
         Chat.objects.create(chat_id="qa-shadowtest-2", model="claude-haiku-4-5", likely_automated=True)
 
@@ -4304,13 +4322,16 @@ class ShadowtestTrafficExclusionTests(TestCase):
 
     def test_get_avg_metrics_exclude_shadowtest(self):
         # Real chat with score 100 and 200 tokens
-        Chat.objects.create(
+        real_eval = Chat.objects.create(
             chat_id="real-shopper-eval",
             model="claude-haiku-4-5",
             evaluation_score=100,
             tokens_in=200,
             tokens_out=100,
         )
+        # Zero-token message: the asserted averages come from the Chat row's
+        # own token fields, so the population-marker message must not add any.
+        Message.objects.create(chat=real_eval, content="hi", llm_formatted_message="{}", returned_content="hello", llm_formatted_returned_message="{}", tokens_in=0, tokens_out=0, model="claude-haiku-4-5")
         # Shadowtest chat with score 10 and 50,000 tokens
         Chat.objects.create(
             chat_id="batch-shadowtest-run",
@@ -4347,6 +4368,69 @@ class ShadowtestTrafficExclusionTests(TestCase):
 
         flag_shadowtest_chats(apps, None)
         self.assertTrue(Chat.objects.get(chat_id=chat.chat_id).likely_automated)
+
+
+class EmptyAndTestRowExclusionTests(TestCase):
+    """Prof's ruling 2026-11-06: empty rows (a Chat with no Message rows)
+    and diagnostic/verification harness rows (diagnostic-test-* /
+    claude-verification-* chat_ids) are not conversations and must not
+    inflate any count, coverage denominator, or average. In the live
+    Jun-Nov 2026 population, 33 such rows (32 in August) made grading
+    coverage top out at 92.5% and padded conversation totals."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="owner", password="<redacted>")
+        self.client.force_login(self.user)
+
+    def _chat_with_message(self, chat_id, **chat_kwargs):
+        chat = Chat.objects.create(chat_id=chat_id, model="claude-haiku-4-5", **chat_kwargs)
+        Message.objects.create(
+            chat=chat,
+            content="hi",
+            llm_formatted_message="{}",
+            returned_content="hello",
+            llm_formatted_returned_message="{}",
+            tokens_in=10,
+            tokens_out=5,
+            model="claude-haiku-4-5",
+        )
+        return chat
+
+    def test_real_chats_excludes_empty_rows(self):
+        self._chat_with_message("real-conversation")
+        Chat.objects.create(chat_id="empty-shell", model="claude-haiku-4-5")
+
+        visible = list(real_chats(Chat.objects.all()).values_list("chat_id", flat=True))
+        self.assertEqual(visible, ["real-conversation"])
+
+    def test_real_chats_excludes_test_prefixes_even_with_messages(self):
+        self._chat_with_message("real-conversation")
+        self._chat_with_message("diagnostic-test-claude-verify-fix")
+        self._chat_with_message("claude-verification-1789599958")
+
+        visible = list(real_chats(Chat.objects.all()).values_list("chat_id", flat=True))
+        self.assertEqual(visible, ["real-conversation"])
+
+    def test_get_chat_ids_excludes_empty_and_test_rows(self):
+        self._chat_with_message("real-shopper")
+        Chat.objects.create(chat_id="empty-shell", model="claude-haiku-4-5")
+        self._chat_with_message("diagnostic-test-claude-do-not-use")
+
+        resp = self.client.get("/api/cost/get_chat_ids/?limit=50")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        ids = [c["chat_id"] for c in data["results"]]
+        self.assertEqual(ids, ["real-shopper"])
+        self.assertEqual(data["kpis"]["total_conversations"], 1)
+
+    def test_monthly_stats_conversation_total_excludes_empty_rows(self):
+        self._chat_with_message("real-shopper")
+        Chat.objects.create(chat_id="empty-shell", model="claude-haiku-4-5")
+
+        month = timezone.now().strftime("%Y-%m")
+        resp = self.client.get(f"/api/cost/monthly_stats/?month={month}&refresh=1")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["conversations"]["total"], 1)
 
 
 class AutoAuditAndBatchEvaluationTests(TestCase):
@@ -4642,7 +4726,13 @@ class AutoAuditAndBatchEvaluationTests(TestCase):
         c_old = Chat.objects.create(chat_id="batch-old", model="claude-haiku-4-5")
         Chat.objects.filter(pk=c_old.pk).update(timestamp=timezone.make_aware(datetime.datetime(2026, 5, 31, 23, 59, 59)))
         c_new = Chat.objects.create(chat_id="batch-new", model="claude-haiku-4-5")
+        Message.objects.create(chat=c_new, content="hi", llm_formatted_message="{}", returned_content="hello", llm_formatted_returned_message="{}", tokens_in=10, tokens_out=5, model="claude-haiku-4-5")
         Chat.objects.filter(pk=c_new.pk).update(timestamp=timezone.make_aware(datetime.datetime(2026, 6, 1, 12, 0, 0)))
+        # The completion gate reads the latest Message timestamp (falling
+        # back to the chat's only when it has none), so the added message
+        # must be as old as the conversation it belongs to (same pattern as
+        # test_batch_evaluate_endpoint above).
+        Message.objects.filter(chat=c_new).update(timestamp=timezone.make_aware(datetime.datetime(2026, 6, 1, 12, 0, 0)))
 
         resp = self.client.post(
             "/api/cost/batch_evaluate/",
@@ -5216,10 +5306,11 @@ class CommercialImpactTests(TestCase):
 
     def _seed(self, chat_id, revenue, when=None, currency="USD", order_id=None):
         when = when or self.this_month.replace(day=10)
-        Chat.objects.create(chat_id=chat_id, model="claude-haiku-4-5")
+        chat = Chat.objects.create(chat_id=chat_id, model="claude-haiku-4-5")
+        Message.objects.create(chat=chat, content="hi", llm_formatted_message="{}", returned_content="hello", llm_formatted_returned_message="{}", tokens_in=10, tokens_out=5, model="claude-haiku-4-5")
         AttributedOrder.objects.create(
             chat_id_raw=chat_id,
-            chat=Chat.objects.get(chat_id=chat_id),
+            chat=chat,
             shop="test-shop.myshopify.com",
             order_id=order_id or f"ord-{chat_id}",
             influenced_revenue=revenue,
@@ -5325,7 +5416,8 @@ class CommercialImpactTests(TestCase):
         self._patch_spend(10.0)
         self._seed("c1", 100, order_id="o1")
         self._seed("c2", 50, order_id="o2")
-        Chat.objects.create(chat_id="c3-no-order", model="claude-haiku-4-5")
+        c3 = Chat.objects.create(chat_id="c3-no-order", model="claude-haiku-4-5")
+        Message.objects.create(chat=c3, content="hi", llm_formatted_message="{}", returned_content="hello", llm_formatted_returned_message="{}", tokens_in=10, tokens_out=5, model="claude-haiku-4-5")
         self.client.force_login(self.user)
 
         d = self.client.get("/api/cost/commercial_impact/").json()
@@ -5530,10 +5622,12 @@ class CartFunnelTests(TestCase):
         cache.clear()
 
     def _chat(self, chat_id, intent="product_search", shop=None):
-        return Chat.objects.create(
+        chat = Chat.objects.create(
             chat_id=chat_id, model="claude-haiku-4-5",
             intent=intent, shop=shop or self.SHOP,
         )
+        Message.objects.create(chat=chat, content="hi", llm_formatted_message="{}", returned_content="hello", llm_formatted_returned_message="{}", tokens_in=10, tokens_out=5, model="claude-haiku-4-5")
+        return chat
 
     def _cart(self, session_id, value, conversation_id=None, when=None,
               source="storefront", shop=None):
@@ -5996,6 +6090,10 @@ class VerdictCardsEndpointTests(TestCase):
             chat_id=chat_id, model=model, tokens_in=tokens_in, tokens_out=tokens_out,
             likely_automated=likely_automated, evaluation_score=score,
         )
+        # Zero-token message with the chat's own model: real_chats only
+        # counts chats that have one; logged spend and bot share in these
+        # tests derive from the Chat rows' own token fields.
+        Message.objects.create(chat=chat, content="hi", llm_formatted_message="{}", returned_content="hello", llm_formatted_returned_message="{}", tokens_in=0, tokens_out=0, model=model)
         Chat.objects.filter(pk=chat.pk).update(timestamp=month.replace(day=10))
         return chat
 
@@ -6257,6 +6355,7 @@ class AlertRulesTests(TestCase):
         for i in range(n):
             c = Chat.objects.create(chat_id=f"trip-{days_ago}d-{i}-{kw.get('is_probe', False)}",
                                     model="claude-haiku-4-5", **kw)
+            Message.objects.create(chat=c, content="hi", llm_formatted_message="{}", returned_content="hello", llm_formatted_returned_message="{}", tokens_in=10, tokens_out=5, model="claude-haiku-4-5")
             Chat.objects.filter(pk=c.pk).update(timestamp=when)
             made.append(c)
         return made
@@ -6803,7 +6902,8 @@ class AdvisorTelemetryTests(TestCase):
         month_start = _now().replace(day=1)
         # 4 real chats this month (denominator for emit coverage).
         for cid in ("c1", "c2", "c3", "c4"):
-            Chat.objects.create(chat_id=cid, model="m")
+            chat = Chat.objects.create(chat_id=cid, model="m")
+            Message.objects.create(chat=chat, content="hi", llm_formatted_message="{}", returned_content="hello", llm_formatted_returned_message="{}", tokens_in=10, tokens_out=5, model="m")
         AdvisorTelemetry.objects.filter().delete()
         rows = [
             # compliant: hero 45 <= budget 60, linked
@@ -6922,7 +7022,8 @@ class ApplyShopFilterTests(TestCase):
         self.assertEqual(list(qs.values_list("chat_id", flat=True)), ["s1"])
 
     def test_composes_with_real_chats_bot_exclusion(self):
-        Chat.objects.create(chat_id="s1", model="m", shop="a.myshopify.com")
+        s1 = Chat.objects.create(chat_id="s1", model="m", shop="a.myshopify.com")
+        Message.objects.create(chat=s1, content="hi", llm_formatted_message="{}", returned_content="hello", llm_formatted_returned_message="{}", tokens_in=10, tokens_out=5, model="claude-haiku-4-5")
         Chat.objects.create(
             chat_id="s2", model="m", shop="a.myshopify.com", likely_automated=True
         )
@@ -6997,10 +7098,9 @@ class ShopsViewTests(TestCase):
         self.client.force_login(self.user)
 
     def test_lists_distinct_shops_with_counts(self):
-        Chat.objects.create(chat_id="s1", model="m", shop="a.myshopify.com")
-        Chat.objects.create(chat_id="s2", model="m", shop="a.myshopify.com")
-        Chat.objects.create(chat_id="s3", model="m", shop="b.myshopify.com")
-        Chat.objects.create(chat_id="s4", model="m", shop="")
+        for chat_id, shop in (("s1", "a.myshopify.com"), ("s2", "a.myshopify.com"), ("s3", "b.myshopify.com"), ("s4", "")):
+            chat = Chat.objects.create(chat_id=chat_id, model="m", shop=shop)
+            Message.objects.create(chat=chat, content="hi", llm_formatted_message="{}", returned_content="hello", llm_formatted_returned_message="{}", tokens_in=10, tokens_out=5, model="claude-haiku-4-5")
         Chat.objects.create(
             chat_id="bot", model="m", shop="a.myshopify.com", likely_automated=True
         )
@@ -7027,13 +7127,17 @@ class MonthlyStatsShopFilterTests(TestCase):
         cache.clear()
 
     def _mk(self, chat_id, shop, tokens_in=1000, tokens_out=200):
-        return Chat.objects.create(
+        chat = Chat.objects.create(
             chat_id=chat_id,
             model="claude-haiku-4-5",
             shop=shop,
             tokens_in=tokens_in,
             tokens_out=tokens_out,
         )
+        # Zero-token message: real_chats only counts chats that have one;
+        # logged spend is computed from the Chat row's own token fields.
+        Message.objects.create(chat=chat, content="hi", llm_formatted_message="{}", returned_content="hello", llm_formatted_returned_message="{}", tokens_in=0, tokens_out=0, model="claude-haiku-4-5")
+        return chat
 
     def _mocked(self):
         return (
@@ -7351,6 +7455,9 @@ class ProbeChatsExcludedFromMetricsTests(TestCase):
             chat_id=chat_id, model="claude-haiku-4-5",
             tokens_in=1000, tokens_out=300, is_probe=is_probe,
         )
+        # Zero-token message: real_chats only counts chats that have one;
+        # the token story stays on the Chat row's own fields.
+        Message.objects.create(chat=chat, content="hi", llm_formatted_message="{}", returned_content="hello", llm_formatted_returned_message="{}", tokens_in=0, tokens_out=0, model="claude-haiku-4-5")
         Chat.objects.filter(pk=chat.pk).update(timestamp=when)
         return chat
 
