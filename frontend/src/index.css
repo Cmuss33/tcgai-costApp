@@ -1,3 +1,11 @@
+/* Backstop: no single element may ever push the page wider than the
+   screen (the header once forced a ~650px document on phones).
+   `clip` (unlike `hidden`) creates no scroll container, so the sticky
+   header keeps working. */
+html, body {
+  overflow-x: clip;
+}
+
 :root {
   font-family: system-ui, Avenir, Helvetica, Arial, sans-serif;
   line-height: 1.5;

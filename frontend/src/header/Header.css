@@ -81,6 +81,7 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  white-space: nowrap;
 }
 
 .header-btn:hover {
@@ -98,6 +99,8 @@
   display: inline-flex;
   align-items: center;
   gap: 7px;
+  white-space: nowrap;
+  flex-shrink: 0;
   font-size: 12px;
   font-weight: 600;
   color: #34d399;
@@ -179,15 +182,29 @@
   cursor: not-allowed;
 }
 
-@media (max-width: 600px) {
+@media (max-width: 760px) {
+  /* The full header row (brand + nav + badge + logout) is ~650px of
+     min-content: on a phone it must wrap into rows instead of forcing
+     the whole document wider than the screen. */
   .header-content {
-    gap: 12px;
+    flex-wrap: wrap;
+    gap: 10px 12px;
+  }
+  .header-left {
+    flex-wrap: wrap;
+    gap: 10px 16px;
+    min-width: 0;
   }
   .header-nav {
-    gap: 16px;
+    flex-wrap: wrap;
+    gap: 6px;
   }
   .header-btn {
-    font-size: 14px;
+    font-size: 13.5px;
+    padding: 6px 8px;
+  }
+  .header-actions {
+    margin-left: auto;
   }
   .header-logout-btn {
     padding: 5px 10px;
