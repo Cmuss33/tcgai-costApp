@@ -1907,6 +1907,22 @@ class MonthlyStatsTests(TestCase):
         self.assertEqual(ev["coverage_pct"], 75.0)
         self.assertIsNotNone(ev["avg"])
 
+    def test_eval_avg_is_chat_weighted_not_day_weighted(self):
+        # One 100 on day 5, three 40s on day 6: the chat-weighted mean is
+        # 55.0; the old mean-of-daily-means gave 70.0 by weighing the
+        # one-chat day the same as the three-chat day. The homepage hero
+        # shows this as "the accuracy of those conversations", so every
+        # graded conversation must count exactly once.
+        self._patch_adapter()
+        self._seed(1, self.this_month.replace(day=5), score=100)
+        self._seed(3, self.this_month.replace(day=6), score=40)
+        self.client.force_login(self.user)
+
+        ev = self.client.get("/api/cost/monthly_stats/").json()["eval_score"]
+
+        self.assertEqual(ev["scored"], 4)
+        self.assertEqual(ev["avg"], 55.0)
+
     def test_cost_source_failure_degrades_but_keeps_db_sections(self):
         p = patch.multiple(
             "cost_management.views.llmprovider",
