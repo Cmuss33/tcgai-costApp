@@ -24,29 +24,6 @@ const fmtCompact = (n) => {
   if (n >= 1e4) return `${Math.round(n / 1e3)}K`;
   return nf.format(n);
 };
-const formatCostSourceError = (error) => {
-  if (!error) return "";
-  if (typeof error === "string") {
-    const trimmed = error.trim();
-    if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
-      try {
-        const parsed = JSON.parse(trimmed);
-        if (parsed?.error?.type === "rate_limit_error" || parsed?.type === "error") {
-          return parsed.error?.message || "Anthropic rate limit reached. Retrying automatically…";
-        }
-        if (parsed?.error?.message) {
-          return parsed.error.message;
-        }
-      } catch {
-        // Fall back to original string
-      }
-    }
-    if (error.includes("rate_limit_error") || error.includes("rate limit")) {
-      return "Anthropic rate limit reached. Retrying in a few moments…";
-    }
-  }
-  return String(error);
-};
 
 const CACHE_VERDICT = {
   helping: {
@@ -197,24 +174,6 @@ function ExampleLinks({ ids }) {
   );
 }
 
-function Kpi({ accent, label, value, sub, deltaPct, betterWhen, spark, sparkColor }) {
-  return (
-    <div className="cr__kpi" style={{ "--k": `var(${accent})` }}>
-      <div className="cr__lab">{label}</div>
-      <div className="cr__num">{value}</div>
-      <div className="cr__sub">{sub}</div>
-      <div style={{ marginTop: 8 }}>
-        <Delta pct={deltaPct} betterWhen={betterWhen} />
-      </div>
-      {spark && spark.length > 1 && (
-        <div className="cr__spark">
-          <AreaSpark values={spark} color={sparkColor} />
-        </div>
-      )}
-    </div>
-  );
-}
-
 function CollapsiblePanel({
   id,
   title,
@@ -274,139 +233,6 @@ function CollapsiblePanel({
   );
 }
 
-/* ---------- KPI band + trend ---------- */
-function StatsBand({ stats, isLifetime, onRetryStats }) {
-  if (!stats) {
-    return (
-      <div className="cr__center">
-        <div className="cr__spinner" />
-        <p className="cr__muted">Loading spend &amp; usage…</p>
-      </div>
-    );
-  }
-  const s = stats.spend || {};
-  const c = stats.conversations || {};
-  const pc = stats.per_conversation || {};
-  const ev = stats.eval_score || {};
-  const spendSeries = (s.daily || []).map((d) => d.amount);
-  const convDaily = c.daily || [];
-  const botTotal = convDaily.reduce((sum, d) => sum + (d.bot_count || 0), 0);
-
-  return (
-    <>
-      {stats.cost_source_error && (
-        <div
-          className="cr__notice"
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            flexWrap: "wrap",
-            gap: "8px",
-          }}
-        >
-          <span>
-            Spend and token figures are unavailable right now (
-            {formatCostSourceError(stats.cost_source_error)}). The rest of the page is current.
-          </span>
-          {onRetryStats && (
-            <button
-              type="button"
-              className="cr__refresh"
-              style={{ margin: 0, padding: "3px 10px", fontSize: "0.8rem" }}
-              onClick={onRetryStats}
-            >
-              Retry
-            </button>
-          )}
-        </div>
-      )}
-
-      <div className="cr__kpis">
-        <Kpi
-          accent="--a-spend"
-          label="Anthropic spend"
-          value={fmtUsd(s.total)}
-          sub={
-            isLifetime
-              ? "cumulative spend since June 1, 2026"
-              : s.projected_month_end != null
-              ? `${fmtUsd(s.projected_month_end)} projected month-end`
-              : `vs ${fmtUsd(s.prev_total)} last month`
-          }
-          deltaPct={s.delta_pct}
-          betterWhen="down"
-          spark={spendSeries}
-          sparkColor="#6a9bff"
-        />
-        <Kpi
-          accent="--a-convo"
-          label="Conversations"
-          value={fmtNum(c.total)}
-          sub={
-            isLifetime
-              ? `${c.per_day_avg} / day avg since June 1, 2026`
-              : `${c.per_day_avg} / day average`
-          }
-          deltaPct={c.delta_pct}
-          betterWhen="up"
-          spark={convDaily.map((d) => d.count)}
-          sparkColor="#2fe0a6"
-        />
-        <Kpi
-          accent="--a-cost"
-          label="Cost / conversation"
-          value={fmtUsd(pc.cost, true)}
-          sub={
-            pc.bot_share_pct
-              ? `spend ÷ conversations · ${pc.bot_share_pct}% of spend excluded (bot traffic)`
-              : "spend ÷ conversations"
-          }
-          deltaPct={pc.cost_delta_pct}
-          betterWhen="down"
-        />
-        <Kpi
-          accent="--a-eval"
-          label="Eval score"
-          value={ev.avg == null ? "—" : ev.avg}
-          sub={`${ev.coverage_pct ?? 0}% of chats scored`}
-          deltaPct={ev.delta_pct}
-          betterWhen="up"
-        />
-      </div>
-
-      {convDaily.length > 0 && (
-        <CollapsiblePanel
-          id="panel-conv-daily"
-          title={isLifetime ? "Conversations timeline" : "Conversations per day"}
-          accent="var(--a-convo)"
-          description={
-            isLifetime
-              ? "See daily customer chat traffic on your store since June 1, 2026, comparing real shoppers to automated bot tests."
-              : "See daily customer chat traffic on your store, comparing real shoppers to automated bot tests."
-          }
-          badge={<span className="cr__chip flat">{fmtNum(c.total)} chats</span>}
-        >
-          <div className="cr__note">
-            {fmtNum(c.total)} real conversations {isLifetime ? "since June 1, 2026" : "this month"}
-            {c.busiest ? ` · busiest ${shortDay(c.busiest.day)} (${c.busiest.count})` : ""}
-            {botTotal > 0 ? ` · ${fmtNum(botTotal)} automated/bot excluded from those totals` : ""}
-          </div>
-          <StackedBarSeries data={convDaily} colorReal="#2fe0a6" colorBot="#6c7488" />
-          <div className="cr__legend">
-            <span className="cr__legend-item">
-              <i style={{ background: "#2fe0a6" }} /> real
-            </span>
-            <span className="cr__legend-item">
-              <i style={{ background: "#6c7488" }} /> automated / bot
-            </span>
-          </div>
-        </CollapsiblePanel>
-      )}
-    </>
-  );
-}
-
 /* ---------- per-key usage ---------- */
 
 function CacheEconomicsPanel({ data, isLifetime }) {
@@ -414,8 +240,8 @@ function CacheEconomicsPanel({ data, isLifetime }) {
   // written) same as a genuinely quiet month -- but claiming "not enough
   // data to tell" would be misleading when the real cause is an upstream
   // error. Hide the panel instead, matching CostReconciliationPanel's own "hide on error"
-  // convention (the StatsBand notice above already covers "Anthropic's API is having
-  // issues" for the page).
+  // convention (the page-level cost-source notice already covers
+  // "Anthropic's API is having issues" for the page).
   if (!data || data.cache_creation_tokens == null || data.cost_source_error) return null;
   const hasCost = data.actual_cost != null && data.baseline_cost != null;
   const verdict = CACHE_VERDICT[data.verdict] ?? CACHE_VERDICT.no_data;
@@ -514,106 +340,41 @@ function CostReconciliationPanel({ data, isLifetime }) {
 const asList = (v) => (Array.isArray(v) ? v : []);
 
 /* ---------- Store Command Center Heroes ---------- */
-function TrustGauge({ score = 94, size = 180 }) {
-  const r = 62;
-  const circumference = Math.PI * r; // ~194.78
-  const clampedScore = Math.min(100, Math.max(0, score || 0));
-  const offset = circumference * (1 - clampedScore / 100);
-
-  return (
-    <div className="cr__gauge-wrap">
-      <svg
-        width={size}
-        height={size * 0.58}
-        viewBox="0 0 170 100"
-        className="cr__gauge-svg"
-      >
-        <defs>
-          <linearGradient id="trustGaugeGrad" x1="0%" y1="0%" x2="100%" y2="0%">
-            <stop offset="0%" stopColor="#38bdf8" />
-            <stop offset="50%" stopColor="#818cf8" />
-            <stop offset="100%" stopColor="#c084fc" />
-          </linearGradient>
-          <filter id="trustGaugeGlow" x="-20%" y="-20%" width="140%" height="140%">
-            <feGaussianBlur stdDeviation="3" result="blur" />
-            <feComposite in="SourceGraphic" in2="blur" operator="over" />
-          </filter>
-        </defs>
-        {/* Background track */}
-        <path
-          d="M 23 84 A 62 62 0 0 1 147 84"
-          fill="none"
-          stroke="rgba(255, 255, 255, 0.08)"
-          strokeWidth="12"
-          strokeLinecap="round"
-        />
-        {/* Dynamic score arc */}
-        <path
-          d="M 23 84 A 62 62 0 0 1 147 84"
-          fill="none"
-          stroke="url(#trustGaugeGrad)"
-          strokeWidth="12"
-          strokeLinecap="round"
-          strokeDasharray={circumference}
-          strokeDashoffset={offset}
-          filter="url(#trustGaugeGlow)"
-          className="cr__gauge-arc"
-        />
-        {/* Center score text */}
-        <text
-          x="85"
-          y="76"
-          textAnchor="middle"
-          className="cr__gauge-text"
-        >
-          {Math.round(clampedScore)}%
-        </text>
-      </svg>
-    </div>
-  );
-}
-
 function CommandCenterHeroKpis({ stats, cacheEconomics, isLifetime }) {
   if (!stats) return null;
   const s = stats.spend || {};
   const c = stats.conversations || {};
   const pc = stats.per_conversation || {};
-  const ev = stats.eval_score || {};
   const tk = stats.tokens || {};
   const ls = stats.labor_savings || {};
 
-  const evalAvg = ev.avg != null ? ev.avg : 94.2;
-  const scoredCount = ev.scored || c.total || 0;
-  const lowScoreCount = stats.low_score_count || 0;
-
   const totalConvs = c.total != null ? c.total : 0;
-  const perDayAvg = c.per_day_avg != null ? c.per_day_avg : (totalConvs ? (totalConvs / 30).toFixed(1) : 0);
+  const perDayAvg = c.per_day_avg;
   const sparkValues = (c.daily || []).map((d) => d.count);
 
-  const costPerChat = pc.cost != null ? fmtUsd(pc.cost, true) : "$0.21";
-  const laborValue = ls.estimated_labor_value != null ? fmtUsd(ls.estimated_labor_value) : "$1,420";
-  const laborHours = ls.estimated_labor_hours != null ? ls.estimated_labor_hours : 78.9;
+  // Honest empties (2026-11 homepage simplification): when a figure is
+  // missing, the card shows "--" or drops the sub-line entirely. This
+  // grid previously filled gaps with invented constants -- a 94.2 trust
+  // fallback, "$0.21" per chat, "$1,420" / 78.9 hrs of labor value, an
+  // 82% cache hit rate, "$16.20" of savings, and a hardcoded
+  // "0 hallucinations" claim in the trust card (the card itself is gone;
+  // accuracy now lives in the hero pair at the top of the page).
+  const costPerChat = pc.cost != null ? fmtUsd(pc.cost, true) : "\u2014";
+  const laborSub =
+    ls.estimated_labor_value != null && ls.estimated_labor_hours != null
+      ? `Est. staff value: ${fmtUsd(ls.estimated_labor_value)} (${ls.estimated_labor_hours} hrs saved)`
+      : null;
 
-  const botSpend = s.total != null ? fmtUsd(s.total) : "—";
-  const hitRate = tk.cache_hit_rate != null ? Math.round(tk.cache_hit_rate) : 82;
-  const savedVal = cacheEconomics?.savings != null ? fmtUsd(cacheEconomics.savings) : "$16.20";
-  const cacheSub = `Prompt caching saved ${savedVal} (${hitRate}% hit rate)`;
+  const botSpend = s.total != null ? fmtUsd(s.total) : "\u2014";
+  const hitRate = tk.cache_hit_rate != null ? Math.round(tk.cache_hit_rate) : null;
+  const cacheSavings =
+    cacheEconomics?.savings != null ? fmtUsd(cacheEconomics.savings, true) : "\u2014";
+  const cacheSub =
+    hitRate != null ? `${hitRate}% cache hit rate` : "Cache hit rate unavailable for this period";
 
   return (
     <div className="cr__hero-kpi-grid">
-      {/* 1. Bot Trust & Quality Index */}
-      <div className="cr__hero-kpi-card cr__hero-kpi-card--trust">
-        <div className="cr__hero-kpi-header">
-          <span className="cr__hero-kpi-title">Bot Trust &amp; Quality Index</span>
-          <span className="cr__hero-kpi-badge cr__hero-kpi-badge--trust">Audited</span>
-        </div>
-        <TrustGauge score={evalAvg} />
-        <div className="cr__hero-kpi-sub">
-          {scoredCount} shopper chats audited · 0 hallucinations · {lowScoreCount} flagged for tuning
-        </div>
-      </div>
-
-      {/* 2. Real Customer Volume */}
+      {/* Real Customer Volume */}
       <div className="cr__hero-kpi-card cr__hero-kpi-card--volume">
         <div className="cr__hero-kpi-header">
           <span className="cr__hero-kpi-title">Real Customer Volume</span>
@@ -631,11 +392,11 @@ function CommandCenterHeroKpis({ stats, cacheEconomics, isLifetime }) {
           )}
         </div>
         <div className="cr__hero-kpi-sub">
-          {perDayAvg} conversations/day average
+          {perDayAvg != null ? `${perDayAvg} conversations/day average` : "\u2014"}
         </div>
       </div>
 
-      {/* 3. Cost Per Shopper Interaction */}
+      {/* Cost Per Shopper Interaction */}
       <div className="cr__hero-kpi-card cr__hero-kpi-card--cost">
         <div className="cr__hero-kpi-header">
           <span className="cr__hero-kpi-title">Cost Per Shopper Interaction</span>
@@ -645,17 +406,10 @@ function CommandCenterHeroKpis({ stats, cacheEconomics, isLifetime }) {
           <span className="cr__hero-kpi-big">{costPerChat}</span>
           <span className="cr__hero-kpi-unit">/ convo</span>
         </div>
-        <div>
-          <span className="cr__hero-kpi-badge cr__hero-kpi-badge--savings">
-            98% cheaper than retail clerk ($18/hr)
-          </span>
-        </div>
-        <div className="cr__hero-kpi-sub">
-          Est. staff value: {laborValue} ({laborHours} hrs saved)
-        </div>
+        {laborSub && <div className="cr__hero-kpi-sub">{laborSub}</div>}
       </div>
 
-      {/* 4. Monthly / Lifetime AI Operating Cost */}
+      {/* Monthly / Lifetime AI Operating Cost */}
       <div className="cr__hero-kpi-card cr__hero-kpi-card--spend">
         <div className="cr__hero-kpi-header">
           <span className="cr__hero-kpi-title">
@@ -667,7 +421,7 @@ function CommandCenterHeroKpis({ stats, cacheEconomics, isLifetime }) {
           <span className="cr__hero-kpi-big">{botSpend}</span>
         </div>
         <div className="cr__hero-kpi-sub cr__hero-kpi-sub--cache">
-          {cacheSub}
+          Prompt caching saved {cacheSavings} ({cacheSub})
         </div>
       </div>
     </div>
@@ -883,103 +637,6 @@ function ShopperDemandRadar({ demand, oneOffs, isLifetime }) {
   );
 }
 
-function TrustScorecardHero({ stats, isLifetime }) {
-  const evalAvg = stats?.eval_score?.avg;
-  const scoredCount = stats?.eval_score?.scored || 0;
-  const lowScoreCount = stats?.low_score_count || 0;
-
-  // Real or high-confidence baseline score display
-  const scoreDisplay = evalAvg != null ? `${Math.round(evalAvg)}%` : "98.4%";
-  const scoreNum = evalAvg != null ? Math.round(evalAvg) : 98;
-  const isHealthy = scoreNum >= 85 && lowScoreCount === 0;
-
-  return (
-    <div className="cr__trust-hero">
-      <div className="cr__trust-header">
-        <div className="cr__trust-titles">
-          <h2>
-            <span>🛡️</span> Bot Trust &amp; Quality Scorecard
-          </h2>
-          <p>
-            Continuous audit evaluating whether customer questions receive accurate inventory responses,
-            polite conversational service, and strict adherence to store tournament &amp; return policies.
-          </p>
-        </div>
-        <div className="cr__trust-badge-wrap">
-          <div className="cr__trust-score-badge">
-            <span className="cr__trust-score-num">{scoreDisplay}</span>
-            <span className="cr__trust-score-label">
-              {isHealthy ? "Verified High Quality" : "Action Needed"}
-            </span>
-          </div>
-        </div>
-      </div>
-
-      <div className="cr__trust-meters">
-        <div className="cr__meter-card">
-          <div className="cr__meter-label-row">
-            <span className="cr__meter-title">🎯 Inventory Accuracy</span>
-            <span className="cr__meter-val">99.2%</span>
-          </div>
-          <div className="cr__meter-bar">
-            <div className="cr__meter-fill" style={{ width: "99.2%", background: "#10b981" }} />
-          </div>
-        </div>
-
-        <div className="cr__meter-card">
-          <div className="cr__meter-label-row">
-            <span className="cr__meter-title">💬 Tone &amp; Politeness</span>
-            <span className="cr__meter-val">100%</span>
-          </div>
-          <div className="cr__meter-bar">
-            <div className="cr__meter-fill" style={{ width: "100%", background: "#6366f1" }} />
-          </div>
-        </div>
-
-        <div className="cr__meter-card">
-          <div className="cr__meter-label-row">
-            <span className="cr__meter-title">⚖️ Store Policy Adherence</span>
-            <span className="cr__meter-val">98.5%</span>
-          </div>
-          <div className="cr__meter-bar">
-            <div className="cr__meter-fill" style={{ width: "98.5%", background: "#38bdf8" }} />
-          </div>
-        </div>
-
-        <div className="cr__meter-card">
-          <div className="cr__meter-label-row">
-            <span className="cr__meter-title">⚡ Response Turnaround</span>
-            <span className="cr__meter-val">1.2s avg</span>
-          </div>
-          <div className="cr__meter-bar">
-            <div className="cr__meter-fill" style={{ width: "95%", background: "#f59e0b" }} />
-          </div>
-        </div>
-      </div>
-
-      {lowScoreCount > 0 ? (
-        <div className="cr__triage-alert cr__triage-alert--warning">
-          <span>
-            ⚠️ <strong>{lowScoreCount} conversation{lowScoreCount === 1 ? "" : "s"}</strong> scored below 75% accuracy {isLifetime ? "since June 1, 2026" : "this month"}. Review them to identify missing product aliases or policy gaps.
-          </span>
-          <Link to="/chats?filter=needs_attention" className="cr__triage-btn">
-            Review Low Scores &rarr;
-          </Link>
-        </div>
-      ) : (
-        <div className="cr__triage-alert cr__triage-alert--good">
-          <span>
-            ✅ <strong>Zero customer disputes or policy breaks detected.</strong> All audited conversations ({scoredCount} scored) met strict accuracy criteria.
-          </span>
-          <Link to="/chats" className="cr__triage-btn cr__triage-btn--good">
-            Audit Transcripts &rarr;
-          </Link>
-        </div>
-      )}
-    </div>
-  );
-}
-
 function LaborSavingsHero({ stats, isLifetime }) {
   if (!stats) return null;
   const s = stats.spend || {};
@@ -1046,110 +703,6 @@ function LaborSavingsHero({ stats, isLifetime }) {
   );
 }
 
-function DemandRadarHero({ demand, oneOffs, isLifetime }) {
-  const oosItems = (demand || []).filter((p) => p.status === "out_of_stock");
-  const ncItems = (demand || []).filter((p) => p.status !== "out_of_stock");
-  const maxDemand = Math.max(1, ...(demand || []).map((p) => p.count || 0));
-
-  if (!demand || demand.length === 0) return null;
-
-  return (
-    <div className="cr__demand-radar-grid">
-      {/* Box A: Restock Radar */}
-      <div className="cr__demand-box">
-        <div className="cr__demand-box-header">
-          <div>
-            <h3 className="cr__demand-box-title">
-              <span>🔥</span> High-Demand Restock Radar
-            </h3>
-            <div className="cr__demand-box-desc">
-              Out-of-stock items collectors repeatedly asked for {isLifetime ? "since June 1, 2026" : "this month"}
-            </div>
-          </div>
-          <span className="cr__action-badge cr__action--oos">
-            {oosItems.length} Restock Alert{oosItems.length === 1 ? "" : "s"}
-          </span>
-        </div>
-
-        {oosItems.length === 0 ? (
-          <p className="cr__muted" style={{ padding: "16px 0", fontSize: "13px" }}>
-            No out-of-stock inquiry spikes recorded {isLifetime ? "since June 1, 2026" : "this month"}.
-          </p>
-        ) : (
-          <div className="cr__demand-list">
-            {oosItems.map((p) => (
-              <div className="cr__bar-row cr__demand-row" key={p.product}>
-                <div className="cr__demand-header">
-                  <span className="cr__nm">{p.product}</span>
-                  <span className="cr__action-badge cr__action--oos">Restock</span>
-                </div>
-                <div className="cr__fig">
-                  {p.count} <span>inquiries</span>
-                </div>
-                <div className="cr__track">
-                  <div
-                    className="cr__fill cr__fill--oos"
-                    style={{ width: `${Math.round(((p.count || 0) / maxDemand) * 100)}%` }}
-                  />
-                </div>
-                <ExampleLinks ids={p.examples} />
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* Box B: Catalog Opportunities */}
-      <div className="cr__demand-box">
-        <div className="cr__demand-box-header">
-          <div>
-            <h3 className="cr__demand-box-title">
-              <span>💡</span> Catalog Expansion Opportunities
-            </h3>
-            <div className="cr__demand-box-desc">
-              Cards, sets, and accessories requested {isLifetime ? "since June 1, 2026" : "this month"} that your store doesn&rsquo;t carry yet
-            </div>
-          </div>
-          <span className="cr__action-badge cr__action--nc">
-            {ncItems.length} Sourcing Idea{ncItems.length === 1 ? "" : "s"}
-          </span>
-        </div>
-
-        {ncItems.length === 0 ? (
-          <p className="cr__muted" style={{ padding: "16px 0", fontSize: "13px" }}>
-            No uncataloged item requests recorded {isLifetime ? "since June 1, 2026" : "this month"}.
-          </p>
-        ) : (
-          <div className="cr__demand-list">
-            {ncItems.map((p) => (
-              <div className="cr__bar-row cr__demand-row" key={p.product}>
-                <div className="cr__demand-header">
-                  <span className="cr__nm">{p.product}</span>
-                  <span className="cr__action-badge cr__action--nc">Add to Catalog</span>
-                </div>
-                <div className="cr__fig">
-                  {p.count} <span>inquiries</span>
-                </div>
-                <div className="cr__track">
-                  <div
-                    className="cr__fill cr__fill--nc"
-                    style={{ width: `${Math.round(((p.count || 0) / maxDemand) * 100)}%` }}
-                  />
-                </div>
-                <ExampleLinks ids={p.examples} />
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-/* C1: cited quality themes -- recurring failure patterns from the month's
-   low-scored and flagged conversations. Every theme links to the real chats
-   behind it; the backend drops any example id that wasn't in the analyzed
-   sample, so a theme with no links can't appear. */
 function QualityThemesPanel({ themes }) {
   const list = asList(themes);
   if (list.length === 0) return null;
@@ -1198,6 +751,99 @@ function RecommendationsSection({ requests, isLifetime }) {  const reqList = asL
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+/* ---------- hero pair: the two numbers the owner asked for ----------
+   Conversations and accuracy, bigger than everything else on the page.
+   Accuracy is the chat-weighted mean of the judge's scores over the
+   period's graded real chats (stats_views._eval_avg), always shown with
+   its denominator; when nothing has been graded yet it says so instead
+   of showing a number. */
+function HeroPair({ stats, isLifetime }) {
+  if (!stats) return null;
+  const c = stats.conversations || {};
+  const ev = stats.eval_score || {};
+  const total = c.total != null ? c.total : 0;
+  const scored = ev.scored || 0;
+  const avg = ev.avg;
+  const low = stats.low_score_count || 0;
+  const pct75 = scored > 0 ? Math.round(((scored - low) / scored) * 100) : null;
+
+  return (
+    <section aria-label="Headline numbers" className="cr__hero-pair">
+      <div className="cr__hero-metric">
+        <div className="cr__hero-metric-label">💬 Conversations</div>
+        <div className="cr__hero-metric-num">{fmtNum(total)}</div>
+        <div className="cr__hero-metric-sub">
+          {c.per_day_avg != null && <span>{c.per_day_avg} per day average</span>}
+          {!isLifetime && <Delta pct={c.delta_pct} betterWhen="up" />}
+          {isLifetime && <span>since Jun 1, 2026</span>}
+        </div>
+      </div>
+      <div className="cr__hero-metric">
+        <div className="cr__hero-metric-label">🎯 Accuracy score</div>
+        {avg != null && scored > 0 ? (
+          <>
+            <div className="cr__hero-metric-num">
+              {Math.round(avg)}
+              <span className="cr__hero-metric-unit">%</span>
+            </div>
+            <div className="cr__hero-metric-sub">
+              <span>
+                {fmtNum(scored)} of {fmtNum(total)} conversations graded
+              </span>
+              {pct75 != null && <span>· {pct75}% scored 75 or higher</span>}
+              {!isLifetime && <Delta pct={ev.delta_pct} betterWhen="up" />}
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="cr__hero-metric-num">—</div>
+            <div className="cr__hero-metric-sub">
+              Not graded yet — conversations are graded daily
+            </div>
+          </>
+        )}
+      </div>
+    </section>
+  );
+}
+
+/* Factual low-score triage: the honest remnant of the old trust
+   scorecard (whose invented meters and fallback scores were removed in
+   the 2026-11 homepage simplification). Every claim here is a count
+   from the period's own stats payload. */
+function LowScoreTriage({ stats, isLifetime }) {
+  if (!stats) return null;
+  const scored = stats.eval_score?.scored || 0;
+  const low = stats.low_score_count || 0;
+  if (scored === 0) return null;
+  const period = isLifetime ? "since June 1, 2026" : "this month";
+  if (low === 0) {
+    return (
+      <div className="cr__triage-alert cr__triage-alert--good">
+        <span>
+          ✅ <strong>No conversations scored below 75</strong> {period} — of{" "}
+          {fmtNum(scored)} graded.
+        </span>
+        <Link to="/chats" className="cr__triage-btn cr__triage-btn--good">
+          Browse chats &rarr;
+        </Link>
+      </div>
+    );
+  }
+  return (
+    <div className="cr__triage-alert cr__triage-alert--warning">
+      <span>
+        ⚠️ <strong>{fmtNum(low)} conversation{low === 1 ? "" : "s"}</strong>{" "}
+        scored below 75 {period}. Reviewing them shows where the bot needs
+        better answers.
+      </span>
+      <Link to="/chats?filter=needs_attention" className="cr__triage-btn">
+        Review low scores &rarr;
+      </Link>
     </div>
   );
 }
@@ -1271,73 +917,6 @@ function CommercialImpactHero({ data, isLifetime }) {
             : ""}
         </p>
       )}
-    </div>
-  );
-}
-
-/* ---------- C5b: cart funnel (shopping chats -> cart -> purchase) ---------- */
-// Chat outcomes by month: every real conversation in exactly one
-// bucket (see chat_outcomes.py). Follows the dashboard's period: a
-// selected month shows just that month; Lifetime shows every month
-// plus totals. Cells deep-link into Chat Logs scoped to month+bucket.
-function ChatOutcomesPanel({ data, isLifetime, selectedMonth, onSelect }) {
-  if (!data || !Array.isArray(data.months) || data.months.length === 0) return null;
-  const rows = isLifetime
-    ? [...data.months].reverse()
-    : data.months.filter((m) => m.month === selectedMonth);
-  if (!rows.length) return null;
-  const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-  const label = (key) => {
-    const [y, m] = (key || "").split("-");
-    return `${MONTHS[parseInt(m, 10) - 1] || m} ${y}`;
-  };
-  const cell = (month, bucket, value) => (
-    <td key={bucket}>
-      <button type="button" className="co-cell" onClick={() => onSelect(month, bucket)}>
-        {value}
-      </button>
-    </td>
-  );
-  const row = (r, monthArg, cls) => (
-    <tr key={monthArg || "totals"} className={cls}>
-      <td style={{ whiteSpace: "nowrap" }}>{monthArg ? label(r.month) : "All months"}</td>
-      {cell(monthArg, "purchased", r.purchased)}
-      {cell(monthArg, "cart_no_purchase", r.cart_no_purchase)}
-      {cell(monthArg, "purchase_intent", r.purchase_intent)}
-      {cell(monthArg, "sell_to_store", r.sell_to_store)}
-      {cell(monthArg, "policy_intent", r.policy_intent)}
-      {cell(monthArg, "out_of_bounds", r.out_of_bounds)}
-      {cell(monthArg, "no_buying_intent", r.no_buying_intent)}
-      <td className="co-total">{r.total}</td>
-    </tr>
-  );
-  return (
-    <div className="cr__labor-section">
-      <div className="cr__labor-label">{"\u{1F9ED}"} Chat outcomes (legacy v2)</div>
-      <table className="co-table">
-        <thead>
-          <tr>
-            <th>Month</th>
-            <th>{"\u{1F4B0}"} Purchased</th>
-            <th>{"\u{1F6D2}"} Cart, no purchase</th>
-            <th>{"\u{1F3AF}"} Purchase intent</th>
-            <th>{"\u{1F4B1}"} Sell to store</th>
-            <th>{"\u{1F4CB}"} Policy intent</th>
-            <th>{"\u{26D4}"} Out of bounds</th>
-            <th>No buying intent</th>
-            <th>Total</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r) => row(r, r.month, ""))}
-          {isLifetime && data.totals ? row(data.totals, null, "co-row--totals") : null}
-        </tbody>
-      </table>
-      <p className="cr__prov" style={{ marginTop: "10px" }}>
-        Every real conversation in exactly one bucket: an attributed order beats a cart
-        add, which beats purchase-intent signals in the shopper&rsquo;s own words.
-        Click a number to see those chats in Chat Logs.
-      </p>
     </div>
   );
 }
@@ -1975,7 +1554,6 @@ function HomeView() {
   const [costReconciliation, setCostReconciliation] = useState(null);
   const [commercialImpact, setCommercialImpact] = useState(null);
   const [cartFunnel, setCartFunnel] = useState(null);
-  const [chatOutcomes, setChatOutcomes] = useState(null);
   const [chatIntentsV3, setChatIntentsV3] = useState(null);
   const [cacheEconomics, setCacheEconomics] = useState(null);
   const [verdicts, setVerdicts] = useState(null);
@@ -2132,25 +1710,6 @@ function HomeView() {
     [navigate]
   );
 
-  const loadChatOutcomes = useCallback(
-    async () => {
-      try {
-        const params = new URLSearchParams();
-        appendShopParams(params);
-        const qs = params.toString();
-        const res = await fetch(`${API_URL}/api/cost/chat_outcomes_by_month/${qs ? `?${qs}` : ""}`, {
-          credentials: "include",
-        });
-        if (res.status === 401 || res.status === 403) return navigate("/");
-        setChatOutcomes(await res.json());
-      } catch {
-        // Non-critical panel -- the rest of the dashboard still works without it.
-      } finally {
-        setLoadProgress((p) => p + 1);
-      }
-    },
-    [navigate]
-  );
 
   const loadChatIntentsV3 = useCallback(
     async () => {
@@ -2317,14 +1876,13 @@ function HomeView() {
         loadCacheEconomics(arg, refresh),
         loadCommercialImpact(arg, refresh),
         loadCartFunnel(arg, refresh),
-        loadChatOutcomes(),
         loadChatIntentsV3(),
         loadVerdicts(arg, refresh),
         loadNeedsAttention(refresh),
         loadBudgetAudit(arg, refresh),
       ]);
     },
-    [loadStats, loadInsights, loadCostReconciliation, loadCacheEconomics, loadCommercialImpact, loadCartFunnel, loadChatOutcomes, loadChatIntentsV3, loadVerdicts, loadNeedsAttention, loadBudgetAudit]
+    [loadStats, loadInsights, loadCostReconciliation, loadCacheEconomics, loadCommercialImpact, loadCartFunnel, loadChatIntentsV3, loadVerdicts, loadNeedsAttention, loadBudgetAudit]
   );
 
   useEffect(() => {
@@ -2624,18 +2182,24 @@ function HomeView() {
             <p className="cr__notice">Couldn&rsquo;t load spend &amp; usage. Try Refresh.</p>
           )}
 
-          {/* C0: 1. MONEY -- commercial impact leads, labor savings alongside */}
+          {/* HERO -- the two numbers the owner asked for, above everything */}
+          <HeroPair stats={stats} isLifetime={isLifetime} />
+
+          {/* 1. ATTENTION -- verdict cards, then the low-score triage */}
+          <AttentionSection verdicts={verdicts} />
+          <LowScoreTriage stats={stats} isLifetime={isLifetime} />
+
+          {/* 2. MONEY -- commercial impact, funnel, labor value */}
           <section aria-label="Is it making you money?">
             <div className="cr__section-eyebrow"><span>💵</span> Is it making you money?</div>
+            <CommercialImpactHero data={commercialImpact} isLifetime={isLifetime} />
             <CartFunnelPanel data={cartFunnel} />
-            <ChatOutcomesPanel
-              data={chatOutcomes}
-              isLifetime={isLifetime}
-              selectedMonth={selectedMonth}
-              onSelect={(month, bucket) =>
-                navigate(month ? `/chats?month=${month}&filter=${bucket}` : `/chats?filter=${bucket}`)
-              }
-            />
+            <LaborSavingsHero stats={stats} isLifetime={isLifetime} />
+          </section>
+
+          {/* 3. WHAT SHOPPERS ASKED -- one taxonomy (v3), demand, topics */}
+          <section aria-label="What are shoppers asking?">
+            <div className="cr__section-eyebrow"><span>🛍️</span> What are shoppers asking?</div>
             <ChatIntentsV3Panel
               data={chatIntentsV3}
               isLifetime={isLifetime}
@@ -2647,14 +2211,6 @@ function HomeView() {
                 navigate(month ? `/chats?month=${month}&outcome_v3=${outcome}` : `/chats?outcome_v3=${outcome}`)
               }
             />
-            <CommercialImpactHero data={commercialImpact} isLifetime={isLifetime} />
-            <LaborSavingsHero stats={stats} isLifetime={isLifetime} />
-          </section>
-
-          {/* C0: 2. TRUST -- quality summary + what shoppers are telling you */}
-          <section aria-label="Are your customers in good hands?">
-            <div className="cr__section-eyebrow"><span>🛡️</span> Are your customers in good hands?</div>
-            <TrustScorecardHero stats={stats} isLifetime={isLifetime} />
             <div className="cr__command-center-grid">
               <ShopperDemandRadar
                 demand={iview?.product_demand}
@@ -2677,16 +2233,15 @@ function HomeView() {
             )}
           </section>
 
-          {/* C0: 3. COST -- demoted below money and trust */}
-          <section aria-label="What does it cost?">
-            <div className="cr__section-eyebrow"><span>💳</span> What does it cost?</div>
+          {/* 4. COSTS & DETAILS -- operator detail, panels self-collapse */}
+          <section aria-label="Costs and details">
+            <div className="cr__section-eyebrow"><span>💳</span> Costs &amp; details</div>
             <CommandCenterHeroKpis stats={stats} cacheEconomics={cacheEconomics} isLifetime={isLifetime} />
+            <CacheEconomicsPanel data={cacheEconomics} isLifetime={isLifetime} />
+            <CostReconciliationPanel data={costReconciliation} isLifetime={isLifetime} />
           </section>
 
-          {/* C3: 4. ATTENTION -- deterministic verdict cards */}
-          <AttentionSection verdicts={verdicts} />
-
-          {/* C2: 5. MISSIONS -- guided checklists over live endpoints */}
+          {/* 5. OPERATOR MISSIONS -- guided checklists over live endpoints */}
           <MissionsSection
             stats={stats}
             costReconciliation={costReconciliation}

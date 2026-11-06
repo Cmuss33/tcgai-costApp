@@ -1069,18 +1069,16 @@ def get_avg_eval_score(request):
         num_days = get_period_start(period)
         start_date = now() - timedelta(days=num_days)
 
-        daily_counts = (
-            apply_shop_filter(
-                real_chats(Chat.objects.filter(timestamp__gte=start_date)),
-                request.GET.getlist("shop"),
-            )
-            .annotate(day=TruncDate('timestamp'))
-            .values('day')
-            .annotate(avg_day_score=Avg('evaluation_score'))
+        # Chat-weighted mean, the same single formula as
+        # stats_views._eval_avg (was a mean of daily means until 2026-11;
+        # see _eval_avg for why that changed).
+        scored = apply_shop_filter(
+            real_chats(Chat.objects.filter(
+                timestamp__gte=start_date, evaluation_score__isnull=False)),
+            request.GET.getlist("shop"),
         )
-
-        avg_score = daily_counts.aggregate(avg_eval=Avg('avg_day_score'))["avg_eval"]
-        avg_score = round(avg_score, 2) if avg_score else 'N/A'
+        avg_score = scored.aggregate(avg_eval=Avg('evaluation_score'))["avg_eval"]
+        avg_score = round(avg_score, 2) if avg_score is not None else 'N/A'
 
         return JsonResponse({"average_eval_score": avg_score})
     except Exception as e:

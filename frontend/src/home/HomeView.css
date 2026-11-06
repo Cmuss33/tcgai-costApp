@@ -2166,3 +2166,64 @@ section[aria-label="Operator missions"] .cr__mission-card {
 .co-total {
   font-weight: 700;
 }
+
+/* ---------- hero pair: conversations + accuracy (2026-11) ---------- */
+.cr__hero-pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin: 20px 0 10px;
+}
+
+.cr__hero-metric {
+  background: linear-gradient(145deg, rgba(17, 24, 39, 0.95), rgba(15, 23, 42, 0.98));
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 18px;
+  padding: 24px 28px 20px;
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.38);
+}
+
+.cr__hero-metric-label {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text);
+  opacity: 0.78;
+}
+
+.cr__hero-metric-num {
+  font-family: var(--font-d);
+  font-size: 68px;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  line-height: 1.05;
+  color: var(--text);
+  margin: 8px 0 10px;
+}
+
+.cr__hero-metric-unit {
+  font-size: 36px;
+  font-weight: 800;
+  margin-left: 2px;
+}
+
+.cr__hero-metric-sub {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  font-size: 15px;
+  color: var(--text);
+  opacity: 0.88;
+}
+
+@media (max-width: 720px) {
+  .cr__hero-pair {
+    grid-template-columns: 1fr;
+  }
+
+  .cr__hero-metric-num {
+    font-size: 54px;
+  }
+}

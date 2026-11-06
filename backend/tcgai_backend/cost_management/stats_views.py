@@ -562,10 +562,18 @@ def _daily_mean(qs, field):
 
 
 def _eval_avg(month_start, shops=None):
+    """The period's accuracy: the plain mean of evaluation_score over the
+    period's graded real chats -- every graded conversation counts once.
+
+    Until 2026-11 this was a mean of DAILY means (a one-chat day weighed
+    the same as a twenty-chat day), which disagreed with the chat-list
+    average by ~3 points on the same corpus (69.7 chat-weighted vs ~73
+    day-weighted, Jun-Nov 2026). The homepage hero shows this number as
+    "the accuracy of those conversations", so it is the chat-weighted
+    mean, and it is the only formula the app uses for it."""
     qs = _chat_qs(month_start, shops).filter(evaluation_score__isnull=False)
-    rows = qs.annotate(day=TruncDate("timestamp")).values("day").annotate(v=Avg("evaluation_score"))
-    vals = [r["v"] for r in rows if r["v"] is not None]
-    return round(sum(vals) / len(vals), 1) if vals else None
+    val = qs.aggregate(v=Avg("evaluation_score"))["v"]
+    return round(val, 1) if val is not None else None
 
 
 def _build_stats(month_start, shops=None):
