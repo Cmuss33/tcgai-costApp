@@ -1165,6 +1165,30 @@ section[aria-label] > .cr__section-eyebrow:first-child {
   line-height: 1.4;
 }
 
+/* Clickable variant (the revenue card links to its orders drill-down) */
+.cr__labor-card--link {
+  display: block;
+  text-decoration: none;
+  color: inherit;
+  cursor: pointer;
+  transition: border-color 0.15s ease, transform 0.15s ease;
+}
+
+.cr__labor-card--link:hover,
+.cr__labor-card--link:focus-visible {
+  border-color: #10b981;
+  transform: translateY(-1px);
+}
+
+.cr__labor-hint {
+  margin-top: 10px;
+  font-family: var(--font-m);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: #34d399;
+}
+
 /* Cart funnel strip (C5b): shopping chats -> added to cart -> purchased */
 .cr__funnel-strip {
   display: flex;

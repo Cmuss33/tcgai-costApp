@@ -4,6 +4,7 @@ import { BrowserRouter as Router, Route, Routes, Navigate, useLocation } from 'r
 import Header from './header/Header';
 import ChatSummaryView from './chatSummary/ChatSummaryView';
 import HomeView from './home/HomeView';
+import RevenueOrdersView from './revenue/RevenueOrdersView';
 import AlertsView from './alerts/AlertsView';
 import Login from './login/login';
 
@@ -28,6 +29,7 @@ function AppRoutes() {
       <Route path="/home" element={<HomeView />} />
       <Route path="/cost" element={<Navigate to="/home" replace />} />
       <Route path="/chats" element={<ChatSummaryView />} />
+      <Route path="/revenue" element={<RevenueOrdersView />} />
       <Route path="/alerts" element={<AlertsView />} />
     </Routes>
   );

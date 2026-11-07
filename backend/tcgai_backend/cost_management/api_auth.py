@@ -32,8 +32,9 @@ def api_login_or_token_required(view_func):
     only, only while ``COSTAPP_API_TOKEN`` is set (unset/empty disables it
     entirely), and compares in constant time. A missing or wrong token gets
     the exact 401 the login path returns -- the response never hints at
-    which credential failed. Use this decorator ONLY on the endpoint the
-    token is scoped to.
+    which credential failed. Use this decorator ONLY on the
+    commercial-impact endpoints the token is scoped to (the headline view
+    and its per-order drill-down).
     """
 
     @wraps(view_func)

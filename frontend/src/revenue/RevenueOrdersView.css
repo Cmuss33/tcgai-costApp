@@ -1,0 +1,143 @@
+/* Revenue orders drill-down -- palette/vars come from the .cr scope in
+   HomeView.css, which this view also imports. */
+
+.ro__wrap {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 28px 18px 56px;
+}
+
+.ro__back {
+  display: inline-block;
+  margin-bottom: 18px;
+  font-family: var(--font-m);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--dim);
+  text-decoration: none;
+}
+
+.ro__back:hover {
+  color: var(--text);
+}
+
+.ro__title {
+  font-family: var(--font-d);
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  margin: 6px 0 14px;
+}
+
+.ro__total {
+  font-family: var(--font-d);
+  font-size: 30px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: #34d399;
+  margin-bottom: 6px;
+}
+
+.ro__total > span {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--dim);
+  letter-spacing: 0;
+}
+
+.ro__note {
+  font-size: 13px;
+  color: var(--faint);
+  line-height: 1.5;
+  margin: 8px 0;
+}
+
+.ro__empty {
+  border: 1px dashed var(--edge);
+  border-radius: 14px;
+  padding: 22px 18px;
+  font-size: 13.5px;
+  color: var(--dim);
+  line-height: 1.55;
+  margin-top: 14px;
+}
+
+.ro__table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 16px;
+  background: linear-gradient(180deg, var(--panel), var(--bg) 220%);
+  border: 1px solid var(--edge);
+  border-radius: 14px;
+  overflow: hidden;
+  font-size: 13.5px;
+}
+
+.ro__table th {
+  font-family: var(--font-m);
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--dim);
+  text-align: left;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--edge);
+}
+
+.ro__table td {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--edge);
+  color: var(--text);
+  vertical-align: top;
+}
+
+.ro__table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.ro__num {
+  text-align: right !important;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.ro__order {
+  font-family: var(--font-m);
+  font-size: 12.5px;
+  font-weight: 600;
+  display: block;
+}
+
+.ro__shop {
+  display: block;
+  font-size: 11.5px;
+  color: var(--faint);
+  margin-top: 2px;
+}
+
+.ro__chatlink {
+  font-family: var(--font-m);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #34d399;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.ro__chatlink:hover {
+  text-decoration: underline;
+}
+
+.ro__nolink {
+  color: var(--faint);
+  font-size: 12.5px;
+}
+
+.ro__foot {
+  margin-top: 14px;
+  font-size: 12px;
+  color: var(--faint);
+  line-height: 1.5;
+}

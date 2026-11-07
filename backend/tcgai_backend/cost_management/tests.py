@@ -5604,6 +5604,263 @@ class CommercialImpactTests(TestCase):
             self.assertEqual(token_body["orders_count"], 1)
 
 
+class CommercialImpactOrdersTests(TestCase):
+    """Per-order drill-down behind the revenue card:
+    GET /api/cost/commercial_impact/orders/ lists the orders in the
+    SAME filtered queryset as commercial_impact (probe-linked orders
+    excluded, unlinked orders in), so its totals tie to the headline
+    influenced_revenue / orders_count for the same window. Same auth as
+    the headline: session login or the machine token."""
+
+    URL = "/api/cost/commercial_impact/orders/"
+    TOKEN = "orders-test-token"
+
+    def setUp(self):
+        cache.clear()
+        self.user = User.objects.create_user(username="owner", password="pw")
+        self.this_month = _now().replace(day=1, hour=12, minute=0, second=0, microsecond=0)
+
+    def tearDown(self):
+        cache.clear()
+
+    def _seed(self, chat_id, revenue, when=None, currency="USD", order_id=None):
+        when = when or self.this_month.replace(day=10)
+        chat = Chat.objects.create(chat_id=chat_id, model="claude-haiku-4-5")
+        Message.objects.create(chat=chat, content="hi", llm_formatted_message="{}", returned_content="hello", llm_formatted_returned_message="{}", tokens_in=10, tokens_out=5, model="claude-haiku-4-5")
+        AttributedOrder.objects.create(
+            chat_id_raw=chat_id,
+            chat=chat,
+            shop="test-shop.myshopify.com",
+            order_id=order_id or f"ord-{chat_id}",
+            influenced_revenue=revenue,
+            order_total=revenue,
+            currency=currency,
+            order_created_at=when,
+        )
+
+    def _seed_probe(self, chat_id, revenue, when=None, currency="USD", order_id=None):
+        when = when or self.this_month.replace(day=10)
+        chat = Chat.objects.create(
+            chat_id=chat_id, model="claude-haiku-4-5", is_probe=True)
+        AttributedOrder.objects.create(
+            chat_id_raw=chat_id,
+            chat=chat,
+            shop="test-shop.myshopify.com",
+            order_id=order_id or f"ord-{chat_id}",
+            influenced_revenue=revenue,
+            order_total=revenue,
+            currency=currency,
+            order_created_at=when,
+        )
+
+    def _seed_unlinked(self, revenue, when=None, currency="USD", order_id="o-ghost"):
+        when = when or self.this_month.replace(day=10)
+        AttributedOrder.objects.create(
+            chat_id_raw="ghost-chat",
+            chat=None,
+            shop="test-shop.myshopify.com",
+            order_id=order_id,
+            influenced_revenue=revenue,
+            order_total=revenue,
+            currency=currency,
+            order_created_at=when,
+        )
+
+    def _patch_spend(self, spend):
+        p = patch(
+            "cost_management.stats_views._spend_for",
+            return_value=(spend, [], None),
+        )
+        p.start()
+        self.addCleanup(p.stop)
+
+    # --- Auth: identical contract to commercial_impact ---
+
+    def test_requires_login(self):
+        resp = self.client.get(self.URL)
+        self.assertEqual(resp.status_code, 401)
+        self.assertEqual(resp.json(), {"error": "unauthenticated"})
+
+    @override_settings(COSTAPP_API_TOKEN="")
+    def test_token_rejected_when_env_unset(self):
+        resp = self.client.get(self.URL, HTTP_X_COSTAPP_TOKEN=self.TOKEN)
+        self.assertEqual(resp.status_code, 401)
+        self.assertEqual(resp.json(), {"error": "unauthenticated"})
+
+    @override_settings(COSTAPP_API_TOKEN=TOKEN)
+    def test_wrong_token_rejected_with_same_shape_as_login(self):
+        resp = self.client.get(self.URL, HTTP_X_COSTAPP_TOKEN="nope")
+        self.assertEqual(resp.status_code, 401)
+        self.assertEqual(resp.json(), {"error": "unauthenticated"})
+        bare = self.client.get(self.URL)
+        self.assertEqual(resp.content, bare.content)
+
+    @override_settings(COSTAPP_API_TOKEN=TOKEN)
+    def test_token_does_not_admit_post(self):
+        resp = self.client.post(self.URL, HTTP_X_COSTAPP_TOKEN=self.TOKEN)
+        self.assertEqual(resp.status_code, 401)
+
+    @override_settings(COSTAPP_API_TOKEN=TOKEN)
+    def test_token_and_session_responses_agree(self):
+        self._seed("c1", 100, order_id="o1")
+        self._seed_unlinked(25)
+        url = self.URL + "?month=lifetime"
+
+        self.client.force_login(self.user)
+        session_resp = self.client.get(url)
+        self.assertEqual(session_resp.status_code, 200)
+        self.client.logout()
+
+        token_resp = self.client.get(url, HTTP_X_COSTAPP_TOKEN=self.TOKEN)
+        self.assertEqual(token_resp.status_code, 200)
+        session_body = session_resp.json()
+        token_body = token_resp.json()
+        # data_as_of is stamped per call; everything else must be identical.
+        session_body.pop("data_as_of")
+        token_body.pop("data_as_of")
+        self.assertEqual(token_body, session_body)
+
+    # --- Row shape and totals ---
+
+    def test_linked_row_shape_and_totals(self):
+        from datetime import datetime
+
+        when = self.this_month.replace(day=10)
+        self._seed("c1", 100, when=when, order_id="o1")
+        self.client.force_login(self.user)
+
+        d = self.client.get(self.URL).json()
+        self.assertEqual(d["month"], self.this_month.strftime("%Y-%m"))
+        self.assertFalse(d["is_lifetime"])
+        self.assertEqual(d["influenced_revenue"], 100.0)
+        self.assertEqual(d["orders_count"], 1)
+        self.assertEqual(d["unlinked_orders"], 0)
+        self.assertEqual(d["currency"], "USD")
+        self.assertEqual(len(d["orders"]), 1)
+        row = d["orders"][0]
+        self.assertEqual(row["order_id"], "o1")
+        self.assertEqual(row["shop"], "test-shop.myshopify.com")
+        self.assertEqual(
+            datetime.fromisoformat(row["order_date"]), when)
+        self.assertEqual(row["influenced_revenue"], 100.0)
+        self.assertEqual(row["currency"], "USD")
+        self.assertEqual(row["chat_id"], "c1")
+        self.assertTrue(row["linked"])
+        # The header total is the sum of the rows, by construction.
+        self.assertEqual(
+            d["influenced_revenue"],
+            sum(r["influenced_revenue"] for r in d["orders"]),
+        )
+
+    def test_rows_newest_first(self):
+        self._seed("c-old", 10, when=self.this_month.replace(day=9), order_id="o-old")
+        self._seed("c-new", 20, when=self.this_month.replace(day=12), order_id="o-new")
+        self.client.force_login(self.user)
+
+        d = self.client.get(self.URL).json()
+        self.assertEqual([r["order_id"] for r in d["orders"]], ["o-new", "o-old"])
+
+    def test_unlinked_order_included_and_flagged(self):
+        # The production state today: the only order on record has no
+        # linked chat. It must appear, flagged, not error or vanish.
+        self._seed_unlinked("6.39", currency="CAD")
+        self.client.force_login(self.user)
+
+        d = self.client.get(self.URL + "?month=lifetime").json()
+        self.assertEqual(d["influenced_revenue"], 6.39)
+        self.assertEqual(d["orders_count"], 1)
+        self.assertEqual(d["unlinked_orders"], 1)
+        row = d["orders"][0]
+        self.assertEqual(row["order_id"], "o-ghost")
+        self.assertIsNone(row["chat_id"])
+        self.assertFalse(row["linked"])
+
+    # --- The probe exclusion applies to the list, both windows ---
+
+    def test_probe_order_excluded_from_monthly_list(self):
+        self._seed("c1", 100, order_id="o1")
+        self._seed_probe("probe-1", "6.39", order_id="o-probe")
+        self.client.force_login(self.user)
+
+        d = self.client.get(self.URL).json()
+        self.assertEqual([r["order_id"] for r in d["orders"]], ["o1"])
+        self.assertEqual(d["influenced_revenue"], 100.0)
+        self.assertEqual(d["orders_count"], 1)
+
+    def test_probe_order_excluded_from_lifetime_list(self):
+        self._seed("c1", 100, order_id="o1")
+        self._seed_probe("probe-1", "6.39", order_id="o-probe")
+        self.client.force_login(self.user)
+
+        d = self.client.get(self.URL + "?month=lifetime").json()
+        self.assertTrue(d["is_lifetime"])
+        self.assertEqual(d["month"], "lifetime")
+        self.assertEqual([r["order_id"] for r in d["orders"]], ["o1"])
+        self.assertEqual(d["influenced_revenue"], 100.0)
+        self.assertEqual(d["orders_count"], 1)
+
+    # --- The list ties to the headline for the same fixtures/window ---
+
+    def test_totals_match_commercial_impact_monthly(self):
+        self._patch_spend(10.0)
+        self._seed("c1", 100, order_id="o1")
+        self._seed("c2", 50, order_id="o2")
+        self._seed_probe("probe-1", "6.39", order_id="o-probe")
+        self._seed_unlinked(25)
+        self.client.force_login(self.user)
+
+        headline = self.client.get("/api/cost/commercial_impact/").json()
+        drill = self.client.get(self.URL).json()
+        self.assertEqual(drill["influenced_revenue"], headline["influenced_revenue"])
+        self.assertEqual(drill["orders_count"], headline["orders_count"])
+        self.assertEqual(drill["unlinked_orders"], headline["unlinked_orders"])
+        self.assertEqual(drill["influenced_revenue"], 175.0)
+        self.assertEqual(drill["orders_count"], 3)
+
+    def test_totals_match_commercial_impact_lifetime(self):
+        self._patch_spend(10.0)
+        self._seed("c1", 100, order_id="o1")
+        self._seed_probe("probe-1", "6.39", order_id="o-probe")
+        self._seed_unlinked(25)
+        self.client.force_login(self.user)
+
+        with patch("cost_management.stats_views._rates_resp_for", return_value={"rates": {}}):
+            headline = self.client.get("/api/cost/commercial_impact/?month=lifetime").json()
+            drill = self.client.get(self.URL + "?month=lifetime").json()
+        self.assertEqual(drill["influenced_revenue"], headline["influenced_revenue"])
+        self.assertEqual(drill["orders_count"], headline["orders_count"])
+        self.assertEqual(drill["unlinked_orders"], headline["unlinked_orders"])
+        self.assertEqual(drill["influenced_revenue"], 125.0)
+        self.assertEqual(drill["orders_count"], 2)
+
+    # --- Windows and empty state ---
+
+    def test_empty_window_is_an_honest_empty_list(self):
+        self.client.force_login(self.user)
+        d = self.client.get(self.URL).json()
+        self.assertEqual(d["orders"], [])
+        self.assertEqual(d["influenced_revenue"], 0.0)
+        self.assertEqual(d["orders_count"], 0)
+        self.assertEqual(d["unlinked_orders"], 0)
+
+    def test_order_outside_month_window_excluded(self):
+        # A prior month inside the lifetime window (which starts
+        # 2026-06-01): out of the monthly list, in the lifetime list.
+        when = (self.this_month - timedelta(days=40)).replace(day=15)
+        self._seed("c-old", 40, order_id="o-old", when=when)
+        self.client.force_login(self.user)
+
+        d = self.client.get(self.URL).json()
+        self.assertEqual(d["orders"], [])
+        d = self.client.get(self.URL + "?month=lifetime").json()
+        self.assertEqual([r["order_id"] for r in d["orders"]], ["o-old"])
+
+    def test_invalid_month_param(self):
+        self.client.force_login(self.user)
+        resp = self.client.get(self.URL + "?month=nope")
+        self.assertEqual(resp.status_code, 400)
+
+
 class CartFunnelTests(TestCase):
     """Cart funnel panel (Step 3): shopping chats -> added to cart ->
     purchased, intent-filtered, over the union of chats, cart-event
