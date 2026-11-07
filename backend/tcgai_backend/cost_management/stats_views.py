@@ -1727,6 +1727,47 @@ def _cart_event_surface_split(event_rows):
     }
 
 
+def _impact_orders(month_param, shops):
+    """The AttributedOrder queryset behind commercial_impact's revenue --
+    shared verbatim by the headline view and the orders drill-down
+    (commercial_impact_orders) so the per-order list always ties to the
+    card's figure for the same window and shop filter.
+
+    Revenue follows the test-traffic doctrine spend uses: orders linked
+    to a probe (test) chat are excluded. Orders with NO linked chat
+    cannot be proven tests, so they stay in -- commercial_impact
+    surfaces them as unlinked_orders, the join-key canary.
+
+    Returns (orders, month_label, is_lifetime, error_response); on an
+    invalid month param orders/month_label are None and error_response
+    is the same 400 commercial_impact returns.
+    """
+    if month_param == "lifetime":
+        range_start = timezone.make_aware(datetime(2026, 6, 1))
+        orders = AttributedOrder.objects.filter(
+            order_created_at__gte=range_start
+        ).exclude(chat__is_probe=True)
+        if shops:
+            orders = orders.filter(shop__in=list(shops))
+        return orders, "lifetime", True, None
+
+    month_start = current_month_start()
+    if month_param:
+        parsed = parse_month_param(month_param)
+        if parsed is None:
+            return None, None, False, JsonResponse(
+                {"error": "invalid month; expected YYYY-MM"}, status=400
+            )
+        month_start = parsed
+    start, end = month_range(month_start)
+    orders = AttributedOrder.objects.filter(
+        order_created_at__gte=start, order_created_at__lt=end
+    ).exclude(chat__is_probe=True)
+    if shops:
+        orders = orders.filter(shop__in=list(shops))
+    return orders, month_start.strftime("%Y-%m"), False, None
+
+
 @api_login_or_token_required
 def commercial_impact(request):
     """Rufus-style commercial metrics for the store, in plain numbers: AI spend
@@ -1775,16 +1816,9 @@ def commercial_impact(request):
             if m_spend:
                 total_spend += m_spend
 
-        range_start = timezone.make_aware(datetime(2026, 6, 1))
-        # Revenue follows the same test-traffic doctrine as spend: orders
-        # linked to a probe (test) chat are excluded. Orders with NO linked
-        # chat cannot be proven tests, so they stay in -- they surface
-        # below as unlinked_orders, the join-key canary.
-        orders = AttributedOrder.objects.filter(
-            order_created_at__gte=range_start
-        ).exclude(chat__is_probe=True)
-        if shops:
-            orders = orders.filter(shop__in=list(shops))
+        # The revenue queryset lives in _impact_orders, shared with the
+        # orders drill-down so the list ties to this headline.
+        orders, _label, _is_lt, _err = _impact_orders(month_param, shops)
         revenue = sum((o.influenced_revenue for o in orders), Decimal("0"))
         by_currency = {}
         for o in orders:
@@ -1827,7 +1861,6 @@ def commercial_impact(request):
         if parsed is None:
             return JsonResponse({"error": "invalid month; expected YYYY-MM"}, status=400)
         month_start = parsed
-    start, end = month_range(month_start)
 
     key = f"commercial_impact:{month_start:%Y-%m}" + _shop_key_suffix(shops)
     if refresh:
@@ -1852,13 +1885,9 @@ def commercial_impact(request):
     else:
         spend, _, cost_err = _spend_for(month_start, rates_resp)
 
-    # Probe-linked orders excluded, unlinked orders stay in -- the same
-    # test-traffic rule as the lifetime branch above (see its comment).
-    orders = AttributedOrder.objects.filter(
-        order_created_at__gte=start, order_created_at__lt=end
-    ).exclude(chat__is_probe=True)
-    if shops:
-        orders = orders.filter(shop__in=list(shops))
+    # Same shared queryset as the lifetime branch (see _impact_orders);
+    # an invalid month already returned 400 above, so _err is None here.
+    orders, _label, _is_lt, _err = _impact_orders(month_param, shops)
 
     revenue = sum((o.influenced_revenue for o in orders), Decimal("0"))
     by_currency = {}
@@ -1894,6 +1923,69 @@ def commercial_impact(request):
     if not cost_err:
         cache.set(key, payload, CURRENT_TTL if month_start == current else PAST_TTL)
     return JsonResponse(payload)
+
+
+@api_login_or_token_required
+def commercial_impact_orders(request):
+    """Per-order drill-down behind commercial_impact's headline revenue:
+    every AttributedOrder in the SAME filtered queryset (see
+    _impact_orders -- probe-linked orders excluded, unlinked orders in),
+    newest first, with the totals computed over the returned rows so the
+    list provably ties to the card's influenced_revenue / orders_count
+    for the same window and shop filter.
+
+    Rows carry `linked` / `chat_id` so the dashboard can link each order
+    to its conversation's page (/chats?chat=<id>); an unlinked order is
+    a real state (attribution arrived for a chat that was never logged),
+    not an error, and renders as "No linked chat".
+    """
+    shops = _request_shops(request)
+    orders, month_label, is_lifetime, error = _impact_orders(
+        request.GET.get("month"), shops
+    )
+    if error is not None:
+        return error
+
+    rows = []
+    revenue = Decimal("0")
+    by_currency = {}
+    unlinked = 0
+    for o in orders.order_by("-order_created_at", "-id"):
+        revenue += o.influenced_revenue
+        by_currency[o.currency] = (
+            by_currency.get(o.currency, Decimal("0")) + o.influenced_revenue
+        )
+        linked = o.chat_id is not None
+        if not linked:
+            unlinked += 1
+        rows.append(
+            {
+                "order_id": o.order_id,
+                "shop": o.shop,
+                "order_date": (
+                    o.order_created_at.isoformat() if o.order_created_at else None
+                ),
+                "influenced_revenue": float(o.influenced_revenue),
+                "currency": o.currency,
+                "chat_id": o.chat_id,
+                "linked": linked,
+            }
+        )
+    currency = max(by_currency, key=by_currency.get) if by_currency else "USD"
+    return JsonResponse(
+        {
+            "month": month_label,
+            "is_lifetime": is_lifetime,
+            "influenced_revenue": float(revenue),
+            "orders_count": len(rows),
+            "unlinked_orders": unlinked,
+            "currency": currency,
+            "mixed_currencies": len(by_currency) > 1,
+            "shop_filtered": bool(shops),
+            "orders": rows,
+            "data_as_of": timezone.now().isoformat(),
+        }
+    )
 
 
 CART_FUNNEL_METHODOLOGY = (

@@ -849,7 +849,7 @@ function LowScoreTriage({ stats, isLifetime }) {
 }
 
 /* ---------- C5: commercial impact hero (Rufus-style plain numbers) ---------- */
-function CommercialImpactHero({ data, isLifetime }) {
+function CommercialImpactHero({ data, isLifetime, ordersHref = "/revenue" }) {
   if (!data) return null;
   const spend = data.spend != null ? fmtUsd(data.spend, true) : "\u2014";
   const revenue =
@@ -877,7 +877,11 @@ function CommercialImpactHero({ data, isLifetime }) {
           </div>
         </div>
 
-        <div className="cr__labor-card cr__labor-card--savings">
+        <Link
+          to={ordersHref}
+          className="cr__labor-card cr__labor-card--savings cr__labor-card--link"
+          aria-label="See the orders and chats behind the chat-influenced revenue"
+        >
           <div className="cr__labor-card-top">
             <span className="cr__labor-label">Chat-Influenced Revenue</span>
             <span style={{ fontSize: "15px" }}>💰</span>
@@ -886,7 +890,8 @@ function CommercialImpactHero({ data, isLifetime }) {
           <div className="cr__labor-sub">
             From products the assistant recommended{data.mixed_currencies ? ` (${data.currency}, mixed currencies)` : ""}
           </div>
-        </div>
+          <div className="cr__labor-hint">See the chats behind this &rarr;</div>
+        </Link>
 
         <div className="cr__labor-card cr__labor-card--labor">
           <div className="cr__labor-card-top">
@@ -2051,6 +2056,18 @@ function HomeView() {
   const showFindings = iview && !generatingFresh && !insights.insufficient_data;
   const isCurrent = !shown || shown.is_current;
 
+  // Drill-down behind the revenue card: same window + shop filter as the
+  // commercial-impact fetch above, so the list ties to the card's figure.
+  const revenueOrdersHref = (() => {
+    const p = new URLSearchParams();
+    if (selectedMonth) p.set("month", selectedMonth);
+    if (selectedShops && selectedShops.length) {
+      selectedShops.forEach((s) => p.append("shop", s));
+    }
+    const qs = p.toString();
+    return qs ? `/revenue?${qs}` : "/revenue";
+  })();
+
   return (
     <div className="cr">
       {showLoadingBar && <LoadingBar percent={loadPercent} />}
@@ -2192,7 +2209,7 @@ function HomeView() {
           {/* 2. MONEY -- commercial impact, funnel, labor value */}
           <section aria-label="Is it making you money?">
             <div className="cr__section-eyebrow"><span>💵</span> Is it making you money?</div>
-            <CommercialImpactHero data={commercialImpact} isLifetime={isLifetime} />
+            <CommercialImpactHero data={commercialImpact} isLifetime={isLifetime} ordersHref={revenueOrdersHref} />
             <CartFunnelPanel data={cartFunnel} />
             <LaborSavingsHero stats={stats} isLifetime={isLifetime} />
           </section>
