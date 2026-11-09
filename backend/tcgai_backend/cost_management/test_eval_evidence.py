@@ -265,7 +265,7 @@ class GroundedScoringIntegrationTests(TestCase):
         self.assertEqual(ev["end_state"], "guard_closure")
         self.assertEqual({c["rule"] for c in ev["caps_applied"]},
                          {"guard_closure", "false_retraction"})
-        self.assertEqual(chat.evaluation_rubric_version, "v4")
+        self.assertEqual(chat.evaluation_rubric_version, "v5")
 
     @patch("anthropic.Anthropic")
     def test_judge_prompt_carries_the_evidence(self, mock_anthropic_class):

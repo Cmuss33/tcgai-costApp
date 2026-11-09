@@ -17,7 +17,7 @@ from cost_management.views import score_and_classify_chat, _conversation_complet
 
 
 class Command(BaseCommand):
-    help = "Automatically audits unaudited shopper conversations using Claude Haiku."
+    help = "Automatically audits unaudited shopper conversations using Claude Sonnet."
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -95,7 +95,7 @@ class Command(BaseCommand):
             else:
                 self.stdout.write(self.style.ERROR(" Failed"))
 
-        est_cost = round(success_count * 0.0018, 4)
+        est_cost = round(success_count * 0.04, 4)
         self.stdout.write(
             self.style.SUCCESS(
                 f"Successfully audited {success_count}/{len(candidate_chats)} chats (~${est_cost:.4f} USD)."
