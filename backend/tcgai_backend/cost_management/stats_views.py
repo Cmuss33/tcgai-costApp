@@ -676,9 +676,9 @@ def _build_stats(month_start, shops=None):
     after_hours_count = sum(1 for ts in chat_timestamps if ts and (ts.hour < 10 or ts.hour >= 19))
     after_hours_pct = round((after_hours_count / convs * 100), 1) if convs else 0.0
 
-    # Low score count: chats this month with evaluation_score < 75
+    # Low score count: chats this month with evaluation_score < 65
     low_score_count = _chat_qs(month_start, shops).filter(
-        evaluation_score__isnull=False, evaluation_score__lt=75
+        evaluation_score__isnull=False, evaluation_score__lt=65
     ).count()
 
     projected = None
@@ -897,7 +897,7 @@ def _build_lifetime_stats(shops=None):
     all_up = lifetime_qs.aggregate(
         audited_count=Count('chat_id', filter=Q(evaluation_score__isnull=False)),
         avg_score=Avg('evaluation_score'),
-        needs_attention_count=Count('chat_id', filter=Q(evaluation_score__lt=75) | Q(investigation_status="flagged")),
+        needs_attention_count=Count('chat_id', filter=Q(evaluation_score__lt=65) | Q(investigation_status="flagged")),
     )
     eval_avg = round(all_up["avg_score"], 1) if all_up["avg_score"] is not None else None
     scored = all_up["audited_count"] or 0

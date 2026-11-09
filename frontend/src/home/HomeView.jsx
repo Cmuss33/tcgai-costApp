@@ -769,7 +769,7 @@ function HeroPair({ stats, isLifetime }) {
   const scored = ev.scored || 0;
   const avg = ev.avg;
   const low = stats.low_score_count || 0;
-  const pct75 = scored > 0 ? Math.round(((scored - low) / scored) * 100) : null;
+  const pctAbove = scored > 0 ? Math.round(((scored - low) / scored) * 100) : null;
 
   return (
     <section aria-label="Headline numbers" className="cr__hero-pair">
@@ -794,7 +794,7 @@ function HeroPair({ stats, isLifetime }) {
               <span>
                 {fmtNum(scored)} of {fmtNum(total)} conversations graded
               </span>
-              {pct75 != null && <span>· {pct75}% scored 75 or higher</span>}
+              {pctAbove != null && <span>· {pctAbove}% scored 65 or higher</span>}
               {!isLifetime && <Delta pct={ev.delta_pct} betterWhen="up" />}
             </div>
           </>
@@ -825,7 +825,7 @@ function LowScoreTriage({ stats, isLifetime }) {
     return (
       <div className="cr__triage-alert cr__triage-alert--good">
         <span>
-          ✅ <strong>No conversations scored below 75</strong> {period} — of{" "}
+          ✅ <strong>No conversations scored below 65</strong> {period} — of{" "}
           {fmtNum(scored)} graded.
         </span>
         <Link to="/chats" className="cr__triage-btn cr__triage-btn--good">
@@ -838,7 +838,7 @@ function LowScoreTriage({ stats, isLifetime }) {
     <div className="cr__triage-alert cr__triage-alert--warning">
       <span>
         ⚠️ <strong>{fmtNum(low)} conversation{low === 1 ? "" : "s"}</strong>{" "}
-        scored below 75 {period}. Reviewing them shows where the bot needs
+        scored below 65 {period}. Reviewing them shows where the bot needs
         better answers.
       </span>
       <Link to="/chats?filter=needs_attention" className="cr__triage-btn">
@@ -1292,7 +1292,7 @@ function buildMissions({ stats, costReconciliation, cacheEconomics, insights, ne
   // queue is empty: every bad chat reviewed and every theme addressed.
   const chats = needsAttention?.results ?? [];
   const lowScored = chats
-    .filter((c) => c.evaluation_score != null && c.evaluation_score < 75)
+    .filter((c) => c.evaluation_score != null && c.evaluation_score < 65)
     .sort((a, b) => a.evaluation_score - b.evaluation_score);
   const flagged = chats.filter((c) => c.investigation_status === "flagged");
   const themes = insights?.quality_themes ?? [];
@@ -1304,7 +1304,7 @@ function buildMissions({ stats, costReconciliation, cacheEconomics, insights, ne
     steps: [
       {
         label: "Low-scored chats reviewed",
-        value: needsAttention == null ? "…" : `${lowScored.length} below 75`,
+        value: needsAttention == null ? "…" : `${lowScored.length} below 65`,
         done: needsAttention == null ? null : lowScored.length === 0,
         chatLinks: lowScored.slice(0, 5),
       },

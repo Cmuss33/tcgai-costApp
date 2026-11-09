@@ -841,7 +841,7 @@ function ChatSummaryView() {
               className={`inspector-filter-btn ${activeFilter === "needs_attention" ? "active" : ""}`}
               onClick={() => handleFilterClick("needs_attention")}
             >
-              🚨 Needs Attention (&lt;75% or Flagged)
+              🚨 Needs Attention (&lt;65% or Flagged)
             </button>
             <button
               type="button"
@@ -1086,12 +1086,12 @@ function ChatSummaryView() {
                       className={`chat-score-badge ${
                         accuracy[chat.chat_id] >= 90
                           ? "chat-score-badge--good"
-                          : accuracy[chat.chat_id] >= 75
+                          : accuracy[chat.chat_id] >= 65
                           ? "chat-score-badge--fair"
                           : "chat-score-badge--bad"
                       }`}
                     >
-                      {accuracy[chat.chat_id] >= 90 ? "🛡️ " : accuracy[chat.chat_id] >= 75 ? "⚠️ " : "🚨 "}
+                      {accuracy[chat.chat_id] >= 90 ? "🛡️ " : accuracy[chat.chat_id] >= 65 ? "⚠️ " : "🚨 "}
                       {accuracy[chat.chat_id]}%
                     </span>
                   ) : (
@@ -1282,7 +1282,7 @@ function ChatSummaryView() {
                     className={`chat-score-badge ${
                       accuracy[selectedChatId] >= 90
                         ? "chat-score-badge--good"
-                        : accuracy[selectedChatId] >= 75
+                        : accuracy[selectedChatId] >= 65
                         ? "chat-score-badge--fair"
                         : "chat-score-badge--bad"
                     }`}

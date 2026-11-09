@@ -56,8 +56,8 @@ MAX_RECOMMENDATIONS = 6
 MAX_QUALITY_THEMES = 5
 # Matches the "needs attention" definition used by the investigation queue
 # (views.py) and the dashboard's low_score_count (stats_views.py):
-# evaluation_score below 75 means the grader judged the bot's answers poor.
-LOW_SCORE_THRESHOLD = 75
+# evaluation_score below 65 means the grader judged the bot's answers poor.
+LOW_SCORE_THRESHOLD = 65
 _IMPACT_ORDER = {"high": 0, "medium": 1, "low": 2}
 
 REPORT_INSIGHTS_TOOL = {
