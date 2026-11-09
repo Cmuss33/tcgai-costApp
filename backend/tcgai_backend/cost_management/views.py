@@ -49,12 +49,12 @@ GREETING_REGEX = re.compile(
 
 
 def score_single_chat(chat):
-    """Evaluates a single Chat instance using Claude Haiku and saves evaluation_score.
+    """Evaluates a single Chat instance using Claude Sonnet and saves evaluation_score.
     Returns the integer score (1-100) or None on failure.
 
     Hardened 2026-10-14 after chat fd6ef56b scored 25 on auto-audit and 92
-    on manual re-evaluation with the identical judge: the call now runs at
-    temperature 0, the rubric defines its score bands (an honest negative
+    on manual re-evaluation with the identical judge: the call was pinned
+    to temperature 0, the rubric defines its score bands (an honest negative
     answer is explicitly a HIGH score), and the judge must justify itself
     in one sentence before the number -- a bare sampled integer at default
     temperature was judge noise, not measurement.
@@ -70,7 +70,16 @@ def score_single_chat(chat):
     records (eval_evidence.py) and deterministic caps bound the stored
     score when those records show a guard closure, a false retraction, or
     a retraction of a shown product. The returned score is the final,
-    possibly capped, one."""
+    possibly capped, one.
+
+    Judge model 2026-11 (rubric v5): the judge is Claude Sonnet 5-5,
+    replacing Haiku -- in the 2026-11-07 bake-off over 56 stratified
+    chats, Sonnet's readings won adjudication against the transcripts
+    and the store's records ~29-3 over Haiku's. Sonnet rejects the
+    temperature parameter, so none is sent, and its replies may lead
+    with thinking blocks, so _judge_once reads the reply's text block
+    rather than assuming block order. The prompt, bands, grounding and
+    caps are unchanged from v4."""
     messages = list(Message.objects.filter(chat=chat).order_by("timestamp"))
     if not messages:
         return None
@@ -195,35 +204,53 @@ def score_and_classify_chat(chat):
     return score
 
 
-# The rubric in score_single_chat's prompt is version "v4" (v1 was the
+# The rubric in score_single_chat's prompt is version "v5" (v1 was the
 # pre-2026-10-14 number-only prompt; v2 added bands + receipts, 2026-10-15;
 # v3 renders tool-call turns in the transcript as a marker instead of an
 # empty reply, 2026-10-17; v4 grounds the judge in the store's own records
 # -- the eval_evidence block in the prompt -- and caps the stored score in
 # code when those records show a guard closure, a false retraction, or a
-# retraction of a shown product, 2026-11). Note v4 scores are therefore
-# capped finals, not raw judge medians; the median is preserved in
-# evaluation_samples / evaluation_evidence.judge_score. Bump this whenever
-# the prompt's bands, instructions, or transcript rendering change, so
-# trend lines never silently mix incomparable scores.
-RUBRIC_VERSION = "v4"
+# retraction of a shown product, 2026-11; v5 keeps the v4 prompt, bands,
+# evidence grounding and caps but switches the judge model from Haiku to
+# Sonnet 5-5 -- bake-off 2026-11-07: Sonnet's readings won adjudication
+# ~29-3 over Haiku's on 56 stratified chats -- drops the temperature
+# argument because Sonnet 5-5 rejects it as deprecated, and reads the
+# judge reply's text block because the model may return thinking blocks
+# first). Note v4+ scores are therefore capped finals, not raw judge
+# medians; the median is preserved in evaluation_samples /
+# evaluation_evidence.judge_score. Bump this whenever the prompt's bands,
+# instructions, transcript rendering, or judge model changes, so trend
+# lines never silently mix incomparable scores.
+RUBRIC_VERSION = "v5"
 
 # Judge samples per chat. A single sampled integer was the fd6ef56b
 # failure (25 vs 92 on the identical transcript); the median of 5 makes a
 # wild roll structurally unable to win -- it would take 3 of 5 samples
-# missing the same way. Cost stays trivial (~$0.0018/chat all-in).
+# missing the same way. Cost stays small (~$0.04/chat all-in at Sonnet
+# rates, measured in the 2026-11-07 judge bake-off).
 EVAL_SAMPLE_COUNT = 5
 
 
 def _judge_once(client, prompt):
     """One judge call. Returns (score, justification) or None on failure."""
     message = client.messages.create(
-        model="claude-haiku-4-5",
+        model="claude-sonnet-5-5",
         max_tokens=1024,
-        temperature=0,
         messages=[{"role": "user", "content": prompt}],
     )
-    text = message.content[0].text.strip()
+    # No temperature argument: Sonnet 5-5 rejects the parameter as
+    # deprecated (sending it is an API 400). Its replies may lead with
+    # thinking blocks, which carry no text attribute -- the judge's
+    # answer is the first block that has text. No text block at all
+    # means this sample failed.
+    text = None
+    for block in message.content or []:
+        block_text = getattr(block, "text", None)
+        if isinstance(block_text, str):
+            text = block_text.strip()
+            break
+    if text is None:
+        return None
     match = re.search(r'SCORE:\s*(\d{1,3})', text, re.IGNORECASE)
     if match:
         score = int(match.group(1))
@@ -384,7 +411,7 @@ def batch_evaluate(request):
                 except Exception as e:
                     print(f"[batch_evaluate] Error auditing {c.chat_id}: {e}")
 
-        estimated_cost = round(len(results) * 0.0018, 4)
+        estimated_cost = round(len(results) * 0.04, 4)
         return JsonResponse({
             "status": "success",
             "audited_count": len(results),

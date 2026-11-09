@@ -192,7 +192,7 @@ class LogMessageSurfaceTests(TestCase):
 
     def test_surface_rows_are_never_auto_audited(self):
         """The 10% random sample in should_auto_audit_chat would otherwise
-        send surface rows -- which have no transcript to grade -- to Haiku."""
+        send surface rows -- which have no transcript to grade -- to the judge."""
         from .views import should_auto_audit_chat
         surface_chat = Chat.objects.create(chat_id="curator_attr_1", model="claude-haiku-4-5", surface="curator")
         shopper_chat = Chat.objects.create(chat_id="conv-1", model="claude-haiku-4-5")
@@ -4502,13 +4502,14 @@ class AutoAuditAndBatchEvaluationTests(TestCase):
         self.assertIn("[assistant made a tool call in this turn and produced no text]", prompt)
         self.assertNotIn("Assistant: \n", prompt)
         chat.refresh_from_db()
-        self.assertEqual(chat.evaluation_rubric_version, "v4")
+        self.assertEqual(chat.evaluation_rubric_version, "v5")
 
     @patch("anthropic.Anthropic")
     def test_score_single_chat_deterministic_and_parses_score_line(self, mock_anthropic_class):
-        """The hardened judge: temperature 0, and the score comes from the
-        SCORE: line after the one-sentence justification -- numbers cited
-        inside the justification must not be mistaken for the score."""
+        """The hardened judge protocol: the score comes from the SCORE:
+        line after the one-sentence justification -- numbers cited inside
+        the justification must not be mistaken for the score -- and the
+        call carries no temperature (Sonnet 5-5 rejects the parameter)."""
         from .views import score_single_chat
         mock_client = MagicMock()
         mock_anthropic_class.return_value = mock_client
@@ -4527,7 +4528,9 @@ class AutoAuditAndBatchEvaluationTests(TestCase):
             score = score_single_chat(chat)
 
         self.assertEqual(score, 92)
-        self.assertEqual(mock_client.messages.create.call_args.kwargs["temperature"], 0)
+        kwargs = mock_client.messages.create.call_args.kwargs
+        self.assertEqual(kwargs["model"], "claude-sonnet-5-5")
+        self.assertNotIn("temperature", kwargs)
         prompt = mock_client.messages.create.call_args.kwargs["messages"][0]["content"]
         self.assertIn("90-100", prompt)
         self.assertIn("SCORE:", prompt)
@@ -4587,7 +4590,7 @@ class AutoAuditAndBatchEvaluationTests(TestCase):
         self.assertEqual(chat.evaluation_samples, [25, 88, 90, 91, 92])
         self.assertEqual(chat.evaluation_justification,
                          "Both answers were correct and offered next steps.")
-        self.assertEqual(chat.evaluation_rubric_version, "v4")
+        self.assertEqual(chat.evaluation_rubric_version, "v5")
         self.assertIsNotNone(chat.evaluation_at)
         self.assertEqual(mock_client.messages.create.call_count, 5)
 
@@ -4610,6 +4613,81 @@ class AutoAuditAndBatchEvaluationTests(TestCase):
                 tokens_in=10, tokens_out=10, model="claude-haiku-4-5",
             )
             self.assertEqual(score_single_chat(chat), 85)
+
+    @staticmethod
+    def _thinking_block():
+        """A Sonnet thinking block: it carries a type and the reasoning
+        text, but NO .text attribute -- the response shape that made the
+        old content[0].text read throw and silently eat judge samples."""
+        block = MagicMock(spec=["type", "thinking", "signature"])
+        block.type = "thinking"
+        block.thinking = "Let me weigh the evidence first."
+        return block
+
+    @staticmethod
+    def _text_block(text):
+        block = MagicMock(spec=["type", "text"])
+        block.type = "text"
+        block.text = text
+        return block
+
+    def test_judge_once_reads_text_block_after_thinking_block(self):
+        """A reply of [thinking, text] parses from the text block: the
+        thinking block must neither crash the read nor be mistaken for
+        the judge's answer."""
+        from .views import _judge_once
+        mock_client = MagicMock()
+        resp = MagicMock()
+        resp.content = [
+            self._thinking_block(),
+            self._text_block("It invented a price the records do not show.\nSCORE: 34"),
+        ]
+        mock_client.messages.create.return_value = resp
+        self.assertEqual(
+            _judge_once(mock_client, "prompt"),
+            (34, "It invented a price the records do not show."),
+        )
+
+    def test_judge_once_returns_none_when_reply_has_no_text_block(self):
+        """A reply of thinking blocks only is a failed sample (None);
+        score_single_chat then grades on the surviving samples."""
+        from .views import _judge_once
+        mock_client = MagicMock()
+        resp = MagicMock()
+        resp.content = [self._thinking_block(), self._thinking_block()]
+        mock_client.messages.create.return_value = resp
+        self.assertIsNone(_judge_once(mock_client, "prompt"))
+
+    @patch("anthropic.Anthropic")
+    def test_score_single_chat_sonnet_kwargs_and_thinking_blocks(self, mock_anthropic_class):
+        """End to end under the v5 protocol: every sample's reply leads
+        with a thinking block, the grade still lands and is stamped v5,
+        and every API call uses claude-sonnet-5-5 with NO temperature
+        argument (Sonnet 5-5 rejects it with a 400)."""
+        from .views import score_single_chat
+        mock_client = MagicMock()
+        mock_anthropic_class.return_value = mock_client
+        resp = MagicMock()
+        resp.content = [
+            self._thinking_block(),
+            self._text_block("Correct and helpful throughout.\nSCORE: 91"),
+        ]
+        mock_client.messages.create.return_value = resp
+
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}):
+            chat = Chat.objects.create(chat_id="test-score-v5", model="claude-haiku-4-5")
+            Message.objects.create(
+                chat=chat, content="q", returned_content="a",
+                tokens_in=10, tokens_out=10, model="claude-haiku-4-5",
+            )
+            self.assertEqual(score_single_chat(chat), 91)
+
+        chat.refresh_from_db()
+        self.assertEqual(chat.evaluation_rubric_version, "v5")
+        self.assertEqual(mock_client.messages.create.call_count, 5)
+        for call in mock_client.messages.create.call_args_list:
+            self.assertEqual(call.kwargs["model"], "claude-sonnet-5-5")
+            self.assertNotIn("temperature", call.kwargs)
 
     @patch("anthropic.Anthropic")
     def test_score_single_chat_preserves_superseded_score_in_history(self, mock_anthropic_class):
