@@ -619,7 +619,7 @@ def get_chat_ids(request):
 
         if filter_type == "needs_attention":
             visible_chats = visible_chats.filter(
-                Q(evaluation_score__lt=75) | Q(investigation_status="flagged")
+                Q(evaluation_score__lt=65) | Q(investigation_status="flagged")
             )
         elif filter_type == "out_of_stock":
             chat_ids_with_oos = Message.objects.filter(
@@ -703,7 +703,7 @@ def get_chat_ids(request):
         all_up = all_real.aggregate(
             audited_count=Count('chat_id', filter=Q(evaluation_score__isnull=False)),
             avg_score=Avg('evaluation_score'),
-            needs_attention_count=Count('chat_id', filter=Q(evaluation_score__lt=75) | Q(investigation_status="flagged")),
+            needs_attention_count=Count('chat_id', filter=Q(evaluation_score__lt=65) | Q(investigation_status="flagged")),
             total_count=Count('chat_id'),
         )
         avg_score_val = round(all_up["avg_score"], 1) if all_up["avg_score"] is not None else None
