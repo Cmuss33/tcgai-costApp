@@ -45,6 +45,7 @@ urlpatterns = [
     path('cost_reconciliation/', stats_views.cost_reconciliation, name='cost_reconciliation'),
     path('commercial_impact/', stats_views.commercial_impact, name='commercial_impact'),
     path('commercial_impact/orders/', stats_views.commercial_impact_orders, name='commercial_impact_orders'),
+    path('accuracy/', stats_views.accuracy, name='accuracy'),
     path('cart_funnel/', stats_views.cart_funnel, name='cart_funnel'),
     path('cache_economics/', stats_views.cache_economics, name='cache_economics'),
     path('verdicts/', verdicts.verdict_cards, name='verdicts'),

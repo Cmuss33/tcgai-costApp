@@ -8,7 +8,7 @@ from decimal import Decimal
 from .api_auth import api_login_or_token_required, api_login_required
 from django.conf import settings
 from django.core.cache import cache
-from django.db.models import Avg, Count, Q, Sum
+from django.db.models import Avg, Count, Min, Q, Sum
 from django.db.models.functions import TruncDate
 from django.http import JsonResponse
 from django.utils import timezone
@@ -26,6 +26,7 @@ from .month_utils import (
     apply_shop_filter,
     current_month_start,
     lifetime_months,
+    month_iter,
     month_range,
     parse_month_param,
     prev_month,
@@ -1984,6 +1985,110 @@ def commercial_impact_orders(request):
             "shop_filtered": bool(shops),
             "orders": rows,
             "data_as_of": timezone.now().isoformat(),
+        }
+    )
+
+
+# The accuracy feed's attention line: the same "< 65 needs attention"
+# definition the investigation queue and verdicts apply to v5-rubric
+# grades (the line moved 75 -> 65 with the v5 Sonnet judge, PR #149).
+ACCURACY_ATTENTION_LINE = 65
+
+
+def _accuracy_month(month_start, shops):
+    """One month of the accuracy series, over exactly the population the
+    dashboard headline uses: _chat_qs (real chats only) with a grade.
+    mean_score reuses _eval_avg so the feed can never drift from the
+    homepage number; the breakdown querysets below apply the same
+    scored filter to the same queryset."""
+    qs = _chat_qs(month_start, shops).filter(evaluation_score__isnull=False)
+    scored = qs.count()
+    below = qs.filter(evaluation_score__lt=ACCURACY_ATTENTION_LINE).count()
+    bands = {
+        "ge_90": qs.filter(evaluation_score__gte=90).count(),
+        "75_89": qs.filter(
+            evaluation_score__gte=75, evaluation_score__lt=90
+        ).count(),
+        "65_74": qs.filter(
+            evaluation_score__gte=65, evaluation_score__lt=75
+        ).count(),
+        "40_64": qs.filter(
+            evaluation_score__gte=40, evaluation_score__lt=65
+        ).count(),
+        "lt_40": qs.filter(evaluation_score__lt=40).count(),
+    }
+    rubric_versions = sorted(
+        v
+        for v in qs.values_list("evaluation_rubric_version", flat=True).distinct()
+        if v
+    )
+    intents = [
+        {
+            "intent": row["intent_primary_v3"],
+            "mean_score": round(row["mean"], 1),
+            "scored_chats": row["n"],
+        }
+        for row in qs.exclude(intent_primary_v3__isnull=True)
+        .exclude(intent_primary_v3="")
+        .values("intent_primary_v3")
+        .annotate(mean=Avg("evaluation_score"), n=Count("chat_id"))
+        .order_by("intent_primary_v3")
+    ]
+    return {
+        "month": f"{month_start:%Y-%m}",
+        "mean_score": _eval_avg(month_start, shops),
+        "scored_chats": scored,
+        "below_attention": below,
+        "below_attention_pct": round(below * 100 / scored, 1) if scored else None,
+        "rubric_versions": rubric_versions,
+        "bands": bands,
+        "intents": intents,
+    }
+
+
+@api_login_or_token_required
+def accuracy(request):
+    """Monthly chatbot-accuracy series (Accuracy Phase 1): this app's
+    judge grades are the business's source of truth for how the chatbot
+    is performing (Prof's standing directive, 2026-11-11), and AOP reads
+    this feed to show the score, its trend, and -- joined on its own
+    side against the fix record -- why it moved.
+
+    Always the full series, first scored month through the current
+    month, ascending, with empty months rendered as nulls rather than
+    skipped: a gap AOP has to guess at would become an invented trend.
+    Means are chat-weighted throughout (see _eval_avg), scores are read
+    as currently stored (post-retro-grade values), and the population is
+    the dashboard headline's real-chat population -- probe, harness,
+    automated and empty rows never count. Same token scope as the
+    commercial-impact endpoints; ?shop= filters like them.
+    """
+    shops = _request_shops(request)
+
+    population = apply_shop_filter(real_chats(Chat.objects.all()), shops).filter(
+        evaluation_score__isnull=False
+    )
+    lifetime_row = population.aggregate(mean=Avg("evaluation_score"), n=Count("chat_id"))
+    lifetime = {
+        "mean_score": (
+            round(lifetime_row["mean"], 1) if lifetime_row["mean"] is not None else None
+        ),
+        "scored_chats": lifetime_row["n"],
+    }
+
+    months = []
+    first_seen = population.aggregate(first=Min("timestamp"))["first"]
+    if first_seen is not None:
+        first_month = first_seen.date().replace(day=1)
+        for month_start in month_iter(first_month, current_month_start()):
+            months.append(_accuracy_month(month_start, shops))
+
+    return JsonResponse(
+        {
+            "generated_at": timezone.now().isoformat(),
+            "attention_line": ACCURACY_ATTENTION_LINE,
+            "months": months,
+            "lifetime": lifetime,
         }
     )
 
