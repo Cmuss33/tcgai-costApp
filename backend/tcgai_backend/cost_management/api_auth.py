@@ -35,7 +35,8 @@ def api_login_or_token_required(view_func):
     the exact 401 the login path returns -- the response never hints at
     which credential failed. Use this decorator ONLY on the endpoints the
     token is scoped to (the commercial-impact headline view and its
-    per-order drill-down, and the accuracy feed).
+    per-order drill-down, and the accuracy feed and its per-chat
+    companion view).
     """
 
     @wraps(view_func)

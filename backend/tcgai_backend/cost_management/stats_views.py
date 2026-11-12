@@ -2093,6 +2093,53 @@ def accuracy(request):
     )
 
 
+@api_login_or_token_required
+def accuracy_chats(request):
+    """Per-chat grades (Accuracy Phase 2): the row-level companion to the
+    Phase 1 monthly series above, for AOP's fix attribution -- it forms
+    date-windowed cohorts of chats (by intent) around a fix's deploy and
+    joins them against its own issue/evaluation records by conversation
+    id, neither of which monthly aggregates can do.
+
+    The queryset is the accuracy view's population verbatim -- real_chats
+    + the shop filter + the scored filter, unbounded by month -- so a
+    month counted from these rows always equals that month's
+    scored_chats in the series (a test pins exactly that). `date` is the
+    chat's start date (Chat.timestamp, the same field _chat_qs buckets
+    by), so `month` is always the month the chat contributed to in the
+    aggregates. Scores are read as stored; nothing is re-graded. No
+    pagination: the scored corpus is a few hundred rows. Same token
+    scope as the accuracy feed; ?shop= filters like it.
+    """
+    shops = _request_shops(request)
+
+    qs = (
+        apply_shop_filter(real_chats(Chat.objects.all()), shops)
+        .filter(evaluation_score__isnull=False)
+        .order_by("timestamp", "chat_id")
+    )
+    chats = []
+    for chat in qs:
+        day = chat.timestamp.date().isoformat()
+        chats.append(
+            {
+                "chat_id": chat.chat_id,
+                "date": day,
+                "month": day[:7],
+                "score": chat.evaluation_score,
+                "rubric_version": chat.evaluation_rubric_version,
+                "intent": chat.intent_primary_v3 or None,
+            }
+        )
+
+    return JsonResponse(
+        {
+            "generated_at": timezone.now().isoformat(),
+            "chats": chats,
+        }
+    )
+
+
 CART_FUNNEL_METHODOLOGY = (
     "Shopping chats = conversations with shopping intent, plus cart/order "
     "sessions with no logged chat. A chat whose only intent is a policy, "
