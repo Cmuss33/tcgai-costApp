@@ -202,7 +202,7 @@ class LogMessageSurfaceTests(TestCase):
             timestamp=timezone.now() - timedelta(hours=2))
         shopper_chat.refresh_from_db()
 
-        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}), \
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY_COSTAPP": "test-key"}), \
                 patch("cost_management.views.random.random", return_value=0.0):
             self.assertTrue(should_auto_audit_chat(shopper_chat))  # sampled
             self.assertFalse(should_auto_audit_chat(surface_chat))
@@ -2026,7 +2026,7 @@ class MonthlyStatsTests(TestCase):
     def test_spend_and_tokens_are_scoped_to_chat_api_key_ids(self):
         """cost_pc's numerator (and the tokens/cache-hit-rate KPIs alongside
         it) must be scoped to the chat surface specifically, not every key
-        this app has ever issued (ANTHROPIC_APP_API_KEY_IDS also covers the
+        this app has ever issued (ANTHROPIC_COSTAPP_API_KEY_IDS also covers the
         AI Search Curator/narrative/report surfaces since ENG-147's 3-way
         key split) -- otherwise growth on those surfaces inflates
         cost/conversation with no matching increase in the (chat-only)
@@ -2036,8 +2036,8 @@ class MonthlyStatsTests(TestCase):
         self.client.force_login(self.user)
 
         with patch.dict('os.environ', {
-            'ANTHROPIC_APP_API_KEY_IDS': 'apikey_chat,apikey_search,apikey_report',
-            'ANTHROPIC_CHAT_API_KEY_IDS': 'apikey_chat',
+            'ANTHROPIC_COSTAPP_API_KEY_IDS': 'apikey_chat,apikey_search,apikey_report',
+            'ANTHROPIC_CHATBOT_API_KEY_IDS': 'apikey_chat',
         }):
             self.client.get("/api/cost/monthly_stats/")
 
@@ -2537,14 +2537,14 @@ class CostReconciliationEndpointTests(TestCase):
         self._patch_adapter()
         self.client.force_login(self.user)
         with patch.dict('os.environ', {}, clear=False):
-            os.environ.pop('ANTHROPIC_CHAT_API_KEY_IDS', None)
+            os.environ.pop('ANTHROPIC_CHATBOT_API_KEY_IDS', None)
             d = self.client.get("/api/cost/cost_reconciliation/").json()
         self.assertTrue(d["chat_scope_is_app_wide"])
 
     def test_chat_scope_is_not_app_wide_when_chat_key_ids_configured(self):
         self._patch_adapter()
         self.client.force_login(self.user)
-        with patch.dict('os.environ', {'ANTHROPIC_CHAT_API_KEY_IDS': 'apikey_chat'}):
+        with patch.dict('os.environ', {'ANTHROPIC_CHATBOT_API_KEY_IDS': 'apikey_chat'}):
             d = self.client.get("/api/cost/cost_reconciliation/").json()
         self.assertFalse(d["chat_scope_is_app_wide"])
 
@@ -2611,7 +2611,7 @@ class CacheEconomicsEndpointTests(TestCase):
         )
         self.client.force_login(self.user)
 
-        with patch.dict('os.environ', {'ANTHROPIC_CHAT_API_KEY_IDS': 'apikey_chat'}):
+        with patch.dict('os.environ', {'ANTHROPIC_CHATBOT_API_KEY_IDS': 'apikey_chat'}):
             d = self.client.get("/api/cost/cache_economics/").json()
 
         self.assertEqual(d["cache_read_tokens"], 999_000)
@@ -2645,7 +2645,7 @@ class CacheEconomicsEndpointTests(TestCase):
         )
         self.client.force_login(self.user)
 
-        with patch.dict('os.environ', {'ANTHROPIC_CHAT_API_KEY_IDS': 'apikey_chat'}):
+        with patch.dict('os.environ', {'ANTHROPIC_CHATBOT_API_KEY_IDS': 'apikey_chat'}):
             d = self.client.get("/api/cost/cache_economics/").json()
 
         self.assertLess(d["savings"], 0)
@@ -2672,7 +2672,7 @@ class CacheEconomicsEndpointTests(TestCase):
         )
         self.client.force_login(self.user)
 
-        with patch.dict('os.environ', {'ANTHROPIC_CHAT_API_KEY_IDS': 'apikey_chat'}):
+        with patch.dict('os.environ', {'ANTHROPIC_CHATBOT_API_KEY_IDS': 'apikey_chat'}):
             d = self.client.get("/api/cost/cache_economics/").json()
 
         self.assertEqual(d["cache_creation_tokens"], 10)
@@ -2702,7 +2702,7 @@ class CacheEconomicsEndpointTests(TestCase):
         )
         self.client.force_login(self.user)
 
-        with patch.dict('os.environ', {'ANTHROPIC_CHAT_API_KEY_IDS': 'apikey_chat'}):
+        with patch.dict('os.environ', {'ANTHROPIC_CHATBOT_API_KEY_IDS': 'apikey_chat'}):
             d = self.client.get("/api/cost/cache_economics/").json()
 
         self.assertEqual(d["reads_per_write"], 9.0)  # token ratio survives missing rates
@@ -2715,7 +2715,7 @@ class CacheEconomicsEndpointTests(TestCase):
         self._patch_adapter()
         self.client.force_login(self.user)
         with patch.dict('os.environ', {}, clear=False):
-            os.environ.pop('ANTHROPIC_CHAT_API_KEY_IDS', None)
+            os.environ.pop('ANTHROPIC_CHATBOT_API_KEY_IDS', None)
             d = self.client.get("/api/cost/cache_economics/").json()
         self.assertTrue(d["chat_scope_is_app_wide"])
 
@@ -2862,7 +2862,7 @@ class WholeOrgRateDerivationTests(TestCase):
         ]}]})
         from .llm_provider_adapter_implementations import AnthropicAdapter
         with patch.dict('os.environ', {
-            'ANTHROPIC_APP_API_KEY_IDS': 'apikey_target',
+            'ANTHROPIC_COSTAPP_API_KEY_IDS': 'apikey_target',
             'ANTHROPIC_WORKSPACE_ID': 'wrkspc_target',
         }), patch("cost_management.llm_provider_adapter_implementations.requests.get",
                   side_effect=[cost_resp, usage_resp]) as mock_get:
@@ -2890,7 +2890,7 @@ class WholeOrgRateDerivationTests(TestCase):
             {"model": "claude-haiku-4-5", "api_key_id": "apikey_new_tracked", "uncached_input_tokens": 1_000_000, "output_tokens": 0},
         ]}]})
         from .llm_provider_adapter_implementations import AnthropicAdapter
-        with patch.dict('os.environ', {'ANTHROPIC_APP_API_KEY_IDS': 'apikey_new_tracked'}), \
+        with patch.dict('os.environ', {'ANTHROPIC_COSTAPP_API_KEY_IDS': 'apikey_new_tracked'}), \
              patch("cost_management.llm_provider_adapter_implementations.requests.get",
                    side_effect=[cost_resp, usage_resp]):
             result = AnthropicAdapter().get_model_rates(year=2026, month=9)
@@ -2901,7 +2901,7 @@ class WholeOrgRateDerivationTests(TestCase):
 
 class AppApiKeyScopingTests(TestCase):
     """get_cost/get_tokens report ABSOLUTE totals for this app specifically,
-    scoped to ANTHROPIC_APP_API_KEY_IDS (comma-separated Anthropic
+    scoped to ANTHROPIC_COSTAPP_API_KEY_IDS (comma-separated Anthropic
     api_key_id values -- this app's own production keys, past and present,
     e.g. the old pre-rotation shared key plus the current per-surface
     keys). Unlike get_model_rates' $/token unit rate (see
@@ -2926,7 +2926,7 @@ class AppApiKeyScopingTests(TestCase):
             {"api_key_id": "apikey_other", "uncached_input_tokens": 900, "output_tokens": 90},
         ]}]})
         from .llm_provider_adapter_implementations import AnthropicAdapter
-        with patch.dict('os.environ', {'ANTHROPIC_APP_API_KEY_IDS': 'apikey_target'}), \
+        with patch.dict('os.environ', {'ANTHROPIC_COSTAPP_API_KEY_IDS': 'apikey_target'}), \
              patch("cost_management.llm_provider_adapter_implementations.requests.get",
                    return_value=resp):
             result = AnthropicAdapter().get_tokens(year=2026, month=8)
@@ -2941,7 +2941,7 @@ class AppApiKeyScopingTests(TestCase):
         ]}]})
         from .llm_provider_adapter_implementations import AnthropicAdapter
         with patch.dict('os.environ', {}, clear=False):
-            os.environ.pop('ANTHROPIC_APP_API_KEY_IDS', None)
+            os.environ.pop('ANTHROPIC_COSTAPP_API_KEY_IDS', None)
             with patch("cost_management.llm_provider_adapter_implementations.requests.get",
                        return_value=resp):
                 result = AnthropicAdapter().get_tokens(year=2026, month=8)
@@ -2971,7 +2971,7 @@ class AppApiKeyScopingTests(TestCase):
             {"model": "claude-haiku-4-5", "api_key_id": "apikey_other", "uncached_input_tokens": 9_000_000, "output_tokens": 0},
         ]}]})
         from .llm_provider_adapter_implementations import AnthropicAdapter
-        with patch.dict('os.environ', {'ANTHROPIC_APP_API_KEY_IDS': 'apikey_target'}), \
+        with patch.dict('os.environ', {'ANTHROPIC_COSTAPP_API_KEY_IDS': 'apikey_target'}), \
              patch("cost_management.llm_provider_adapter_implementations.requests.get",
                    side_effect=[cost_resp, rate_usage_resp, own_usage_resp]):
             result = AnthropicAdapter().get_cost(year=2026, month=8)
@@ -2997,7 +2997,7 @@ class AppApiKeyScopingTests(TestCase):
             {"model": "claude-haiku-4-5", "api_key_id": "apikey_roblox_unrelated", "uncached_input_tokens": 50_000_000, "output_tokens": 0},
         ]}]})
         from .llm_provider_adapter_implementations import AnthropicAdapter
-        with patch.dict('os.environ', {'ANTHROPIC_APP_API_KEY_IDS': 'apikey_old_chatbot,apikey_new_chatbot'}), \
+        with patch.dict('os.environ', {'ANTHROPIC_COSTAPP_API_KEY_IDS': 'apikey_old_chatbot,apikey_new_chatbot'}), \
              patch("cost_management.llm_provider_adapter_implementations.requests.get",
                    side_effect=[cost_resp, rate_usage_resp, own_usage_resp]):
             result = AnthropicAdapter().get_cost(year=2026, month=8)
@@ -3033,7 +3033,7 @@ class GetCostRatesRespReuseTests(TestCase):
         ]}]})
         rates_resp = {"rates": {"claude-haiku-4-5": {"input": 0.000001}}}
         from .llm_provider_adapter_implementations import AnthropicAdapter
-        with patch.dict('os.environ', {'ANTHROPIC_APP_API_KEY_IDS': 'apikey_target'}), \
+        with patch.dict('os.environ', {'ANTHROPIC_COSTAPP_API_KEY_IDS': 'apikey_target'}), \
              patch("cost_management.llm_provider_adapter_implementations.requests.get",
                    side_effect=[own_usage_resp]) as mock_get:
             result = AnthropicAdapter().get_cost(year=2026, month=8, rates_resp=rates_resp)
@@ -3060,7 +3060,7 @@ class ChatApiKeyScopingTests(TestCase):
     Anthropic-spend numerator by a chat-conversation-only denominator
     (Chat rows only ever come from the chatbot's own log_message calls --
     the AI Search Curator/narrative/report surfaces never write one). Before
-    this, the numerator was scoped to ANTHROPIC_APP_API_KEY_IDS -- ALL of
+    this, the numerator was scoped to ANTHROPIC_COSTAPP_API_KEY_IDS -- ALL of
     this app's keys, chat AND search AND report (ENG-147's three-way key
     split) -- so any growth in curator/narrative/report usage inflated
     cost/conversation with zero matching increase in the denominator. This
@@ -3080,9 +3080,9 @@ class ChatApiKeyScopingTests(TestCase):
             {"model": "claude-haiku-4-5", "api_key_id": "apikey_search", "uncached_input_tokens": 9_000_000, "output_tokens": 0},
         ]}]})
         from .llm_provider_adapter_implementations import AnthropicAdapter
-        # ANTHROPIC_APP_API_KEY_IDS covers both keys, but the explicit
+        # ANTHROPIC_COSTAPP_API_KEY_IDS covers both keys, but the explicit
         # key_ids override passed to get_cost should win over it.
-        with patch.dict('os.environ', {'ANTHROPIC_APP_API_KEY_IDS': 'apikey_chat,apikey_search'}), \
+        with patch.dict('os.environ', {'ANTHROPIC_COSTAPP_API_KEY_IDS': 'apikey_chat,apikey_search'}), \
              patch("cost_management.llm_provider_adapter_implementations.requests.get",
                    side_effect=[cost_resp, rate_usage_resp, own_usage_resp]):
             result = AnthropicAdapter().get_cost(year=2026, month=8, key_ids=["apikey_chat"])
@@ -3104,7 +3104,7 @@ class ChatApiKeyScopingTests(TestCase):
             {"model": "claude-haiku-4-5", "api_key_id": "apikey_search", "uncached_input_tokens": 9_000_000, "output_tokens": 0},
         ]}]})
         from .llm_provider_adapter_implementations import AnthropicAdapter
-        with patch.dict('os.environ', {'ANTHROPIC_APP_API_KEY_IDS': 'apikey_chat,apikey_search'}), \
+        with patch.dict('os.environ', {'ANTHROPIC_COSTAPP_API_KEY_IDS': 'apikey_chat,apikey_search'}), \
              patch("cost_management.llm_provider_adapter_implementations.requests.get",
                    side_effect=[cost_resp, rate_usage_resp, own_usage_resp]):
             result = AnthropicAdapter().get_cost(year=2026, month=8)
@@ -3118,7 +3118,7 @@ class ChatApiKeyScopingTests(TestCase):
             {"api_key_id": "apikey_search", "uncached_input_tokens": 900, "output_tokens": 90},
         ]}]})
         from .llm_provider_adapter_implementations import AnthropicAdapter
-        with patch.dict('os.environ', {'ANTHROPIC_APP_API_KEY_IDS': 'apikey_chat,apikey_search'}), \
+        with patch.dict('os.environ', {'ANTHROPIC_COSTAPP_API_KEY_IDS': 'apikey_chat,apikey_search'}), \
              patch("cost_management.llm_provider_adapter_implementations.requests.get",
                    return_value=resp):
             result = AnthropicAdapter().get_tokens(year=2026, month=8, key_ids=["apikey_chat"])
@@ -3127,28 +3127,30 @@ class ChatApiKeyScopingTests(TestCase):
 
     def test_chat_api_key_ids_falls_back_to_app_api_key_ids_when_unset(self):
         from .llm_provider_adapter_implementations import chat_api_key_ids
-        with patch.dict('os.environ', {'ANTHROPIC_APP_API_KEY_IDS': 'apikey_chat,apikey_search'}, clear=False):
-            os.environ.pop('ANTHROPIC_CHAT_API_KEY_IDS', None)
+        with patch.dict('os.environ', {'ANTHROPIC_COSTAPP_API_KEY_IDS': 'apikey_chat,apikey_search'}, clear=False):
+            os.environ.pop('ANTHROPIC_CHATBOT_API_KEY_IDS', None)
             self.assertEqual(chat_api_key_ids(), ['apikey_chat', 'apikey_search'])
 
     def test_chat_api_key_ids_uses_its_own_env_var_when_set(self):
         from .llm_provider_adapter_implementations import chat_api_key_ids
         with patch.dict('os.environ', {
-            'ANTHROPIC_APP_API_KEY_IDS': 'apikey_chat,apikey_search,apikey_report',
-            'ANTHROPIC_CHAT_API_KEY_IDS': 'apikey_chat',
+            'ANTHROPIC_COSTAPP_API_KEY_IDS': 'apikey_chat,apikey_search,apikey_report',
+            'ANTHROPIC_CHATBOT_API_KEY_IDS': 'apikey_chat',
         }):
             self.assertEqual(chat_api_key_ids(), ['apikey_chat'])
 
 
 class AnthropicKeyRenameChainTests(TestCase):
-    """Phase 1 of the Anthropic key-rename programme: every read takes
-    the new variable name first and keeps the old name as a fallback, so
-    a deploy with no config change behaves exactly as before. These
-    tests pin the chains for the inference key and both api_key_id
-    lists, including chat_api_key_ids()'s fall-back-to-app-list
-    behaviour under the new names."""
+    """Phase 3 of the Anthropic key-rename programme: the phase-1
+    fallbacks are gone -- every read takes the new variable name ONLY
+    and the pre-rename names are ignored even when set. Phase 2 put the
+    distinct new key and the new ID lists live in config, so an old
+    name still present in an environment must have no effect. These
+    tests pin the new-name-only behaviour for the inference key and
+    both api_key_id lists, including chat_api_key_ids()'s
+    fall-back-to-app-list behaviour under the new names."""
 
-    def test_inference_key_prefers_the_new_name(self):
+    def test_inference_key_uses_the_new_name_when_both_are_set(self):
         from .llm_provider_adapter_implementations import anthropic_inference_key
         with patch.dict('os.environ', {
             'ANTHROPIC_API_KEY_COSTAPP': 'new-key',
@@ -3156,17 +3158,17 @@ class AnthropicKeyRenameChainTests(TestCase):
         }, clear=True):
             self.assertEqual(anthropic_inference_key(), 'new-key')
 
-    def test_inference_key_works_on_the_old_name_alone(self):
+    def test_inference_key_ignores_the_old_name_alone(self):
         from .llm_provider_adapter_implementations import anthropic_inference_key
         with patch.dict('os.environ', {'ANTHROPIC_API_KEY': 'old-key'}, clear=True):
-            self.assertEqual(anthropic_inference_key(), 'old-key')
+            self.assertIsNone(anthropic_inference_key())
 
     def test_inference_key_is_none_when_neither_name_is_set(self):
         from .llm_provider_adapter_implementations import anthropic_inference_key
         with patch.dict('os.environ', {}, clear=True):
             self.assertIsNone(anthropic_inference_key())
 
-    def test_app_api_key_ids_prefers_the_new_name(self):
+    def test_app_api_key_ids_uses_the_new_name_when_both_are_set(self):
         from .llm_provider_adapter_implementations import app_api_key_ids
         with patch.dict('os.environ', {
             'ANTHROPIC_COSTAPP_API_KEY_IDS': 'apikey_new_a,apikey_new_b',
@@ -3174,12 +3176,12 @@ class AnthropicKeyRenameChainTests(TestCase):
         }, clear=True):
             self.assertEqual(app_api_key_ids(), ['apikey_new_a', 'apikey_new_b'])
 
-    def test_app_api_key_ids_works_on_the_old_name_alone(self):
+    def test_app_api_key_ids_ignores_the_old_name_alone(self):
         from .llm_provider_adapter_implementations import app_api_key_ids
         with patch.dict('os.environ', {'ANTHROPIC_APP_API_KEY_IDS': 'apikey_old'}, clear=True):
-            self.assertEqual(app_api_key_ids(), ['apikey_old'])
+            self.assertEqual(app_api_key_ids(), [])
 
-    def test_chat_api_key_ids_prefers_the_new_name(self):
+    def test_chat_api_key_ids_uses_the_new_name_when_both_are_set(self):
         from .llm_provider_adapter_implementations import chat_api_key_ids
         with patch.dict('os.environ', {
             'ANTHROPIC_CHATBOT_API_KEY_IDS': 'apikey_new_chat',
@@ -3188,10 +3190,10 @@ class AnthropicKeyRenameChainTests(TestCase):
         }, clear=True):
             self.assertEqual(chat_api_key_ids(), ['apikey_new_chat'])
 
-    def test_chat_api_key_ids_works_on_the_old_name_alone(self):
+    def test_chat_api_key_ids_ignores_the_old_name_alone(self):
         from .llm_provider_adapter_implementations import chat_api_key_ids
         with patch.dict('os.environ', {'ANTHROPIC_CHAT_API_KEY_IDS': 'apikey_old_chat'}, clear=True):
-            self.assertEqual(chat_api_key_ids(), ['apikey_old_chat'])
+            self.assertEqual(chat_api_key_ids(), [])
 
     def test_chat_api_key_ids_falls_back_to_the_app_list_under_the_new_names(self):
         from .llm_provider_adapter_implementations import chat_api_key_ids
@@ -3200,19 +3202,19 @@ class AnthropicKeyRenameChainTests(TestCase):
         }, clear=True):
             self.assertEqual(chat_api_key_ids(), ['apikey_chat', 'apikey_search'])
 
-    def test_chat_api_key_ids_falls_back_to_the_app_list_under_the_old_names(self):
+    def test_chat_api_key_ids_ignores_the_old_app_list_name(self):
         from .llm_provider_adapter_implementations import chat_api_key_ids
         with patch.dict('os.environ', {
             'ANTHROPIC_APP_API_KEY_IDS': 'apikey_chat,apikey_search',
         }, clear=True):
-            self.assertEqual(chat_api_key_ids(), ['apikey_chat', 'apikey_search'])
+            self.assertEqual(chat_api_key_ids(), [])
 
-    def test_chat_scope_is_app_wide_reads_the_new_chat_list_name_first(self):
+    def test_chat_scope_is_app_wide_reads_only_the_new_chat_list_name(self):
         from .stats_views import _chat_scope_is_app_wide
         with patch.dict('os.environ', {'ANTHROPIC_CHATBOT_API_KEY_IDS': 'apikey_chat'}, clear=True):
             self.assertFalse(_chat_scope_is_app_wide())
         with patch.dict('os.environ', {'ANTHROPIC_CHAT_API_KEY_IDS': 'apikey_chat'}, clear=True):
-            self.assertFalse(_chat_scope_is_app_wide())
+            self.assertTrue(_chat_scope_is_app_wide())
         with patch.dict('os.environ', {}, clear=True):
             self.assertTrue(_chat_scope_is_app_wide())
 
@@ -3611,7 +3613,7 @@ class UsageByKeyEndpointTests(TestCase):
         )
         self.client.force_login(self.user)
 
-        with patch.dict('os.environ', {'ANTHROPIC_APP_API_KEY_IDS': 'apikey_ours'}):
+        with patch.dict('os.environ', {'ANTHROPIC_COSTAPP_API_KEY_IDS': 'apikey_ours'}):
             d = self.client.get("/api/cost/get_usage_by_key/").json()
 
         self.assertEqual([k["api_key_id"] for k in d["keys"]], ["apikey_ours"])
@@ -3631,7 +3633,7 @@ class UsageByKeyEndpointTests(TestCase):
         self.client.force_login(self.user)
 
         with patch.dict('os.environ', {}, clear=False):
-            os.environ.pop('ANTHROPIC_APP_API_KEY_IDS', None)
+            os.environ.pop('ANTHROPIC_COSTAPP_API_KEY_IDS', None)
             d = self.client.get("/api/cost/get_usage_by_key/").json()
 
         self.assertEqual({k["api_key_id"] for k in d["keys"]}, {"apikey_a", "apikey_b"})
@@ -4450,7 +4452,7 @@ class AutoAuditAndBatchEvaluationTests(TestCase):
         mock_resp.content = [MagicMock(text="92")]
         mock_client.messages.create.return_value = mock_resp
 
-        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}):
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY_COSTAPP": "test-key"}):
             chat = Chat.objects.create(chat_id="test-score-1", model="claude-haiku-4-5")
             Message.objects.create(
                 chat=chat,
@@ -4478,7 +4480,7 @@ class AutoAuditAndBatchEvaluationTests(TestCase):
         mock_resp.content = [MagicMock(text="The follow-up never arrived.\nSCORE: 12")]
         mock_client.messages.create.return_value = mock_resp
 
-        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}):
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY_COSTAPP": "test-key"}):
             chat = Chat.objects.create(chat_id="test-tool-turn", model="claude-haiku-4-5")
             Message.objects.create(
                 chat=chat, content="Where is the store",
@@ -4518,7 +4520,7 @@ class AutoAuditAndBatchEvaluationTests(TestCase):
             text="The assistant answered both of the shopper's 2 questions helpfully.\nSCORE: 92")]
         mock_client.messages.create.return_value = mock_resp
 
-        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}):
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY_COSTAPP": "test-key"}):
             chat = Chat.objects.create(chat_id="test-score-2", model="claude-haiku-4-5")
             Message.objects.create(
                 chat=chat, content="pre order op-18",
@@ -4547,7 +4549,7 @@ class AutoAuditAndBatchEvaluationTests(TestCase):
         mock_resp.content = [MagicMock(text="2 exchanges, both handled. Final grade: 88")]
         mock_client.messages.create.return_value = mock_resp
 
-        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}):
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY_COSTAPP": "test-key"}):
             chat = Chat.objects.create(chat_id="test-score-3", model="claude-haiku-4-5")
             Message.objects.create(
                 chat=chat, content="q", returned_content="a",
@@ -4577,7 +4579,7 @@ class AutoAuditAndBatchEvaluationTests(TestCase):
             self._judge_resp("Strong throughout.\nSCORE: 91"),
         ]
 
-        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}):
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY_COSTAPP": "test-key"}):
             chat = Chat.objects.create(chat_id="test-score-median", model="claude-haiku-4-5")
             Message.objects.create(
                 chat=chat, content="pre order op-18",
@@ -4606,7 +4608,7 @@ class AutoAuditAndBatchEvaluationTests(TestCase):
             Exception("boom"), self._judge_resp("Good.\nSCORE: 90"),
             self._judge_resp("Solid.\nSCORE: 85"),
         ]
-        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}):
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY_COSTAPP": "test-key"}):
             chat = Chat.objects.create(chat_id="test-score-flaky", model="claude-haiku-4-5")
             Message.objects.create(
                 chat=chat, content="q", returned_content="a",
@@ -4699,7 +4701,7 @@ class AutoAuditAndBatchEvaluationTests(TestCase):
         mock_anthropic_class.return_value = mock_client
         mock_client.messages.create.return_value = self._judge_resp("Fine now.\nSCORE: 92")
 
-        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}):
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY_COSTAPP": "test-key"}):
             chat = Chat.objects.create(
                 chat_id="fd6ef56b-like", model="claude-haiku-4-5", evaluation_score=25)
             Message.objects.create(
@@ -4744,7 +4746,7 @@ class AutoAuditAndBatchEvaluationTests(TestCase):
 
     def test_should_auto_audit_chat_filtering(self):
         from .views import should_auto_audit_chat
-        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}):
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY_COSTAPP": "test-key"}):
             # Bot should not be audited
             c_bot = Chat.objects.create(chat_id="bot-test", model="claude-haiku-4-5", likely_automated=True)
             self.assertFalse(should_auto_audit_chat(c_bot))
@@ -4839,7 +4841,7 @@ class AutoAuditAndBatchEvaluationTests(TestCase):
 
     def test_should_auto_audit_respects_daily_cap(self):
         from .views import should_auto_audit_chat, DAILY_AUTO_AUDIT_CAP
-        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}):
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY_COSTAPP": "test-key"}):
             # Create 30 chats scored today
             for i in range(DAILY_AUTO_AUDIT_CAP):
                 Chat.objects.create(
@@ -6382,7 +6384,7 @@ class GraderPromptTests(TestCase):
 
         with patch("anthropic.Anthropic") as mock_client:
             mock_client.return_value.messages.create.side_effect = fake_create
-            with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "x"}):
+            with patch.dict(os.environ, {"ANTHROPIC_API_KEY_COSTAPP": "x"}):
                 score = views.score_single_chat(chat)
         self.assertEqual(score, 100)
         prompt = captured["prompt"].lower()
