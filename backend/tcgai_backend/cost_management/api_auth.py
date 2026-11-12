@@ -27,14 +27,15 @@ def api_login_or_token_required(view_func):
     """Session login OR the machine token (``X-CostApp-Token`` header).
 
     The token path exists for one server-to-server reader -- AOP's Command
-    Center reads the commercial-impact totals for its Money section, and
+    Center reads the commercial-impact totals for its Money section and
+    the accuracy series for its Progress section, and
     ``api_login_required`` can't work cross-service. It admits GET requests
     only, only while ``COSTAPP_API_TOKEN`` is set (unset/empty disables it
     entirely), and compares in constant time. A missing or wrong token gets
     the exact 401 the login path returns -- the response never hints at
-    which credential failed. Use this decorator ONLY on the
-    commercial-impact endpoints the token is scoped to (the headline view
-    and its per-order drill-down).
+    which credential failed. Use this decorator ONLY on the endpoints the
+    token is scoped to (the commercial-impact headline view and its
+    per-order drill-down, and the accuracy feed).
     """
 
     @wraps(view_func)
