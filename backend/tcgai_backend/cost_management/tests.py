@@ -8497,3 +8497,75 @@ class CuratorSurfaceReportingSplitTests(TestCase):
         self.assertEqual(d["storefront_cart_events"], 1)
         self.assertEqual(d["curator_cart_events"], 0)
         self.assertEqual(d["chat_cart_events"], 0)
+
+
+class UsageByKeyUntrackedTests(TestCase):
+    """get_usage_by_key partitions the workspace's keys into the tracked
+    estate (ANTHROPIC_COSTAPP_API_KEY_IDS) and "untracked_keys" -- keys with
+    real usage that the tracking list forgot (a rotated key whose new id
+    was never registered). The untracked rows must be priced exactly like
+    the tracked ones so the blind spot carries a dollar figure."""
+
+    def setUp(self):
+        cache.clear()
+        self.user = User.objects.create_user(username="owner", password="x")
+        self.client.force_login(self.user)
+
+    def tearDown(self):
+        cache.clear()
+
+    def _patch(self, tracked_ids):
+        def _key(kid, name, uncached_in, out):
+            return {
+                "api_key_id": kid,
+                "name": name,
+                "input_tokens": uncached_in,
+                "output_tokens": out,
+                "by_model": {"claude-haiku-4-5": {"uncached_input_tokens": uncached_in, "output_tokens": out}},
+            }
+
+        get_usage_by_key = MagicMock(return_value={
+            "keys": [
+                _key("tracked_1", "Tracked One", 2_000_000, 200_000),
+                _key("tracked_2", "Tracked Two", 1_000_000, 100_000),
+                _key("stray_1", "Rotated Chat Key", 4_000_000, 400_000),
+            ],
+            "workspace_id": "ws_123",
+        })
+        get_model_rates = MagicMock(return_value={
+            "rates": {"claude-haiku-4-5": {"input": 1e-6, "output": 5e-6, "cache_creation": 0, "cache_read": 0}}
+        })
+        p = patch.multiple(
+            "cost_management.views.llmprovider",
+            get_usage_by_key=get_usage_by_key,
+            get_model_rates=get_model_rates,
+        )
+        p.start()
+        self.addCleanup(p.stop)
+        p2 = patch("cost_management.stats_views.app_api_key_ids", return_value=tracked_ids)
+        p2.start()
+        self.addCleanup(p2.stop)
+
+    def test_monthly_partitions_tracked_and_untracked(self):
+        self._patch(["tracked_1", "tracked_2"])
+        d = self.client.get("/api/cost/get_usage_by_key/?month=2026-10").json()
+        self.assertEqual([k["api_key_id"] for k in d["keys"]], ["tracked_1", "tracked_2"])
+        self.assertEqual(len(d["untracked_keys"]), 1)
+        stray = d["untracked_keys"][0]
+        self.assertEqual(stray["api_key_id"], "stray_1")
+        self.assertEqual(stray["name"], "Rotated Chat Key")
+        # 4,000,000 * 1e-6 + 400,000 * 5e-6 = 4 + 2 = 6.0
+        self.assertEqual(stray["estimated_cost"], 6.0)
+
+    def test_lifetime_partitions_tracked_and_untracked(self):
+        self._patch(["tracked_1", "tracked_2"])
+        d = self.client.get("/api/cost/get_usage_by_key/?month=lifetime").json()
+        self.assertEqual({k["api_key_id"] for k in d["keys"]}, {"tracked_1", "tracked_2"})
+        self.assertEqual([k["api_key_id"] for k in d["untracked_keys"]], ["stray_1"])
+        self.assertGreater(d["untracked_keys"][0]["estimated_cost"], 0)
+
+    def test_no_tracking_list_means_nothing_is_untracked(self):
+        self._patch([])
+        d = self.client.get("/api/cost/get_usage_by_key/?month=2026-10").json()
+        self.assertEqual(len(d["keys"]), 3)
+        self.assertEqual(d["untracked_keys"], [])
