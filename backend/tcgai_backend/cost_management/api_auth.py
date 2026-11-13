@@ -35,8 +35,9 @@ def api_login_or_token_required(view_func):
     the exact 401 the login path returns -- the response never hints at
     which credential failed. Use this decorator ONLY on the endpoints the
     token is scoped to (the commercial-impact headline view and its
-    per-order drill-down, and the accuracy feed and its per-chat
-    companion view).
+    per-order drill-down, the accuracy feed and its per-chat companion
+    view, and get_usage_by_key -- whose per-key rows the Command Center's
+    AI COSTS panel renders, the wiring src/aiCosts.js always promised).
     """
 
     @wraps(view_func)
