@@ -6,7 +6,7 @@ const API_URL = import.meta.env.VITE_API_URL ?? "";
 const POLL_MS = 2500;
 const MAX_POLLS = 35;
 // stats, insights (first response only -- not each poll),
-// costReconciliation, cacheEconomics, commercialImpact
+// costReconciliation, cacheEconomics, commercialImpact, usageByKey
 const TOTAL_LOADERS = 8;
 
 const STATUS_LABELS = { out_of_stock: "out of stock", not_carried: "not carried", unknown: "unknown" };
@@ -332,6 +332,84 @@ function CostReconciliationPanel({ data, isLifetime }) {
           </tr>
         </tbody>
       </table>
+    </CollapsiblePanel>
+  );
+}
+
+/* ---------- usage by key / service ---------- */
+
+// Key names carry the owner + surface by the estate's naming standard
+// (ANTHROPIC_API_KEY_<OWNER>_<SURFACE>); the legacy console names predate
+// it. Anything unmapped falls back to the raw key name.
+const KEY_SERVICE_LABELS = {
+  ANTHROPIC_API_KEY_CHATBOT: "Agent Meta \u2014 Chat",
+  "prod-shopify-chatbot": "Agent Meta \u2014 Chat (legacy key)",
+  "prod-shopify-chatbot-v2": "Agent Meta \u2014 Chat (legacy key)",
+  "shopchatagent-prod": "Agent Meta \u2014 Chat (legacy key)",
+  ANTHROPIC_API_KEY_CHATBOT_SEARCH: "Agent Meta \u2014 Search",
+  "prod-shopify-search": "Agent Meta \u2014 Search (legacy key)",
+  ANTHROPIC_API_KEY_CHATBOT_REPORT: "Agent Meta \u2014 Report",
+  "prod-shopify-monthly-slack-report": "Agent Meta \u2014 Report (legacy key)",
+  ANTHROPIC_API_KEY_COSTAPP: "Cost app \u2014 chat grader",
+  ANTHROPIC_API_KEY_AOP: "AOP \u2014 ops platform",
+  "prod-aop-monitor-v2": "AOP \u2014 ops platform (legacy key)",
+  "senior-developer-aop": "AOP \u2014 ops platform (legacy key)",
+  ANTHROPIC_API_KEY_AUTOHEAL: "Auto-heal loop (CI)",
+};
+
+const serviceLabel = (name) => KEY_SERVICE_LABELS[name] || name;
+
+function UsageByKeyPanel({ data, isLifetime }) {
+  // Hide on a fetch/usage-source error, matching the other cost panels --
+  // the page-level cost-source notice already covers "Anthropic's API is
+  // having issues".
+  if (!data || data.error || !Array.isArray(data.keys)) return null;
+  const tracked = data.keys;
+  const untracked = Array.isArray(data.untracked_keys) ? data.untracked_keys : [];
+  const total = tracked.reduce((s, k) => s + (k.estimated_cost || 0), 0);
+  const keyRow = (k) => (
+    <tr key={k.api_key_id}>
+      <td className="cr__p">{serviceLabel(k.name)}</td>
+      <td className="cr__x">
+        {fmtCompact(k.input_tokens)} in / {fmtCompact(k.output_tokens)} out \u00b7 {k.name}
+      </td>
+      <td className="cr__st">{fmtUsd(k.estimated_cost, true)}</td>
+    </tr>
+  );
+  return (
+    <CollapsiblePanel
+      id="panel-usage-by-key"
+      title="Usage by service"
+      accent="var(--a-cost)"
+      description={`Every Anthropic API key in the workspace, labelled by the service that owns it, ${isLifetime ? "since June 1, 2026" : "this month"}. Token counts are Anthropic's own; dollars are estimates (tokens \u00d7 model rates), because Anthropic cannot bill by key.`}
+      badge={
+        untracked.length ? (
+          <span className="cr__chip bad">{untracked.length} untracked</span>
+        ) : null
+      }
+    >
+      <table className="cr__want cr__keys">
+        <tbody>
+          {tracked.map(keyRow)}
+          <tr>
+            <td className="cr__p">Total tracked</td>
+            <td className="cr__x" />
+            <td className="cr__st">{fmtUsd(total, true)}</td>
+          </tr>
+        </tbody>
+      </table>
+      {untracked.length > 0 && (
+        <>
+          <p className="cr__notice">
+            These keys spent money {isLifetime ? "in this period" : "this month"} but are not in the
+            tracking list (ANTHROPIC_COSTAPP_API_KEY_IDS), so they are missing from the total above.
+            Register a key&rsquo;s id in that list to start tracking it.
+          </p>
+          <table className="cr__want cr__keys">
+            <tbody>{untracked.map(keyRow)}</tbody>
+          </table>
+        </>
+      )}
     </CollapsiblePanel>
   );
 }
@@ -1561,6 +1639,7 @@ function HomeView() {
   const [cartFunnel, setCartFunnel] = useState(null);
   const [chatIntentsV3, setChatIntentsV3] = useState(null);
   const [cacheEconomics, setCacheEconomics] = useState(null);
+  const [usageByKey, setUsageByKey] = useState(null);
   const [verdicts, setVerdicts] = useState(null);
   const [needsAttention, setNeedsAttention] = useState(null);
   const [budgetAudit, setBudgetAudit] = useState(null);
@@ -1662,6 +1741,27 @@ function HomeView() {
         });
         if (res.status === 401 || res.status === 403) return navigate("/");
         setCostReconciliation(await res.json());
+      } catch {
+        // Non-critical panel -- the rest of the dashboard still works without it.
+      } finally {
+        setLoadProgress((p) => p + 1);
+      }
+    },
+    [navigate]
+  );
+
+  const loadUsageByKey = useCallback(
+    async (month, refresh) => {
+      try {
+        const params = new URLSearchParams();
+        if (month) params.set("month", month);
+        if (refresh) params.set("refresh", "1");
+        const qs = params.toString();
+        const res = await fetch(`${API_URL}/api/cost/get_usage_by_key/${qs ? `?${qs}` : ""}`, {
+          credentials: "include",
+        });
+        if (res.status === 401 || res.status === 403) return navigate("/");
+        setUsageByKey(await res.json());
       } catch {
         // Non-critical panel -- the rest of the dashboard still works without it.
       } finally {
@@ -1879,6 +1979,7 @@ function HomeView() {
         loadStats(arg, refresh),
         loadCostReconciliation(arg, refresh),
         loadCacheEconomics(arg, refresh),
+        loadUsageByKey(arg, refresh),
         loadCommercialImpact(arg, refresh),
         loadCartFunnel(arg, refresh),
         loadChatIntentsV3(),
@@ -1887,7 +1988,7 @@ function HomeView() {
         loadBudgetAudit(arg, refresh),
       ]);
     },
-    [loadStats, loadInsights, loadCostReconciliation, loadCacheEconomics, loadCommercialImpact, loadCartFunnel, loadChatIntentsV3, loadVerdicts, loadNeedsAttention, loadBudgetAudit]
+    [loadStats, loadInsights, loadCostReconciliation, loadCacheEconomics, loadUsageByKey, loadCommercialImpact, loadCartFunnel, loadChatIntentsV3, loadVerdicts, loadNeedsAttention, loadBudgetAudit]
   );
 
   useEffect(() => {
@@ -2256,6 +2357,7 @@ function HomeView() {
             <CommandCenterHeroKpis stats={stats} cacheEconomics={cacheEconomics} isLifetime={isLifetime} />
             <CacheEconomicsPanel data={cacheEconomics} isLifetime={isLifetime} />
             <CostReconciliationPanel data={costReconciliation} isLifetime={isLifetime} />
+            <UsageByKeyPanel data={usageByKey} isLifetime={isLifetime} />
           </section>
 
           {/* 5. OPERATOR MISSIONS -- guided checklists over live endpoints */}
