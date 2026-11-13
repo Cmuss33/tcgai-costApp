@@ -1089,7 +1089,7 @@ def model_rates(request):
     return JsonResponse(payload)
 
 
-@api_login_required
+@api_login_or_token_required
 def usage_by_key(request):
     """Per-API-key token usage + an estimated $ cost this month, combining
     AnthropicAdapter.get_usage_by_key (real per-key token counts) with
