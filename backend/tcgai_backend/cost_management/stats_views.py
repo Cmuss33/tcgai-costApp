@@ -1110,7 +1110,16 @@ def usage_by_key(request):
     output down to ANTHROPIC_COSTAPP_API_KEY_IDS when set, the same key-id list
     that already scopes the "Anthropic spend"/"Tokens" KPIs -- so this
     panel reads as "usage by *our* keys" rather than every key in the org,
-    and its rows sum to the same spend total shown elsewhere on the page."""
+    and its rows sum to the same spend total shown elsewhere on the page.
+
+    The keys the filter drops are NOT discarded: they come back as
+    "untracked_keys" (same row shape, priced the same way). A key the
+    estate forgot to register -- a rotated key whose new id never made it
+    into ANTHROPIC_COSTAPP_API_KEY_IDS, say -- is otherwise invisible in
+    every total while it keeps spending; returning it here makes the
+    blind spot itself visible on the panel (and alarmable) instead of
+    silent. When the id list is unset there is no filter, so every key
+    lands in "keys" and "untracked_keys" is empty."""
     refresh = request.GET.get("refresh", "").lower() in ("1", "true", "yes")
     month_param = request.GET.get("month")
 
@@ -1124,6 +1133,7 @@ def usage_by_key(request):
         months = lifetime_months()
         allowed_ids = set(app_api_key_ids())
         aggregated_keys = {}
+        aggregated_untracked = {}
         ws_id = None
         err = None
 
@@ -1137,21 +1147,22 @@ def usage_by_key(request):
                 ws_id = usage_resp.get("workspace_id")
             rates = _rates_for(m)
             raw_keys = usage_resp.get("keys", [])
-            if allowed_ids:
-                raw_keys = [k for k in raw_keys if k["api_key_id"] in allowed_ids]
 
             for k in raw_keys:
                 kid = k["api_key_id"]
-                if kid not in aggregated_keys:
-                    aggregated_keys[kid] = {
+                target = aggregated_keys
+                if allowed_ids and kid not in allowed_ids:
+                    target = aggregated_untracked
+                if kid not in target:
+                    target[kid] = {
                         "api_key_id": kid,
                         "name": k.get("name") or kid,
                         "input_tokens": 0,
                         "output_tokens": 0,
                         "estimated_cost": 0.0,
                     }
-                aggregated_keys[kid]["input_tokens"] += k.get("input_tokens", 0)
-                aggregated_keys[kid]["output_tokens"] += k.get("output_tokens", 0)
+                target[kid]["input_tokens"] += k.get("input_tokens", 0)
+                target[kid]["output_tokens"] += k.get("output_tokens", 0)
                 for model, tok in k.get("by_model", {}).items():
                     rate = _rate_for(rates, model) or {}
                     cost = (
@@ -1160,17 +1171,23 @@ def usage_by_key(request):
                         + tok.get("cache_creation_tokens", 0) * rate.get("cache_creation", 0)
                         + tok.get("cache_read_tokens", 0) * rate.get("cache_read", 0)
                     )
-                    aggregated_keys[kid]["estimated_cost"] += cost
+                    target[kid]["estimated_cost"] += cost
 
         keys = list(aggregated_keys.values())
         for k in keys:
             k["estimated_cost"] = round(k["estimated_cost"], 2)
         keys.sort(key=lambda k: k["estimated_cost"], reverse=True)
 
+        untracked_keys = list(aggregated_untracked.values())
+        for k in untracked_keys:
+            k["estimated_cost"] = round(k["estimated_cost"], 2)
+        untracked_keys.sort(key=lambda k: k["estimated_cost"], reverse=True)
+
         payload = {
             "month": "lifetime",
             "is_lifetime": True,
             "keys": keys,
+            "untracked_keys": untracked_keys,
             "workspace_id": ws_id,
             "estimated": True,
             "error": err if not keys else None,
@@ -1199,17 +1216,16 @@ def usage_by_key(request):
     usage_resp = _raw_usage_by_key(month_start)
     if not isinstance(usage_resp, dict) or usage_resp.get("error"):
         err = usage_resp.get("error") if isinstance(usage_resp, dict) else "usage source unavailable"
-        payload = {"keys": [], "workspace_id": None, "estimated": True, "error": err}
+        payload = {"keys": [], "untracked_keys": [], "workspace_id": None, "estimated": True, "error": err}
         return JsonResponse(payload)
 
     rates = _rates_for(month_start)
 
     allowed_ids = set(app_api_key_ids())
     raw_keys = usage_resp.get("keys", [])
-    if allowed_ids:
-        raw_keys = [k for k in raw_keys if k["api_key_id"] in allowed_ids]
 
     keys = []
+    untracked_keys = []
     for k in raw_keys:
         estimated_cost = 0.0
         for model, tok in k.get("by_model", {}).items():
@@ -1221,17 +1237,23 @@ def usage_by_key(request):
             estimated_cost += tok.get("output_tokens", 0) * rate.get("output", 0)
             estimated_cost += tok.get("cache_creation_tokens", 0) * rate.get("cache_creation", 0)
             estimated_cost += tok.get("cache_read_tokens", 0) * rate.get("cache_read", 0)
-        keys.append({
+        row = {
             "api_key_id": k["api_key_id"],
             "name": k["name"],
             "input_tokens": k["input_tokens"],
             "output_tokens": k["output_tokens"],
             "estimated_cost": round(estimated_cost, 2),
-        })
+        }
+        if allowed_ids and k["api_key_id"] not in allowed_ids:
+            untracked_keys.append(row)
+        else:
+            keys.append(row)
     keys.sort(key=lambda k: k["estimated_cost"], reverse=True)
+    untracked_keys.sort(key=lambda k: k["estimated_cost"], reverse=True)
 
     payload = {
         "keys": keys,
+        "untracked_keys": untracked_keys,
         "workspace_id": usage_resp.get("workspace_id"),
         "estimated": True,
     }
