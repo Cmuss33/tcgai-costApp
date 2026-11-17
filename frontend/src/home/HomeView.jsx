@@ -258,7 +258,7 @@ function CacheEconomicsPanel({ data, isLifetime }) {
       </p>
       {data.chat_scope_is_app_wide && (
         <p className="cr__notice">
-          ANTHROPIC_CHAT_API_KEY_IDS isn&rsquo;t set &mdash; these figures still include AI Search
+          ANTHROPIC_CHATBOT_API_KEY_IDS isn&rsquo;t set &mdash; these figures still include AI Search
           Curator, narrative, and monthly-report spend, not chat traffic alone.
         </p>
       )}
@@ -306,7 +306,7 @@ function CostReconciliationPanel({ data, isLifetime }) {
       </div>
       {data.chat_scope_is_app_wide && (
         <p className="cr__notice">
-          ANTHROPIC_CHAT_API_KEY_IDS isn&rsquo;t set &mdash; both figures below still
+          ANTHROPIC_CHATBOT_API_KEY_IDS isn&rsquo;t set &mdash; both figures below still
           include AI Search Curator, narrative, and monthly-report spend, not chat
           traffic alone.
         </p>

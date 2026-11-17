@@ -248,7 +248,7 @@ class GroundedScoringIntegrationTests(TestCase):
 
         fixture = c5b596ef_messages()
         rows = [(m.content, m.returned_content, m.products_shown) for m in fixture]
-        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}):
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY_COSTAPP": "test-key"}):
             chat = self._create_chat("c5b596ef-shape", rows)
             stored = score_single_chat(chat)
 
@@ -276,7 +276,7 @@ class GroundedScoringIntegrationTests(TestCase):
 
         fixture = c5b596ef_messages()
         rows = [(m.content, m.returned_content, m.products_shown) for m in fixture]
-        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}):
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY_COSTAPP": "test-key"}):
             chat = self._create_chat("prompt-evidence", rows)
             score_single_chat(chat)
 
@@ -293,7 +293,7 @@ class GroundedScoringIntegrationTests(TestCase):
         mock_client.messages.create.return_value = self._judge_resp(
             "Both answers were correct and offered next steps.\nSCORE: 92")
 
-        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}):
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY_COSTAPP": "test-key"}):
             chat = self._create_chat("clean-chat", [
                 ("do you have charizard", "Yes -- Charizard VMAX, CAD 89.99.", DECKS_SHOWN),
                 ("thanks", "Any time!", None),
@@ -307,9 +307,9 @@ class GroundedScoringIntegrationTests(TestCase):
 
     @patch("anthropic.Anthropic")
     def test_judge_uses_the_new_costapp_key_name_alone(self, mock_anthropic_class):
-        """Phase 1 of the Anthropic key rename: the judge's inference
-        read works when only ANTHROPIC_API_KEY_COSTAPP is set (the old
-        ANTHROPIC_API_KEY name absent)."""
+        """The judge's inference read works when only
+        ANTHROPIC_API_KEY_COSTAPP is set (the old ANTHROPIC_API_KEY
+        name absent)."""
         from .views import score_single_chat
         mock_client = MagicMock()
         mock_anthropic_class.return_value = mock_client
@@ -329,7 +329,7 @@ class GroundedScoringIntegrationTests(TestCase):
     @patch("anthropic.Anthropic")
     def test_judge_prefers_the_new_costapp_key_name_over_the_old(self, mock_anthropic_class):
         """When both names are set, the judge must use
-        ANTHROPIC_API_KEY_COSTAPP, not the pre-rename fallback."""
+        ANTHROPIC_API_KEY_COSTAPP, not the pre-rename name."""
         from .views import score_single_chat
         mock_client = MagicMock()
         mock_anthropic_class.return_value = mock_client
@@ -347,3 +347,22 @@ class GroundedScoringIntegrationTests(TestCase):
             self.assertEqual(score_single_chat(chat), 92)
 
         mock_anthropic_class.assert_called_with(api_key="new-test-key")
+
+    @patch("anthropic.Anthropic")
+    def test_judge_ignores_the_old_key_name_alone(self, mock_anthropic_class):
+        """Phase 3 of the Anthropic key rename: with only the pre-rename
+        ANTHROPIC_API_KEY set, the judge has no key -- score_single_chat
+        returns None and never constructs a client. The phase-1 fallback
+        is gone, so a stale old-name config fails loudly instead of
+        silently billing the old key."""
+        from .views import score_single_chat
+
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "old-test-key"}, clear=False):
+            os.environ.pop("ANTHROPIC_API_KEY_COSTAPP", None)
+            chat = self._create_chat("clean-chat-old-key-name-only", [
+                ("do you have charizard", "Yes -- Charizard VMAX, CAD 89.99.", DECKS_SHOWN),
+                ("thanks", "Any time!", None),
+            ])
+            self.assertIsNone(score_single_chat(chat))
+
+        mock_anthropic_class.assert_not_called()

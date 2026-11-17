@@ -14,22 +14,25 @@ load_dotenv()
 
 
 def anthropic_inference_key():
-    """This app's Anthropic inference key, under its renamed variable
-    first: ANTHROPIC_API_KEY_COSTAPP, falling back to the pre-rename
-    ANTHROPIC_API_KEY. Phase 1 of the Anthropic key-rename programme --
-    the new name wins when both are set, and the old name alone still
-    works, so a deploy with no config change behaves exactly as before.
-    Every inference read in this app goes through this helper so the
-    chain cannot drift apart between call sites. Returns None (or an
-    empty string) when neither variable is set, matching the previous
+    """This app's Anthropic inference key, read from
+    ANTHROPIC_API_KEY_COSTAPP only. Phase 3 of the Anthropic key-rename
+    programme: the pre-rename ANTHROPIC_API_KEY fallback added in phase 1
+    is removed -- phase 2 put the distinct new key live under the new
+    name, so the old name is no longer read anywhere and a missing new
+    name fails loudly (callers treat a falsy key as "not configured")
+    instead of silently billing a shared key. Every inference read in
+    this app goes through this helper so the read cannot drift apart
+    between call sites. Returns None (or an empty string) when the
+    variable is unset, matching the previous
     direct os.environ.get("ANTHROPIC_API_KEY") reads."""
-    return os.environ.get("ANTHROPIC_API_KEY_COSTAPP") or os.environ.get("ANTHROPIC_API_KEY")
+    return os.environ.get("ANTHROPIC_API_KEY_COSTAPP")
 
 
 def app_api_key_ids():
     """The tracked estate's Anthropic API key ids
-    (ANTHROPIC_COSTAPP_API_KEY_IDS, comma-separated, with the pre-rename
-    ANTHROPIC_APP_API_KEY_IDS as fallback) -- past and present production
+    (ANTHROPIC_COSTAPP_API_KEY_IDS, comma-separated -- the pre-rename
+    ANTHROPIC_APP_API_KEY_IDS fallback from phase 1 was removed in
+    phase 3) -- past and present production
     keys, e.g. the old pre-rotation shared key plus the current
     per-surface keys. Despite the COSTAPP owner name, this list scopes
     the tracked estate: it holds every tracked key id (the chatbot
@@ -46,14 +49,15 @@ def app_api_key_ids():
     the per-key panel down to keys this app actually issued -- the adapter's
     own get_usage_by_key stays unscoped (see its docstring); the filter is
     applied by the caller instead."""
-    raw = os.environ.get('ANTHROPIC_COSTAPP_API_KEY_IDS') or os.environ.get('ANTHROPIC_APP_API_KEY_IDS') or ''
+    raw = os.environ.get('ANTHROPIC_COSTAPP_API_KEY_IDS') or ''
     return [k.strip() for k in raw.split(',') if k.strip()]
 
 
 def chat_api_key_ids():
     """The chatbot's chat-surface Anthropic API key ids specifically
-    (ANTHROPIC_CHATBOT_API_KEY_IDS, comma-separated, with the pre-rename
-    ANTHROPIC_CHAT_API_KEY_IDS as fallback) -- a narrower subset of
+    (ANTHROPIC_CHATBOT_API_KEY_IDS, comma-separated -- the pre-rename
+    ANTHROPIC_CHAT_API_KEY_IDS fallback from phase 1 was removed in
+    phase 3) -- a narrower subset of
     app_api_key_ids() covering only the chat widget, not the AI Search
     Curator/narrative/report surfaces the same app also owns keys for
     (ENG-147's three-way key split). Used by stats_views' cost_pc KPI
@@ -70,7 +74,7 @@ def chat_api_key_ids():
     renamed lists: despite their owner names, this list holds the
     chatbot's chat-surface key ids only, while app_api_key_ids()'s list
     holds every tracked key id in the estate."""
-    raw = os.environ.get('ANTHROPIC_CHATBOT_API_KEY_IDS') or os.environ.get('ANTHROPIC_CHAT_API_KEY_IDS') or ''
+    raw = os.environ.get('ANTHROPIC_CHATBOT_API_KEY_IDS') or ''
     scoped = [k.strip() for k in raw.split(',') if k.strip()]
     return scoped if scoped else app_api_key_ids()
 
