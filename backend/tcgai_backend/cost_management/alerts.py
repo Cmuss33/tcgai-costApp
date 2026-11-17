@@ -34,7 +34,12 @@ logger = logging.getLogger(__name__)
 
 SLACK_WEBHOOK_ENV = "SLACK_ALERTS_WEBHOOK_URL"
 DASHBOARD_URL_ENV = "COSTAPP_DASHBOARD_URL"
-DASHBOARD_URL_DEFAULT = "https://tcgai-costapp-24lh.onrender.com"
+# The dashboard is the FRONTEND service (tcgai-costapp-1-0k1s); the 24lh
+# host is this API/ingest service, whose root path 404s in a browser. The
+# default pointed at the API host until 2026-11-17, so every alert's
+# "Open the dashboard" link landed on a Not Found page whenever the
+# COSTAPP_DASHBOARD_URL env var was unset.
+DASHBOARD_URL_DEFAULT = "https://tcgai-costapp-1-0k1s.onrender.com"
 SLACK_TIMEOUT_S = 8
 
 # Rule metadata for the settings UI: human labels, threshold units, and the

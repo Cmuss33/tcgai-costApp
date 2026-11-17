@@ -1272,7 +1272,21 @@ def log_attribution(request):
                 },
             )
         if created and obj.influenced_revenue > 0:
-            _notify_attributed_revenue(obj)
+            # The Slack post announces revenue the commercial-impact
+            # rollup counts -- and that rollup excludes orders linked to
+            # probe (test) chats (stats_views._impact_orders). The post
+            # must follow the same rule: on 2026-11-17 it announced
+            # CAD 0.80 for an order the ledger itself excludes, because
+            # the linked chat was a test conversation. The row is still
+            # stored either way; only the announcement is gated.
+            if obj.chat is not None and obj.chat.is_probe:
+                logger.info(
+                    "[attribution] order %s linked to probe chat %s; "
+                    "Slack revenue post skipped (excluded from rollup)",
+                    obj.order_id, obj.chat_id_raw,
+                )
+            else:
+                _notify_attributed_revenue(obj)
         refresh_outcome_for_chat_id(chat_id)
         refresh_intent_v3_for_chat_id(chat_id)
         return JsonResponse({"status": "success", "created": created})
